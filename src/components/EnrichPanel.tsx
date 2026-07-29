@@ -1,0 +1,404 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+
+interface EnrichRecord {
+  id?: string | null; // when set + Supabase configured, enrichment persists to this row
+  canonical_name: string;
+  record_type?: string | null;
+  icp_code?: string | null;
+  company_name_raw?: string | null;
+  company_website?: string | null;
+  company_domain?: string | null;
+  contact_name?: string | null;
+  contact_title?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  city?: string | null;
+  state_province?: string | null;
+  estimated_value?: number | null;
+  estimated_value_currency?: string | null;
+  source_key?: string | null;
+  project_url?: string | null;
+}
+
+interface Account {
+  name: string | null;
+  domain: string | null;
+  website: string | null;
+  industry: string | null;
+  role: string | null;
+  hq_location: string | null;
+  employee_count: number | null;
+  linkedin_url: string | null;
+  description: string | null;
+}
+interface Contact {
+  name: string | null;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  linkedin_url: string | null;
+  source: string;
+}
+interface News {
+  title: string | null;
+  url: string | null;
+  summary: string | null;
+  published: string | null;
+}
+interface EnrichResponse {
+  ok: boolean;
+  account: Account | null;
+  contacts: Contact[];
+  news: News[];
+  reasoning: string | null;
+  confidence: 'high' | 'medium' | 'low' | null;
+  engines: { claude: boolean; apollo: boolean };
+  profile?: string;
+  sdr?: {
+    icp_fit_score: number | null;
+    icp_fit_reason: string | null;
+    evercam_timing: string | null;
+    trigger_event: string | null;
+    opening_hook: string | null;
+    value_angle: string | null;
+    pain_point: string | null;
+  } | null;
+  keyAccount?: { key_account: boolean; key_account_score: number; key_account_reasons: string[] } | null;
+  applied?: { field: string; origin: 'source' | 'claude' | 'apollo' | 'gleif'; value: unknown }[];
+  persisted?: boolean;
+  message?: string;
+  errorKind?: string;
+}
+
+const TIMING_BADGE: Record<string, string> = {
+  reach_now: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  watch: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  too_early: 'bg-surface-raised text-muted',
+  too_late: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
+};
+
+const ORIGIN_BADGE: Record<string, string> = {
+  source: 'bg-surface-raised text-muted',
+  claude: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  apollo: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  gleif: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+};
+
+const FIELD_LABEL: Record<string, string> = {
+  company_name_raw: 'Company',
+  company_website: 'Website',
+  company_domain: 'Domain',
+  contact_name: 'Contact',
+  contact_title: 'Title',
+  contact_email: 'Email',
+  contact_phone: 'Phone',
+};
+
+const CONFIDENCE_COLORS: Record<string, string> = {
+  high: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  medium: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  low: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300',
+};
+
+export default function EnrichPanel({ record }: { record: EnrichRecord }) {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<EnrichResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(record),
+        });
+        const json = (await res.json()) as EnrichResponse;
+        if (!cancelled) setData(json);
+      } catch (err) {
+        if (!cancelled)
+          setData({
+            ok: false,
+            account: null,
+            contacts: [],
+            news: [],
+            reasoning: null,
+            confidence: null,
+            engines: { claude: false, apollo: false },
+            message: err instanceof Error ? err.message : String(err),
+          });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Enrich once when the panel opens; record identity is stable per row.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-4 text-sm text-muted">
+        <span className="h-3 w-3 animate-spin rounded-full border-2 border-border-base border-t-transparent" />
+        Enriching with Claude{data?.engines?.apollo ? ' + Apollo' : ''}… (identifying account, mining news)
+      </div>
+    );
+  }
+
+  if (!data || !data.ok) {
+    return (
+      <div className="px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
+        {data?.errorKind ? `[${data.errorKind}] ` : ''}
+        {data?.message ?? 'Enrichment failed.'}
+      </div>
+    );
+  }
+
+  const { account, contacts, news, reasoning, confidence, engines, profile, sdr, keyAccount, applied, persisted } =
+    data;
+
+  return (
+    <div className="space-y-4 bg-surface-raised px-4 py-4-raised/60">
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="font-semibold uppercase tracking-wide text-muted">Enrichment</span>
+        {confidence ? (
+          <span className={`rounded-full px-2 py-0.5 font-medium ${CONFIDENCE_COLORS[confidence] ?? ''}`}>
+            confidence: {confidence}
+          </span>
+        ) : null}
+        <span className="rounded-full bg-surface-raised px-2 py-0.5 text-muted">
+          Claude {engines.claude ? '✓' : '—'} · Apollo {engines.apollo ? '✓' : '—'}
+        </span>
+        {profile ? (
+          <span
+            className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+            title="Enrichment tuned for this source's account type"
+          >
+            tuned for: {profile}
+          </span>
+        ) : null}
+        {persisted ? (
+          <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+            saved to record
+          </span>
+        ) : null}
+        {keyAccount?.key_account ? (
+          <span
+            className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            title={keyAccount.key_account_reasons.join(' · ')}
+          >
+            ★ KEY ACCOUNT · {keyAccount.key_account_score}
+          </span>
+        ) : keyAccount ? (
+          <span
+            className="rounded-full bg-surface-raised px-2 py-0.5 text-muted"
+            title={keyAccount.key_account_reasons.join(' · ')}
+          >
+            account score {keyAccount.key_account_score}
+          </span>
+        ) : null}
+      </div>
+
+      {/* SDR playbook — should I call, when, and what do I say */}
+      {sdr && (sdr.opening_hook || sdr.icp_fit_score != null) ? (
+        <div className="rounded-lg border border-border-base bg-surface p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">SDR playbook</h4>
+            {sdr.icp_fit_score != null ? (
+              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
+                ICP fit {sdr.icp_fit_score}
+              </span>
+            ) : null}
+            {sdr.evercam_timing ? (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${TIMING_BADGE[sdr.evercam_timing] ?? ''}`}
+              >
+                {sdr.evercam_timing.replace('_', ' ')}
+              </span>
+            ) : null}
+            {sdr.value_angle ? (
+              <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-800 dark:bg-teal-900/40 dark:text-teal-300">
+                {sdr.value_angle}
+              </span>
+            ) : null}
+          </div>
+          {sdr.opening_hook ? (
+            <p className="mt-2 border-l-2 border-indigo-300 pl-2 text-sm italic text-foreground dark:border-indigo-700">
+              &ldquo;{sdr.opening_hook}&rdquo;
+            </p>
+          ) : null}
+          <dl className="mt-2 space-y-1 text-xs text-muted">
+            {sdr.trigger_event ? (
+              <div>
+                <dt className="inline font-medium text-muted">Trigger: </dt>
+                <dd className="inline">{sdr.trigger_event}</dd>
+              </div>
+            ) : null}
+            {sdr.pain_point ? (
+              <div>
+                <dt className="inline font-medium text-muted">Pain: </dt>
+                <dd className="inline">{sdr.pain_point}</dd>
+              </div>
+            ) : null}
+            {sdr.icp_fit_reason ? (
+              <div>
+                <dt className="inline font-medium text-muted">Fit: </dt>
+                <dd className="inline">{sdr.icp_fit_reason}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      ) : null}
+
+      {/* What enrichment added — the columns it filled, and which engine created each */}
+      <div className="rounded-lg border border-border-base bg-surface p-3">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">
+          Fields added by enrichment{applied && applied.length ? ` (${applied.length})` : ''}
+        </h4>
+        {applied && applied.length > 0 ? (
+          <ul className="mt-2 space-y-1.5">
+            {applied.map((f) => (
+              <li key={f.field} className="flex items-center gap-2 text-sm">
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${ORIGIN_BADGE[f.origin]}`}>
+                  {f.origin}
+                </span>
+                <span className="text-muted">{FIELD_LABEL[f.field] ?? f.field}:</span>
+                <span className="truncate text-foreground">{String(f.value)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1.5 text-sm text-muted">
+            Nothing to add — the source already provided these fields (originals are never overwritten).
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Account */}
+        <div className="rounded-lg border border-border-base bg-surface p-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Account</h4>
+          {account?.name ? (
+            <div className="mt-1.5 space-y-1 text-sm">
+              <p className="font-semibold text-foreground">{account.name}</p>
+              {account.role ? <p className="text-xs text-muted">Role: {account.role}</p> : null}
+              {account.industry ? <p className="text-xs text-muted">{account.industry}</p> : null}
+              {account.hq_location ? <p className="text-xs text-muted">{account.hq_location}</p> : null}
+              {account.employee_count ? (
+                <p className="text-xs text-muted">~{account.employee_count.toLocaleString()} employees</p>
+              ) : null}
+              {account.website ? (
+                <a
+                  href={account.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                >
+                  {account.website}
+                </a>
+              ) : null}
+              {account.linkedin_url ? (
+                <a
+                  href={account.linkedin_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                >
+                  LinkedIn
+                </a>
+              ) : null}
+              {account.description ? <p className="mt-1 text-xs text-muted">{account.description}</p> : null}
+            </div>
+          ) : (
+            <p className="mt-1.5 text-sm text-muted">No account identified.</p>
+          )}
+        </div>
+
+        {/* Contacts */}
+        <div className="rounded-lg border border-border-base bg-surface p-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Contacts ({contacts.length})</h4>
+          {contacts.length > 0 ? (
+            <ul className="mt-1.5 space-y-2">
+              {contacts.map((c, i) => (
+                <li key={i} className="text-sm">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-foreground">{c.name ?? '—'}</span>
+                    <span
+                      className={`rounded px-1 text-[10px] ${c.source === 'apollo' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' : 'bg-surface-raised text-muted'}`}
+                    >
+                      {c.source}
+                    </span>
+                  </div>
+                  {c.title ? <p className="text-xs text-muted">{c.title}</p> : null}
+                  {c.email ? (
+                    <a
+                      href={`mailto:${c.email}`}
+                      className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      {c.email}
+                    </a>
+                  ) : null}
+                  {c.phone ? <p className="text-xs text-muted">{c.phone}</p> : null}
+                  {c.linkedin_url ? (
+                    <a
+                      href={c.linkedin_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      LinkedIn
+                    </a>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1.5 text-sm text-muted">No contacts found.</p>
+          )}
+        </div>
+
+        {/* News */}
+        <div className="rounded-lg border border-border-base bg-surface p-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">
+            News &amp; signals ({news.length})
+          </h4>
+          {news.length > 0 ? (
+            <ul className="mt-1.5 space-y-2">
+              {news.map((n, i) => (
+                <li key={i} className="text-sm">
+                  {n.url ? (
+                    <a
+                      href={n.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      {n.title ?? n.url}
+                    </a>
+                  ) : (
+                    <span className="font-medium text-foreground">{n.title}</span>
+                  )}
+                  {n.published ? <span className="ml-1 text-[11px] text-muted">{n.published}</span> : null}
+                  {n.summary ? <p className="text-xs text-muted">{n.summary}</p> : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1.5 text-sm text-muted">No recent news found.</p>
+          )}
+        </div>
+      </div>
+
+      {reasoning ? (
+        <p className="text-[11px] italic text-muted">
+          <span className="font-semibold not-italic">How the account was identified: </span>
+          {reasoning}
+        </p>
+      ) : null}
+    </div>
+  );
+}

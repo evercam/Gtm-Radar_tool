@@ -1,0 +1,1011 @@
+import { getReadSupabase, getServiceSupabase } from '@/lib/supabase/server';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { CanonicalProjectRow } from '@/lib/supabase/types';
+import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
+import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
+import { configForBu, type ScoringPolicySet } from '@/lib/policies';
+
+// ============================================================================
+// canonical_projects
+// ============================================================================
+
+export async function getRecentCanonicalProjects(limit = 25): Promise<CanonicalProjectRow[]> {
+  const supabase = await getReadSupabase();
+  const { data, error } = await supabase
+    .from('canonical_projects')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return []; // table not created yet -> empty state
+  return (data ?? []) as CanonicalProjectRow[];
+}
+
+/** One row per (BU, vertical, contact_status) with a count — the pipeline rollup. */
+export interface PipelineRollupRow {
+  bu: string;
+  vertical: string;
+  contact_status: string;
+  count: number;
+}
+
+/**
+ * True when a Postgres error is "that column doesn't exist" (42703) — i.e. the
+ * priority migration hasn't been run on this database yet. Every read that
+ * touches the new columns falls back rather than returning an empty table,
+ * because an un-migrated install must keep working exactly as it did before.
+ */
+function isMissingColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === '42703' || /does not exist|schema cache/i.test(error.message ?? '');
+}
+
+/** Whether the priority columns exist — drives the "run the migration" notice. */
+export async function hasPriorityColumns(): Promise<boolean> {
+  try {
+    const supabase = await getReadSupabase();
+    const { error } = await supabase.from('canonical_projects').select('priority_score').limit(1);
+    return !isMissingColumn(error);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Columns the scoring + routing pass needs. Kept in one place because the
+ * dry-run preview and the materialized pass must read exactly the same fields
+ * — if they diverge, the preview stops predicting the write.
+ */
+const SCORING_COLUMNS =
+  'id, bu, icp_code, vertical, record_type, contact_status, population_percentage, country, account_key, ' +
+  'current_phase, estimated_value, estimated_value_currency, capacity_mw, contact_name, contact_email, contact_phone, ' +
+  'bid_date, construction_start_date, announced_date, created_at';
+
+interface AccountSignal {
+  key_account: boolean;
+  key_account_score: number | null;
+}
+
+/** Key-account flags per account_key — the account-level half of both passes. */
+async function loadAccountSignals(client: SupabaseClient): Promise<Map<string, AccountSignal>> {
+  const map = new Map<string, AccountSignal>();
+  for (let from = 0; from < 500_000; from += 1000) {
+    const { data, error } = await client
+      .from('account_enrichment')
+      .select('account_key, key_account, key_account_score')
+      .range(from, from + 999);
+    if (error) break;
+    for (const r of (data ?? []) as ({ account_key: string } & AccountSignal)[]) map.set(r.account_key, r);
+    if (!data || data.length < 1000) break;
+  }
+  return map;
+}
+
+/** Score a raw row, then build the RoutableRecord the rules evaluate. */
+function toScoredRecord(
+  r: Record<string, unknown>,
+  signals: Map<string, AccountSignal>,
+  scoring: PriorityConfig | ScoringPolicySet,
+  now: number
+): { record: RoutableRecord; priority: PriorityVerdict } {
+  // A business unit may weight the components differently, so each record is
+  // scored with its own BU's config. Passing a bare config still works — the
+  // dry-run preview and the search route score against one policy.
+  const config = 'byBu' in scoring ? configForBu(scoring, (r.bu as string) ?? null) : scoring;
+  const a = (typeof r.account_key === 'string' ? signals.get(r.account_key) : undefined) ?? {
+    key_account: false,
+    key_account_score: null,
+  };
+  const priority = scorePriority(
+    {
+      icp_code: (r.icp_code as string) ?? null,
+      record_type: (r.record_type as string) ?? null,
+      vertical: (r.vertical as string) ?? null,
+      current_phase: (r.current_phase as string) ?? null,
+      estimated_value: (r.estimated_value as number) ?? null,
+      estimated_value_currency: (r.estimated_value_currency as string) ?? null,
+      capacity_mw: (r.capacity_mw as number) ?? null,
+      contact_name: (r.contact_name as string) ?? null,
+      contact_email: (r.contact_email as string) ?? null,
+      contact_phone: (r.contact_phone as string) ?? null,
+      contact_status: (r.contact_status as string) ?? null,
+      population_percentage: (r.population_percentage as number) ?? null,
+      bid_date: (r.bid_date as string) ?? null,
+      construction_start_date: (r.construction_start_date as string) ?? null,
+      announced_date: (r.announced_date as string) ?? null,
+      created_at: (r.created_at as string) ?? null,
+      key_account: a.key_account,
+      key_account_score: a.key_account_score,
+    },
+    config,
+    now
+  );
+  return {
+    priority,
+    record: {
+      bu: (r.bu as string) ?? null,
+      icp_code: (r.icp_code as string) ?? null,
+      vertical: (r.vertical as string) ?? null,
+      record_type: (r.record_type as string) ?? null,
+      contact_status: (r.contact_status as string) ?? null,
+      population_percentage: (r.population_percentage as number) ?? null,
+      country: (r.country as string) ?? null,
+      key_account: Boolean(a.key_account),
+      key_account_score: a.key_account_score ?? null,
+      priority_score: priority.score,
+      priority_band: priority.band,
+    },
+  };
+}
+
+/** Current routing rules from the DB, or the built-in defaults if none saved. */
+export async function getRoutingPolicy(): Promise<{ rules: RoutingRule[]; isDefault: boolean }> {
+  // Service role, unlike everything else in this file. routing_policy is
+  // configuration — one row, readable by any signed-in user — and it only
+  // lives here for historical reasons. Read through the session client it
+  // returned the BUILT-IN defaults instead of the saved rules, which looks
+  // identical to "nobody has configured routing yet".
+  const supabase = getServiceSupabase();
+  try {
+    const { data, error } = await supabase.from('routing_policy').select('rules').eq('id', 'default').maybeSingle();
+    if (error || !data || !Array.isArray(data.rules) || data.rules.length === 0)
+      return { rules: DEFAULT_RULES, isDefault: true };
+    return { rules: data.rules as RoutingRule[], isDefault: false };
+  } catch {
+    return { rules: DEFAULT_RULES, isDefault: true };
+  }
+}
+
+/**
+ * Ids per UPDATE. A UUID is ~39 characters once quoted and comma-separated in
+ * the query string, so 200 keeps the URL under 8KB — comfortably inside what
+ * proxies and PostgREST accept.
+ */
+const UPDATE_BATCH = 200;
+
+/**
+ * Score AND route every record, writing both results.
+ *
+ * The two run in one pass because routing rules can match on priority — score
+ * first, then lane, in the same read. Records are grouped by their full
+ * outcome signature so the whole table updates in a handful of statements
+ * rather than one per row.
+ */
+export async function rerouteAll(
+  rules: RoutingRule[],
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
+): Promise<{ total: number; byLane: Record<string, number>; byBand: Record<string, number> }> {
+  const service = getServiceSupabase();
+  const signals = await loadAccountSignals(service);
+  const nowMs = Date.now();
+
+  // group record ids by outcome signature (disposition + priority)
+  const groups = new Map<string, string[]>();
+  const byLane: Record<string, number> = {};
+  const byBand: Record<string, number> = {};
+  let total = 0;
+
+  for (let from = 0; from < 1_000_000; from += 1000) {
+    const { data, error } = await service
+      .from('canonical_projects')
+      .select(SCORING_COLUMNS)
+      .range(from, from + 999);
+    if (error) break;
+    for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
+      const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
+      const d = routeRecord(record, rules);
+      const sig = JSON.stringify([
+        d.route,
+        d.stage,
+        d.team ?? '',
+        d.reason,
+        priority.score,
+        priority.band,
+        priority.reasons,
+      ]);
+      const bucket = groups.get(sig);
+      if (bucket) bucket.push(r.id as string);
+      else groups.set(sig, [r.id as string]);
+
+      const lane = `${d.route}/${d.stage}`;
+      byLane[lane] = (byLane[lane] ?? 0) + 1;
+      byBand[priority.band] = (byBand[priority.band] ?? 0) + 1;
+      total += 1;
+    }
+    if (!data || data.length < 1000) break;
+  }
+
+  // batch-update each group (identical outcome) by id list
+  const now = new Date().toISOString();
+  for (const [sig, ids] of groups) {
+    const [route, stage, team, reason, score, band, reasons] = JSON.parse(sig) as [
+      string,
+      string,
+      string,
+      string,
+      number,
+      string,
+      string[],
+    ];
+    const patch = {
+      route,
+      stage,
+      assigned_team: team || null,
+      routing_reason: reason,
+      routed_at: now,
+      priority_score: score,
+      priority_band: band,
+      priority_reasons: reasons,
+      scored_at: now,
+    };
+    // `.in()` goes into the query string, and a UUID costs ~39 characters
+    // there. Batching a thousand of them built a ~39KB URL, which every proxy
+    // in the path rejects as a 400 — so the whole materialize pass failed with
+    // "Bad Request" and nothing was ever scored or routed.
+    for (let i = 0; i < ids.length; i += UPDATE_BATCH) {
+      const { error } = await service
+        .from('canonical_projects')
+        .update(patch)
+        .in('id', ids.slice(i, i + UPDATE_BATCH));
+      if (error) throw new Error(error.message);
+    }
+  }
+  return { total, byLane, byBand };
+}
+
+export interface RoutingPreview {
+  total: number;
+  byLane: { route: string; stage: string; count: number }[];
+  byRule: { rule: string; count: number }[];
+  byBand: { band: string; count: number }[];
+  /** Mean priority across all records — moves as the scoring policy is tuned. */
+  avgPriority: number;
+  /**
+   * The values actually present in the data, collected during the same scan.
+   * The rule builder offers these as choices so you can only match on things
+   * that exist — a hardcoded country list would mostly offer dead ends.
+   */
+  facets: {
+    bu: string[];
+    icp: string[];
+    vertical: string[];
+    recordType: string[];
+    country: string[];
+  };
+}
+
+/**
+ * Dry-run: score and route every record and tally the split. No writes.
+ * Uses the identical scoring + routing path as rerouteAll, so what the preview
+ * shows is exactly what materializing would write.
+ */
+export async function getRoutingPreview(
+  rules: RoutingRule[],
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
+): Promise<RoutingPreview> {
+  const empty: RoutingPreview = {
+    total: 0,
+    byLane: [],
+    byRule: [],
+    byBand: [],
+    avgPriority: 0,
+    facets: { bu: [], icp: [], vertical: [], recordType: [], country: [] },
+  };
+  const supabase = await getReadSupabase();
+  try {
+    const signals = await loadAccountSignals(supabase);
+    const nowMs = Date.now();
+
+    const lane = new Map<string, number>();
+    const rule = new Map<string, number>();
+    const band = new Map<string, number>();
+    const facet = {
+      bu: new Set<string>(),
+      icp: new Set<string>(),
+      vertical: new Set<string>(),
+      recordType: new Set<string>(),
+      country: new Set<string>(),
+    };
+    let total = 0;
+    let scoreSum = 0;
+
+    for (let from = 0; from < 1_000_000; from += 1000) {
+      const { data, error } = await supabase
+        .from('canonical_projects')
+        .select(SCORING_COLUMNS)
+        .range(from, from + 999);
+      if (error) return empty;
+      for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
+        const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
+        const d = routeRecord(record, rules);
+        const key = `${d.route}/${d.stage}`;
+        lane.set(key, (lane.get(key) ?? 0) + 1);
+        rule.set(d.reason, (rule.get(d.reason) ?? 0) + 1);
+        band.set(priority.band, (band.get(priority.band) ?? 0) + 1);
+        if (record.bu) facet.bu.add(record.bu);
+        if (record.icp_code) facet.icp.add(record.icp_code);
+        if (record.vertical) facet.vertical.add(record.vertical);
+        if (record.record_type) facet.recordType.add(record.record_type);
+        if (record.country) facet.country.add(record.country);
+        scoreSum += priority.score;
+        total += 1;
+      }
+      if (!data || data.length < 1000) break;
+    }
+
+    const byLane = Array.from(lane.entries())
+      .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
+      .sort((a, b) => b.count - a.count);
+    const byRule = Array.from(rule.entries())
+      .map(([r, count]) => ({ rule: r, count }))
+      .sort((a, b) => b.count - a.count);
+    const byBand = ['P1', 'P2', 'P3', 'P4'].map((b) => ({ band: b, count: band.get(b) ?? 0 }));
+    const sorted = (s: Set<string>) => Array.from(s).sort((a, b) => a.localeCompare(b));
+    return {
+      total,
+      byLane,
+      byRule,
+      byBand,
+      avgPriority: total ? Math.round(scoreSum / total) : 0,
+      facets: {
+        bu: sorted(facet.bu),
+        icp: sorted(facet.icp),
+        vertical: sorted(facet.vertical),
+        recordType: sorted(facet.recordType),
+        country: sorted(facet.country),
+      },
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export interface RecordRow {
+  id: string;
+  canonical_name: string;
+  source_key: string;
+  record_type: string | null;
+  bu: string | null;
+  vertical: string | null;
+  ref_code: string | null;
+  contact_status: string | null;
+  country: string | null;
+  capacity_mw: number | null;
+  estimated_value: number | null;
+  population_percentage: number | null;
+  account_key: string | null;
+  route: string | null;
+  stage: string | null;
+  priority_score: number | null;
+  priority_band: string | null;
+  priority_reasons: string[] | null;
+  status: string | null;
+  owner_user_id: string | null;
+  sla_due_at: string | null;
+  sla_breached: boolean | null;
+  call_prep_summary: string | null;
+  created_at: string;
+}
+export type RecordSort = 'priority' | 'newest' | 'value';
+export interface RecordsQuery {
+  page?: number;
+  pageSize?: number;
+  source?: string;
+  bu?: string;
+  vertical?: string;
+  recordType?: string;
+  contactStatus?: string;
+  route?: string;
+  stage?: string;
+  band?: string;
+  /** Completeness tier A–E as delivered by the source. */
+  completenessTier?: string;
+  status?: string;
+  /** Restrict to one owner. 'me' is resolved by the caller to a user id. */
+  ownerId?: string;
+  /** Only leads with nobody assigned. */
+  unassigned?: boolean;
+  search?: string;
+  sort?: RecordSort;
+}
+export interface RecordsResult {
+  rows: RecordRow[];
+  total: number;
+}
+
+const RECORD_COLUMNS_CORE =
+  'id,canonical_name,source_key,record_type,bu,vertical,ref_code,contact_status,country,capacity_mw,' +
+  'estimated_value,population_percentage,account_key,created_at';
+const RECORD_COLUMNS_ROUTING = `${RECORD_COLUMNS_CORE},route,stage`;
+const RECORD_COLUMNS_FULL =
+  `${RECORD_COLUMNS_ROUTING},priority_score,priority_band,priority_reasons,status,` +
+  'owner_user_id,sla_due_at,sla_breached,call_prep_summary';
+
+/** Which optional migrations a query may use. Degrades one tier at a time. */
+type ColumnTier = 'full' | 'routing' | 'core';
+const TIER_COLUMNS: Record<ColumnTier, string> = {
+  full: RECORD_COLUMNS_FULL,
+  routing: RECORD_COLUMNS_ROUTING,
+  core: RECORD_COLUMNS_CORE,
+};
+
+/**
+ * The unified table itself — every canonical_projects record, paginated +
+ * filtered.
+ *
+ * Optional migrations are handled by degrading, not by failing: it asks for the
+ * priority columns first, drops to routing-only if that migration is missing,
+ * then to the core columns if routing is missing too. A database at any of the
+ * three states renders a full table rather than a blank page.
+ */
+export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
+  const supabase = await getReadSupabase();
+  const page = Math.max(1, q.page ?? 1);
+  const pageSize = Math.min(500, Math.max(1, q.pageSize ?? 100));
+  const from = (page - 1) * pageSize;
+
+  const run = async (tier: ColumnTier) => {
+    const hasPriority = tier === 'full';
+    const hasRouting = tier === 'full' || tier === 'routing';
+
+    let query = supabase.from('canonical_projects').select(TIER_COLUMNS[tier], { count: 'exact' });
+    if (q.source) query = query.eq('source_key', q.source);
+    if (q.bu) query = query.eq('bu', q.bu);
+    if (q.vertical) query = query.eq('vertical', q.vertical);
+    if (q.recordType) query = query.eq('record_type', q.recordType);
+    if (q.contactStatus) query = query.eq('contact_status', q.contactStatus);
+    if (q.completenessTier) query = query.eq('source_completeness_tier', q.completenessTier);
+    if (hasRouting && q.route) query = query.eq('route', q.route);
+    if (hasRouting && q.stage) query = query.eq('stage', q.stage);
+    if (hasPriority && q.band) query = query.eq('priority_band', q.band);
+    if (hasPriority && q.status) query = query.eq('status', q.status);
+    if (hasPriority && q.ownerId) query = query.eq('owner_user_id', q.ownerId);
+    if (hasPriority && q.unassigned) query = query.is('assignee_id', null);
+    if (q.search?.trim()) query = query.ilike('canonical_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
+
+    // Priority-first by default — the whole point of scoring is that the top of
+    // the list is the work queue. Unscored records sort last, not first.
+    if (q.sort === 'value') query = query.order('estimated_value', { ascending: false, nullsFirst: false });
+    else if (q.sort === 'newest' || !hasPriority) query = query.order('created_at', { ascending: false });
+    else
+      query = query
+        .order('priority_score', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false });
+
+    return query.range(from, from + pageSize - 1);
+  };
+
+  const tiers: ColumnTier[] = ['full', 'routing', 'core'];
+  for (const tier of tiers) {
+    const { data, error, count } = await run(tier);
+    if (!error) return { rows: (data ?? []) as unknown as RecordRow[], total: count ?? 0 };
+    if (!isMissingColumn(error)) break;
+  }
+  return { rows: [], total: 0 };
+}
+
+/** Live per-source ingest stats from canonical_projects (records + avg completeness). */
+export interface SourceStat {
+  count: number;
+  avgCompleteness: number;
+  lastIngested: string | null;
+}
+export async function getSourceStats(): Promise<Record<string, SourceStat>> {
+  const supabase = await getReadSupabase();
+  const agg: Record<string, { count: number; sum: number; last: string | null }> = {};
+  const PAGE = 1000;
+  for (let from = 0; from < 500_000; from += PAGE) {
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('source_key, population_percentage, created_at')
+      .range(from, from + PAGE - 1);
+    if (error) return {};
+    for (const r of (data ?? []) as {
+      source_key: string;
+      population_percentage: number | null;
+      created_at: string;
+    }[]) {
+      const a = (agg[r.source_key] ??= { count: 0, sum: 0, last: null });
+      a.count += 1;
+      a.sum += Number(r.population_percentage) || 0;
+      if (!a.last || r.created_at > a.last) a.last = r.created_at;
+    }
+    if (!data || data.length < PAGE) break;
+  }
+  const out: Record<string, SourceStat> = {};
+  for (const [k, v] of Object.entries(agg))
+    out[k] = { count: v.count, avgCompleteness: v.count ? Math.round(v.sum / v.count) : 0, lastIngested: v.last };
+  return out;
+}
+
+export interface AccountEnrichmentRow {
+  account_key: string;
+  account_name: string | null;
+  account_role: string | null;
+  parent_account: string | null;
+  related_entities: Array<{
+    name?: string;
+    role?: string;
+    relationship?: string;
+    share?: number | string;
+    lei?: string;
+    entity_id?: string;
+  }> | null;
+  related_projects: Array<{ name?: string; location?: string; stage?: string; est_value?: number | null }> | null;
+  portfolio_project_count: number | null;
+  portfolio_value_estimate: number | null;
+  expansion_signal: string | null;
+  tech_stack: string[] | null;
+  key_account: boolean;
+  key_account_score: number | null;
+  key_account_reasons: string[] | null;
+  field_provenance: Record<string, string> | null;
+}
+
+export interface AccountDetail {
+  /** A dedicated record_type='account' row, if one was ever imported. */
+  account: CanonicalProjectRow | null;
+  enrichment: AccountEnrichmentRow | null;
+  /**
+   * The aggregate the /accounts list is built from. An account exists as soon
+   * as any record carries its key, so this is what decides whether the detail
+   * page has anything to show.
+   */
+  view: AccountViewRow | null;
+  projectCount: number;
+  projects: CanonicalProjectRow[];
+}
+
+/** Everything about one account: its account record, enrichment, and any linked projects. */
+export async function getAccountDetail(accountKey: string): Promise<AccountDetail> {
+  const supabase = await getReadSupabase();
+  try {
+    const [acctRes, enrRes, viewRes, projRes] = await Promise.all([
+      supabase
+        .from('canonical_projects')
+        .select('*')
+        .eq('account_key', accountKey)
+        .eq('record_type', 'account')
+        .limit(1)
+        .maybeSingle(),
+      supabase.from('account_enrichment').select('*').eq('account_key', accountKey).maybeSingle(),
+      supabase.from('accounts_view').select('*').eq('account_key', accountKey).maybeSingle(),
+      supabase
+        .from('canonical_projects')
+        .select('*', { count: 'exact' })
+        .eq('account_key', accountKey)
+        .neq('record_type', 'account')
+        .order('priority_score', { ascending: false, nullsFirst: false })
+        .limit(50),
+    ]);
+    return {
+      account: (acctRes.data as CanonicalProjectRow) ?? null,
+      enrichment: (enrRes.data as AccountEnrichmentRow) ?? null,
+      view: (viewRes.data as AccountViewRow) ?? null,
+      projectCount: projRes.count ?? 0,
+      projects: (projRes.data ?? []) as CanonicalProjectRow[],
+    };
+  } catch {
+    return { account: null, enrichment: null, view: null, projectCount: 0, projects: [] };
+  }
+}
+
+/** A row of accounts_view — a company rolled up across its projects + enrichment. */
+export interface AccountViewRow {
+  account_key: string;
+  account_name: string | null;
+  account_role: string | null;
+  project_count: number;
+  portfolio_project_count: number | null;
+  with_contact: number;
+  total_value: number | null;
+  largest_project_value: number | null;
+  capacity_mw: number | null;
+  bus: string[] | null;
+  verticals: string[] | null;
+  key_account: boolean;
+  key_account_score: number | null;
+  key_account_reasons: string[] | null;
+  related_projects: AccountEnrichmentRow['related_projects'];
+  related_entities: AccountEnrichmentRow['related_entities'];
+  expansion_signal: string | null;
+}
+
+export interface AccountsQuery {
+  page?: number;
+  pageSize?: number;
+  keyOnly?: boolean;
+  bu?: string;
+  vertical?: string;
+  search?: string;
+}
+export interface AccountsResult {
+  rows: AccountViewRow[];
+  total: number;
+}
+
+/** Paginated, filtered accounts — key accounts first, then by score. */
+export async function getAccounts(q: AccountsQuery = {}): Promise<AccountsResult> {
+  const supabase = await getReadSupabase();
+  const page = Math.max(1, q.page ?? 1);
+  const pageSize = Math.min(500, Math.max(1, q.pageSize ?? 100));
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let query = supabase.from('accounts_view').select('*', { count: 'exact' });
+  if (q.keyOnly) query = query.eq('key_account', true);
+  if (q.bu) query = query.contains('bus', [q.bu]);
+  if (q.vertical) query = query.contains('verticals', [q.vertical]);
+  if (q.search?.trim()) query = query.ilike('account_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
+
+  query = query
+    .order('key_account', { ascending: false })
+    .order('key_account_score', { ascending: false, nullsFirst: false })
+    .order('project_count', { ascending: false })
+    .range(from, to);
+
+  const { data, error, count } = await query;
+  if (error) return { rows: [], total: 0 }; // view not created yet -> empty state
+  return { rows: (data ?? []) as AccountViewRow[], total: count ?? 0 };
+}
+
+export async function getPipelineRollup(): Promise<PipelineRollupRow[]> {
+  const supabase = await getReadSupabase();
+  const counts = new Map<string, PipelineRollupRow>();
+  const PAGE = 1000; // Supabase caps each response at 1000 rows — page through all.
+  for (let from = 0; from < 500_000; from += PAGE) {
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('bu, vertical, contact_status')
+      .range(from, from + PAGE - 1);
+    if (error) return from === 0 ? [] : Array.from(counts.values());
+    for (const r of (data ?? []) as { bu: string; vertical: string; contact_status: string }[]) {
+      const key = `${r.bu}|${r.vertical}|${r.contact_status}`;
+      const existing = counts.get(key);
+      if (existing) existing.count += 1;
+      else counts.set(key, { bu: r.bu, vertical: r.vertical, contact_status: r.contact_status, count: 1 });
+    }
+    if (!data || data.length < PAGE) break;
+  }
+  return Array.from(counts.values());
+}
+
+// ============================================================================
+// Priority + enrichment queue
+// ============================================================================
+
+/** Highest-priority records — the dashboard's "work this first" list. */
+export async function getTopPriorityLeads(limit = 10): Promise<RecordRow[]> {
+  const supabase = await getReadSupabase();
+  const { data, error } = await supabase
+    .from('canonical_projects')
+    .select(
+      'id,canonical_name,source_key,record_type,bu,vertical,ref_code,contact_status,country,capacity_mw,estimated_value,population_percentage,account_key,route,stage,priority_score,priority_band,priority_reasons,created_at'
+    )
+    .not('priority_score', 'is', null)
+    .order('priority_score', { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) return [];
+  return (data ?? []) as RecordRow[];
+}
+
+/** How many records sit in each priority band — the scoring rollup. */
+export interface DispositionRollup {
+  total: number;
+  /** Records carrying a priority band. */
+  scored: number;
+  /** Records carrying a materialized route. */
+  routed: number;
+  byBand: { band: string; count: number }[];
+  byLane: { route: string; stage: string; count: number }[];
+  /** Hours since the most recent routed_at — how stale the lanes are. */
+  routedHoursAgo: number | null;
+  /** Completeness tier A–E as delivered by the source, before enrichment. */
+  byTier: { tier: string; count: number }[];
+  /** Records a source gave no tier for. */
+  untiered: number;
+  /** True when the routing columns migration has not been applied. */
+  routingMissing: boolean;
+}
+
+/**
+ * Bands and lanes as they are WRITTEN on the records, in one scan.
+ *
+ * The routing page runs a live dry-run — it re-scores and re-routes everything
+ * in memory to answer "what would these rules do". The dashboard needs the
+ * opposite: what the lanes actually are right now, because that is what the
+ * team can filter and work. Reading the materialized columns also means the
+ * dashboard shows staleness honestly when the rules have moved on since the
+ * last materialize.
+ */
+export async function getDispositionRollup(): Promise<DispositionRollup> {
+  const supabase = await getReadSupabase();
+  const bands = new Map<string, number>();
+  const lanes = new Map<string, number>();
+  let total = 0;
+  let scored = 0;
+  let routed = 0;
+  let lastRoutedAt: string | null = null;
+  let routingMissing = false;
+
+  // The routing columns arrived in a later migration than the priority ones,
+  // so degrade to bands-only rather than showing an empty dashboard.
+  const tiers = new Map<string, number>();
+  let untiered = 0;
+  let columns = 'priority_band, route, stage, routed_at, source_completeness_tier';
+  for (let from = 0; from < 1_000_000; from += 1000) {
+    const { data, error } = await supabase.from('canonical_projects').select(columns).range(from, from + 999);
+    if (error) {
+      if (columns !== 'priority_band, source_completeness_tier' && /does not exist|schema cache|column/i.test(error.message)) {
+        routingMissing = true;
+        columns = 'priority_band, source_completeness_tier';
+        from -= 1000;
+        continue;
+      }
+      break;
+    }
+    for (const r of (data ?? []) as unknown as {
+      priority_band: string | null;
+      route?: string | null;
+      stage?: string | null;
+      routed_at?: string | null;
+      source_completeness_tier: string | null;
+    }[]) {
+      total += 1;
+      if (r.priority_band) {
+        scored += 1;
+        bands.set(r.priority_band, (bands.get(r.priority_band) ?? 0) + 1);
+      }
+      if (r.route) {
+        routed += 1;
+        const key = `${r.route}/${r.stage ?? '—'}`;
+        lanes.set(key, (lanes.get(key) ?? 0) + 1);
+      }
+      if (r.routed_at && (!lastRoutedAt || r.routed_at > lastRoutedAt)) lastRoutedAt = r.routed_at;
+      const tier = r.source_completeness_tier;
+      if (tier) tiers.set(tier, (tiers.get(tier) ?? 0) + 1);
+      else untiered += 1;
+    }
+    if (!data || data.length < 1000) break;
+  }
+
+  return {
+    total,
+    scored,
+    routed,
+    byBand: ['P1', 'P2', 'P3', 'P4'].map((band) => ({ band, count: bands.get(band) ?? 0 })),
+    byLane: Array.from(lanes.entries())
+      .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
+      .sort((a, b) => b.count - a.count),
+    routedHoursAgo: lastRoutedAt ? Math.round((Date.now() - new Date(lastRoutedAt).getTime()) / 3_600_000) : null,
+    byTier: ['A', 'B', 'C', 'D', 'E'].map((tier) => ({ tier, count: tiers.get(tier) ?? 0 })),
+    untiered,
+    routingMissing,
+  };
+}
+
+export async function getPriorityRollup(): Promise<{ band: string; count: number; scored: number; total: number }[]> {
+  const supabase = await getReadSupabase();
+  const counts = new Map<string, number>();
+  let total = 0;
+  let scored = 0;
+  for (let from = 0; from < 1_000_000; from += 1000) {
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('priority_band')
+      .range(from, from + 999);
+    if (error) break;
+    for (const r of (data ?? []) as { priority_band: string | null }[]) {
+      total += 1;
+      if (r.priority_band) {
+        scored += 1;
+        counts.set(r.priority_band, (counts.get(r.priority_band) ?? 0) + 1);
+      }
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return ['P1', 'P2', 'P3', 'P4'].map((band) => ({ band, count: counts.get(band) ?? 0, scored, total }));
+}
+
+/** A record queued for enrichment, with everything /api/enrich needs as input. */
+export interface EnrichQueueRow {
+  id: string;
+  canonical_name: string;
+  source_key: string;
+  record_type: string | null;
+  icp_code: string | null;
+  bu: string | null;
+  vertical: string | null;
+  company_name_raw: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  contact_status: string | null;
+  city: string | null;
+  state_province: string | null;
+  country: string | null;
+  estimated_value: number | null;
+  estimated_value_currency: string | null;
+  project_url: string | null;
+  description: string | null;
+  priority_score: number | null;
+  priority_band: string | null;
+  route: string | null;
+  stage: string | null;
+  enriched_at: string | null;
+}
+
+export interface EnrichQueueFilters {
+  bu?: string;
+  /**
+   * Bands the policy permits — the standing eligibility rule.
+   *
+   * Distinct from `band`, which is one caller narrowing within it. Both apply.
+   * Without this the only priority gate was `minPriority`, so a policy reading
+   * "P1 and P2 only" admitted every P3 record above the floor: 1,172 of them,
+   * 83% more records than the policy promised, each one billable.
+   */
+  bands?: string[];
+  /** Business units eligible (empty/absent = all). */
+  bus?: string[];
+  /** Verticals eligible (empty/absent = all). */
+  verticals?: string[];
+  /** Skip records worth less than this. Unpriced records are skipped too. */
+  minEstimatedValue?: number;
+  /** Skip records with no company name — Apollo has nothing to resolve. */
+  requireCompany?: boolean;
+  route?: string;
+  stage?: string;
+  band?: string;
+  recordTypes?: string[];
+  minPriority?: number;
+  /** Skip records enriched within this many days (0 = re-enrich anything). */
+  reenrichAfterDays?: number;
+  onlyMissingContact?: boolean;
+  /** Lifecycle statuses eligible to be claimed. Defaults to RAW + queued. */
+  statuses?: string[];
+  limit?: number;
+}
+
+/** Idle statuses — safe to claim without racing a worker or reviving a dead lead. */
+export const CLAIMABLE_STATUSES = ['RAW', 'PENDING_ENRICHMENT', 'ENRICHED'];
+
+const ENRICH_QUEUE_COLUMNS =
+  'id,canonical_name,source_key,record_type,icp_code,bu,vertical,company_name_raw,contact_name,contact_email,' +
+  'contact_phone,contact_status,city,state_province,country,estimated_value,estimated_value_currency,project_url,' +
+  'description,priority_score,priority_band,route,stage,enriched_at';
+
+function applyQueueFilters<
+  T extends {
+    eq: (c: string, v: unknown) => T;
+    in: (c: string, v: unknown[]) => T;
+    gte: (c: string, v: unknown) => T;
+    or: (f: string) => T;
+    not: (c: string, op: string, v: unknown) => T;
+  },
+>(query: T, f: EnrichQueueFilters): T {
+  let q = query;
+  if (f.bu) q = q.eq('bu', f.bu);
+  if (f.bus?.length) q = q.in('bu', f.bus);
+  if (f.verticals?.length) q = q.in('vertical', f.verticals);
+  // gte on a nullable column drops NULLs, which is the intent: a record with no
+  // value has not been shown to clear the bar.
+  if (f.minEstimatedValue) q = q.gte('estimated_value', f.minEstimatedValue);
+  if (f.requireCompany) q = q.not('company_name_raw', 'is', null);
+  if (f.route) q = q.eq('route', f.route);
+  if (f.stage) q = q.eq('stage', f.stage);
+  if (f.bands?.length) q = q.in('priority_band', f.bands);
+  if (f.band) q = q.eq('priority_band', f.band);
+  if (f.recordTypes?.length) q = q.in('record_type', f.recordTypes);
+  if (f.minPriority !== undefined) q = q.gte('priority_score', f.minPriority);
+  if (f.onlyMissingContact !== false) q = q.eq('contact_status', 'needs_enrichment');
+  // Only records that are genuinely idle. Excluding ENRICHING stops a second
+  // worker double-spending on a record already in flight; excluding the
+  // terminal statuses stops money going to leads nobody will ever work.
+  if (f.statuses?.length) q = q.in('status', f.statuses);
+  if (f.reenrichAfterDays && f.reenrichAfterDays > 0) {
+    const cutoff = new Date(Date.now() - f.reenrichAfterDays * 86_400_000).toISOString();
+    // never enriched, or last enriched before the cutoff
+    q = q.or(`enriched_at.is.null,enriched_at.lt.${cutoff}`);
+  }
+  return q;
+}
+
+/**
+ * The enrichment queue: records eligible under the policy, highest priority
+ * first. This is the exact selection the batch endpoint processes, so the
+ * control centre can show the queue before spending anything on it.
+ */
+export async function getEnrichmentQueue(
+  f: EnrichQueueFilters = {}
+): Promise<{ rows: EnrichQueueRow[]; total: number }> {
+  const supabase = await getReadSupabase();
+
+  const run = async (withStatus: boolean) => {
+    const columns = withStatus ? `${ENRICH_QUEUE_COLUMNS},status` : ENRICH_QUEUE_COLUMNS;
+    const base = supabase.from('canonical_projects').select(columns, { count: 'exact' });
+    const filters = withStatus ? { ...f, statuses: f.statuses ?? CLAIMABLE_STATUSES } : { ...f, statuses: undefined };
+    const query = applyQueueFilters(base as never, filters) as unknown as typeof base;
+    return query
+      .order('priority_score', { ascending: false, nullsFirst: false })
+      .limit(Math.min(500, Math.max(1, f.limit ?? 50)));
+  };
+
+  try {
+    // Prefer the lifecycle-aware query; fall back to the pre-lifecycle shape
+    // when that migration hasn't run, so the queue still works rather than
+    // silently reporting zero eligible records.
+    let { data, error, count } = await run(true);
+    if (isMissingColumn(error)) ({ data, error, count } = await run(false));
+    if (error) return { rows: [], total: 0 };
+    return { rows: (data ?? []) as unknown as EnrichQueueRow[], total: count ?? 0 };
+  } catch {
+    return { rows: [], total: 0 };
+  }
+}
+
+/** Past batch enrichment jobs, newest first — the run history. */
+export interface EnrichmentRunRow {
+  id: string;
+  filters: Record<string, unknown> | null;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  engines: Record<string, boolean> | null;
+  fields_added: number;
+  contacts_found: number;
+  error: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+}
+
+export async function getEnrichmentRuns(limit = 20): Promise<EnrichmentRunRow[]> {
+  const supabase = await getReadSupabase();
+  try {
+    const { data, error } = await supabase
+      .from('enrichment_runs')
+      .select(
+        'id,filters,requested,succeeded,failed,skipped,engines,fields_added,contacts_found,error,status,started_at,finished_at,duration_ms'
+      )
+      .order('started_at', { ascending: false })
+      .limit(limit);
+    if (error) return [];
+    return (data ?? []) as EnrichmentRunRow[];
+  } catch {
+    return [];
+  }
+}
+
+/** Records enriched in the last 24h — enforces the policy's daily cap. */
+/** Records enriched in the last N days — backs the daily and monthly rails. */
+export async function getEnrichedSinceCount(days: number): Promise<number> {
+  const supabase = await getReadSupabase();
+  try {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const { count, error } = await supabase
+      .from('canonical_projects')
+      .select('id', { count: 'exact', head: true })
+      .gte('enriched_at', since);
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function getEnrichedTodayCount(): Promise<number> {
+  const supabase = await getReadSupabase();
+  try {
+    const since = new Date(Date.now() - 86_400_000).toISOString();
+    const { count, error } = await supabase
+      .from('canonical_projects')
+      .select('id', { count: 'exact', head: true })
+      .gte('enriched_at', since);
+    if (error) return 0;
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}

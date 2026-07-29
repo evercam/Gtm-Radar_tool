@@ -1,0 +1,10 @@
+# Minimal Supabase CLI config. Regenerate the full file any time with
+# `supabase init` (it will not touch the migrations/ folder).
+project_id = "ldr_tool"
+
+[db]
+major_version = 15
+
+[db.migrations]
+# Apply migrations in filename (timestamp) order.
+schema_paths = []

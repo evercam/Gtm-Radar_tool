@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Source Hub — configuration questionnaire</title>
+<style>
+/* ------------------------------------------------------------------
+   Tokens. Defined once, redefined per theme — components never reach
+   into a media query directly, so the toggle and the OS preference
+   cannot disagree.
+   Red is sampled from the Evercam mark (#c1171e); neutrals carry a
+   slight warm bias toward it rather than being pure grey.
+------------------------------------------------------------------ */
+:root{
+  --bg:#faf9f8; --surface:#fff; --raised:#f4f2f0;
+  --line:#e3dedb; --line-strong:#cfc8c4;
+  --ink:#1a1715; --body:#3f3a37; --muted:#736c67; --subtle:#9a938e;
+  --brand:#c1171e; --brand-ink:#fff;
+  --warn:#8a5a00; --warn-bg:#fdf6e7; --warn-line:#e8d5a8;
+  --ok:#1c6b3f;
+  --radius:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#131110; --surface:#1b1918; --raised:#232020;
+    --line:#302c2b; --line-strong:#443e3d;
+    --ink:#f5f2f0; --body:#d4cecb; --muted:#9a938e; --subtle:#6f6763;
+    --brand:#e84b52; --brand-ink:#1b1918;
+    --warn:#e8c06a; --warn-bg:#2a2318; --warn-line:#4a3d20;
+    --ok:#5fbf87;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131110; --surface:#1b1918; --raised:#232020;
+  --line:#302c2b; --line-strong:#443e3d;
+  --ink:#f5f2f0; --body:#d4cecb; --muted:#9a938e; --subtle:#6f6763;
+  --brand:#e84b52; --brand-ink:#1b1918;
+  --warn:#e8c06a; --warn-bg:#2a2318; --warn-line:#4a3d20;
+  --ok:#5fbf87;
+}
+:root[data-theme="light"]{
+  --bg:#faf9f8; --surface:#fff; --raised:#f4f2f0;
+  --line:#e3dedb; --line-strong:#cfc8c4;
+  --ink:#1a1715; --body:#3f3a37; --muted:#736c67; --subtle:#9a938e;
+  --brand:#c1171e; --brand-ink:#fff;
+  --warn:#8a5a00; --warn-bg:#fdf6e7; --warn-line:#e8d5a8;
+  --ok:#1c6b3f;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--body);
+  font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:760px;margin:0 auto;padding:48px 20px 160px}
+
+header h1{margin:0;font-size:26px;line-height:1.2;color:var(--ink);letter-spacing:-.015em;text-wrap:balance}
+header p{margin:10px 0 0;max-width:62ch;color:var(--muted);font-size:14px}
+
+/* Sections are numbered because they genuinely are a sequence: you
+   cannot give someone a territory before naming them. */
+section{margin-top:40px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+.head{display:flex;gap:12px;align-items:baseline;padding:18px 20px 0}
+.num{flex:none;width:22px;height:22px;border-radius:999px;background:var(--brand);color:var(--brand-ink);
+     font-size:11px;font-weight:700;display:grid;place-items:center}
+.head h2{margin:0;font-size:16px;color:var(--ink);letter-spacing:-.01em}
+.head p{margin:4px 0 0;font-size:13px;color:var(--muted);max-width:58ch}
+.body{padding:16px 20px 20px}
+
+.grid{display:flex;flex-wrap:wrap;gap:8px}
+.opt{position:relative}
+.opt input{position:absolute;opacity:0;width:0;height:0}
+.opt span{display:block;cursor:pointer;padding:9px 14px;border:1px solid var(--line-strong);border-radius:999px;
+          font-size:13px;font-weight:500;background:var(--surface);color:var(--body);user-select:none}
+.opt input:checked+span{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+.opt input:focus-visible+span{outline:2px solid var(--brand);outline-offset:2px}
+
+label.field{display:block;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+input[type=text],input[type=email],input[type=number],select{
+  margin-top:5px;width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;
+  background:var(--surface);color:var(--ink);font:inherit;font-size:14px}
+input:focus-visible,select:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+
+.note{margin-top:12px;font-size:12px;color:var(--subtle);max-width:62ch}
+.warn{margin-top:12px;padding:10px 12px;border:1px solid var(--warn-line);background:var(--warn-bg);
+      color:var(--warn);border-radius:8px;font-size:12.5px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+th{text-align:left;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);
+   font-weight:700;padding:0 8px 6px 0;white-space:nowrap}
+td{padding:4px 8px 4px 0;vertical-align:top}
+td input,td select{margin-top:0}
+tbody tr+tr td{padding-top:8px}
+
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line-strong);
+       background:var(--surface);color:var(--ink);padding:8px 14px;font-size:13px;font-weight:500}
+button:hover{background:var(--raised)}
+button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
+button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+.share{display:flex;align-items:center;gap:10px;padding:6px 0}
+.share .name{flex:1;font-size:13px;color:var(--body)}
+.share input{width:76px;margin-top:0}
+.bar{height:5px;border-radius:3px;background:var(--brand);opacity:.85;min-width:2px}
+
+footer{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);
+       padding:12px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+footer .sum{flex:1;min-width:220px;font-size:12.5px;color:var(--muted)}
+pre{margin:14px 0 0;padding:14px;background:var(--raised);border:1px solid var(--line);border-radius:8px;
+    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--body);
+    overflow-x:auto;max-height:340px}
+details summary{cursor:pointer;font-size:13px;color:var(--muted);margin-top:14px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Source Hub — who gets which leads</h1>
+  <p>
+    Answer these and download a configuration file. An admin uploads it in
+    <strong>Settings → Configuration</strong>, reviews what it would change, and applies it.
+    Nothing changes until they confirm.
+  </p>
+  <p style="margin-top:8px">
+    This covers territories, the team, vertical specialisation and daily capacity. It does
+    <em>not</em> touch scoring, enrichment, source schedules or sales/marketing routing —
+    those are left exactly as they are.
+  </p>
+</header>
+
+<!-- 1 ---------------------------------------------------------------->
+<section>
+  <div class="head">
+    <span class="num">1</span>
+    <div>
+      <h2>Which territories are you selling into?</h2>
+      <p>Each one becomes a rule. Leads outside every selected territory stay in the unassigned pool.</p>
+    </div>
+  </div>
+  <div class="body">
+    <div class="grid" id="bus"></div>
+    <p class="note">
+      Stored as slugs — <code>usa</code>, <code>ireland</code> — not as the codes you see on screen
+      (US, IE). The file uses the slugs, so the rules actually match.
+    </p>
+  </div>
+</section>
+
+<!-- 2 ---------------------------------------------------------------->
+<section>
+  <div class="head">
+    <span class="num">2</span>
+    <div>
+      <h2>Who receives leads?</h2>
+      <p>
+        No account or invitation needed — a name is enough for someone to own a lead. An email
+        also lets the Apollo export put their name on the contact.
+      </p>
+    </div>
+  </div>
+  <div class="body">
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Email</th><th>Role</th><th>Territory</th><th>Per&nbsp;day</th><th></th></tr>
+        </thead>
+        <tbody id="people"></tbody>
+      </table>
+    </div>
+    <button type="button" id="addPerson" style="margin-top:12px">Add someone</button>
+    <p class="note">
+      <strong>Per day</strong> is a hard ceiling: once someone hits it, assignment skips them until
+      tomorrow. The team&rsquo;s ceilings added together are the most leads that can be handed out in a
+      day, whatever the lead mix says.
+    </p>
+  </div>
+</section>
+
+<!-- 3 ---------------------------------------------------------------->
+<section>
+  <div class="head">
+    <span class="num">3</span>
+    <div>
+      <h2>Does anyone specialise?</h2>
+      <p>Leave someone blank and they can receive any vertical. That is usually what you want to start with.</p>
+    </div>
+  </div>
+  <div class="body">
+    <div id="specialists"></div>
+    <div class="warn">
+      A specialisation is a <strong>hard</strong> limit, not a preference: a lead outside someone&rsquo;s
+      verticals is never assigned to them. If every person is specialised, anything outside those
+      verticals goes unassigned indefinitely.
+    </div>
+  </div>
+</section>
+
+<!-- 4 ---------------------------------------------------------------->
+<section>
+  <div class="head">
+    <span class="num">4</span>
+    <div>
+      <h2>What should a day&rsquo;s leads look like?</h2>
+      <p>Assigning strictly by score sounds fair and is not — whichever vertical scores highest takes the whole day.</p>
+    </div>
+  </div>
+  <div class="body">
+    <div class="grid" style="margin-bottom:16px">
+      <label class="opt"><input type="radio" name="mode" value="priority" checked><span>Best score first</span></label>
+      <label class="opt"><input type="radio" name="mode" value="mix"><span>Hold a mix</span></label>
+    </div>
+
+    <div id="mixPanel" hidden>
+      <label class="field" for="dimension">Mix by</label>
+      <select id="dimension" style="max-width:220px">
+        <option value="vertical">Vertical</option>
+        <option value="region">Region</option>
+        <option value="source">Source</option>
+        <option value="band">Priority band</option>
+      </select>
+
+      <div id="shares" style="margin-top:16px"></div>
+
+      <label class="opt" style="display:inline-block;margin-top:14px">
+        <input type="checkbox" id="fillRemainder" checked><span>Fill any leftover capacity by score</span>
+      </label>
+      <p class="note" id="shareNote"></p>
+    </div>
+
+    <div style="margin-top:18px">
+      <label class="field" for="dailyCap">Daily cap across the whole team (optional)</label>
+      <input type="number" id="dailyCap" min="0" max="10000" placeholder="no cap" style="max-width:200px">
+      <p class="note">
+        A safety limit on top of each person&rsquo;s ceiling. Useful the first week, when you want to see
+        what assignment does before it does it a thousand times.
+      </p>
+    </div>
+  </div>
+</section>
+
+<details>
+  <summary>Show the file this will produce</summary>
+  <pre id="preview"></pre>
+</details>
+
+</div>
+
+<footer>
+  <div class="sum" id="summary"></div>
+  <button type="button" id="reset">Start over</button>
+  <button type="button" class="primary" id="download">Download configuration</button>
+</footer>
+
+<script>
+// Vocabulary mirrors src/lib/semantics.ts. If those lists change, this file
+// has to change with them — a value that is not in the database's vocabulary
+// is valid JSON that matches no lead, which reads as "assignment is broken".
+const BUS = [
+  ['usa','USA'], ['uk','UK'], ['ireland','Ireland'], ['apac','APAC'], ['export','Export'],
+];
+const VERTICALS = [
+  'data_center','semiconductor','battery','solar','wind','nuclear','hydro','bioenergy',
+  'power','pharma','pipeline','coal','oil_gas','mining','steel','cement','chemicals',
+  'procurement','construction','market_intel','capital_markets',
+];
+const ROLES = ['bdr','sdr','ae','marketing','sales_manager'];
+const label = (s) => s.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
+
+const state = {
+  bus: [],
+  people: [],
+  mode: 'priority',
+  dimension: 'vertical',
+  shares: {},
+  fillRemainder: true,
+  dailyCap: '',
+};
+
+const $ = (id) => document.getElementById(id);
+
+/* ---------- 1 · territories ---------- */
+$('bus').innerHTML = BUS.map(([slug,name]) =>
+  `<label class="opt"><input type="checkbox" value="${slug}"><span>${name}</span></label>`).join('');
+$('bus').addEventListener('change', () => {
+  state.bus = [...$('bus').querySelectorAll('input:checked')].map(i => i.value);
+  render();
+});
+
+/* ---------- 2 · people ---------- */
+function personRow(p, i) {
+  const tr = document.createElement('tr');
+  const territory = ['<option value="">Any</option>']
+    .concat(BUS.map(([s,n]) => `<option value="${s}"${p.bu===s?' selected':''}>${n}</option>`)).join('');
+  const roles = ROLES.map(r => `<option value="${r}"${p.role===r?' selected':''}>${r.toUpperCase()}</option>`).join('');
+  tr.innerHTML =
+    `<td><input type="text" value="${p.name||''}" data-f="name" placeholder="Jose Sanchez"></td>` +
+    `<td><input type="email" value="${p.email||''}" data-f="email" placeholder="jose@evercam.io"></td>` +
+    `<td><select data-f="role">${roles}</select></td>` +
+    `<td><select data-f="bu">${territory}</select></td>` +
+    `<td><input type="number" value="${p.quota}" data-f="quota" min="0" max="1000" style="width:76px"></td>` +
+    `<td><button type="button" data-remove="${i}" aria-label="Remove">&times;</button></td>`;
+  tr.querySelectorAll('[data-f]').forEach(el => el.addEventListener('input', () => {
+    const f = el.dataset.f;
+    state.people[i][f] = f === 'quota' ? Number(el.value) : el.value;
+    render();
+  }));
+  tr.querySelector('[data-remove]').addEventListener('click', () => {
+    state.people.splice(i,1); renderPeople(); render();
+  });
+  return tr;
+}
+function renderPeople() {
+  const tb = $('people'); tb.innerHTML = '';
+  state.people.forEach((p,i) => tb.appendChild(personRow(p,i)));
+}
+$('addPerson').addEventListener('click', () => {
+  state.people.push({ name:'', email:'', role:'bdr', bu:'', quota:50, verticals:[] });
+  renderPeople(); render();
+});
+
+/* ---------- 3 · specialisation ---------- */
+function renderSpecialists() {
+  const host = $('specialists');
+  const named = state.people.filter(p => p.name.trim());
+  if (named.length === 0) {
+    host.innerHTML = '<p class="note" style="margin-top:0">Add someone in step 2 first.</p>';
+    return;
+  }
+  host.innerHTML = named.map((p) => {
+    const i = state.people.indexOf(p);
+    const chips = VERTICALS.map(v =>
+      `<label class="opt"><input type="checkbox" data-p="${i}" value="${v}"` +
+      `${p.verticals.includes(v)?' checked':''}><span>${label(v)}</span></label>`).join('');
+    return `<div style="margin-bottom:18px">
+      <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--ink)">${p.name}</p>
+      <div class="grid">${chips}</div></div>`;
+  }).join('');
+  host.querySelectorAll('input[data-p]').forEach(el => el.addEventListener('change', () => {
+    const p = state.people[Number(el.dataset.p)];
+    p.verticals = el.checked
+      ? [...p.verticals, el.value]
+      : p.verticals.filter(v => v !== el.value);
+    render();
+  }));
+}
+
+/* ---------- 4 · mix ---------- */
+document.querySelectorAll('input[name=mode]').forEach(el => el.addEventListener('change', () => {
+  state.mode = el.value; render();
+}));
+$('dimension').addEventListener('change', () => { state.dimension = $('dimension').value; state.shares = {}; render(); });
+$('fillRemainder').addEventListener('change', () => { state.fillRemainder = $('fillRemainder').checked; render(); });
+$('dailyCap').addEventListener('input', () => { state.dailyCap = $('dailyCap').value; render(); });
+
+function shareBuckets() {
+  if (state.dimension === 'vertical') {
+    // Only what someone actually covers — offering all 21 makes a form nobody finishes.
+    const covered = new Set(state.people.flatMap(p => p.verticals));
+    return covered.size ? [...covered] : ['data_center','semiconductor','battery','power'];
+  }
+  if (state.dimension === 'region') return state.bus.length ? state.bus : BUS.map(b => b[0]);
+  if (state.dimension === 'band') return ['P1','P2','P3','P4'];
+  return ['ted','find-a-tender','sam-gov','world-bank'];
+}
+function renderShares() {
+  const host = $('shares');
+  const buckets = shareBuckets();
+  host.innerHTML = buckets.map(b => {
+    const v = state.shares[b] ?? 0;
+    return `<div class="share">
+      <span class="name">${label(b)}</span>
+      <div class="bar" style="width:${Math.max(2, v*1.6)}px"></div>
+      <input type="number" min="0" max="100" value="${v}" data-b="${b}"> <span style="color:var(--subtle)">%</span>
+    </div>`;
+  }).join('');
+  host.querySelectorAll('input[data-b]').forEach(el => el.addEventListener('input', () => {
+    state.shares[el.dataset.b] = Number(el.value) || 0;
+    render();
+  }));
+
+  const total = buckets.reduce((s,b) => s + (state.shares[b] ?? 0), 0);
+  const note = $('shareNote');
+  if (total === 100) note.textContent = 'Shares total 100%.';
+  else if (total < 100 && state.fillRemainder)
+    note.textContent = `Shares total ${total}%. The remaining ${100-total}% goes to whatever scores highest.`;
+  else if (total < 100)
+    note.textContent = `Shares total ${total}% and leftover capacity is switched off — ${100-total}% of the day goes unused.`;
+  else
+    note.textContent = `Shares total ${total}%. Over 100% is rejected on upload.`;
+}
+
+/* ---------- the file ---------- */
+function build() {
+  const people = state.people.filter(p => p.name.trim());
+
+  const roster = people.map(p => ({
+    name: p.name.trim(),
+    email: p.email.trim() || null,
+    role: p.role,
+    bu: p.bu ? [p.bu] : [],
+    verticals: p.verticals,
+    regions: [],
+    preferred_verticals: [],
+    daily_lead_quota: Number(p.quota) || 50,
+    is_active: true,
+  }));
+
+  // One rule per territory, ordered so the most specific runs first. Rules
+  // target a ROLE rather than a person: someone leaving should not silently
+  // stop leads being assigned.
+  const assignment = state.bus.map((bu, i) => ({
+    id: `territory_${bu}`,
+    name: `${BUS.find(b => b[0]===bu)[1]} leads`,
+    priority: i + 1,
+    enabled: true,
+    conditions: { bu: [bu] },
+    toRole: 'bdr',
+    toUserId: null,
+  }));
+
+  const config = { assignment, roster };
+
+  if (state.mode === 'mix') {
+    config.allocation = {
+      mode: 'mix',
+      dimension: state.dimension,
+      shares: Object.fromEntries(Object.entries(state.shares).filter(([,v]) => v > 0)),
+      fillRemainder: state.fillRemainder,
+      dailyCap: state.dailyCap ? Number(state.dailyCap) : null,
+    };
+  } else {
+    config.allocation = {
+      mode: 'priority', dimension: state.dimension, shares: {},
+      fillRemainder: true, dailyCap: state.dailyCap ? Number(state.dailyCap) : null,
+    };
+  }
+
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    generatedBy: 'questionnaire',
+    // Kept so this form can be reopened pre-filled instead of re-answered.
+    answers: JSON.parse(JSON.stringify(state)),
+    config,
+  };
+}
+
+function render() {
+  renderSpecialists();
+  $('mixPanel').hidden = state.mode !== 'mix';
+  if (state.mode === 'mix') renderShares();
+
+  const bundle = build();
+  $('preview').textContent = JSON.stringify(bundle, null, 2);
+
+  const people = bundle.config.roster.length;
+  const capacity = bundle.config.roster.reduce((s,p) => s + p.daily_lead_quota, 0);
+  const bits = [
+    `${state.bus.length} territor${state.bus.length===1?'y':'ies'}`,
+    `${people} ${people===1?'person':'people'}`,
+    `${capacity} leads/day`,
+  ];
+  $('summary').textContent = bits.join(' · ') +
+    (people === 0 || state.bus.length === 0 ? ' — incomplete' : '');
+  $('download').disabled = people === 0 || state.bus.length === 0;
+}
+
+$('download').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(build(), null, 2)], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `source-hub-config-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$('reset').addEventListener('click', () => {
+  if (!confirm('Clear every answer?')) return;
+  state.bus = []; state.people = []; state.mode = 'priority';
+  state.shares = {}; state.dailyCap = '';
+  $('bus').querySelectorAll('input').forEach(i => i.checked = false);
+  document.querySelector('input[name=mode][value=priority]').checked = true;
+  $('dailyCap').value = '';
+  renderPeople(); render();
+});
+
+state.people.push({ name:'', email:'', role:'bdr', bu:'', quota:50, verticals:[] });
+renderPeople();
+render();
+</script>
+</body>
+</html>

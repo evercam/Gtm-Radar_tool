@@ -1,0 +1,4 @@
+-- Intentionally empty.
+--
+-- canonical_projects is populated by ingestion (adapters + GEM upload), not by
+-- seed data. The single-table model has no lookup/reference tables to seed.

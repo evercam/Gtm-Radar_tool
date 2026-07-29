@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+/* Tailwind v4 keys `dark:` off prefers-color-scheme by default. The app needs a
+   user-controlled toggle, so the variant is redefined against a `.dark` class
+   that the inline script in the shell sets before first paint. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   Design tokens — the single source of truth for colour, elevation and shape.
+
+   Semantic tokens (priority bands, business units, record types, completeness
+   tiers) live here rather than being re-declared per component: they were
+   previously duplicated across SourceSearch, records/page, lib/format and
+   lib/priority, which meant a band could render rose in one table and amber in
+   another. Use `var(--color-*)` or the Tailwind utility the token generates.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --background: #f5f5f5;
+  --surface: #ffffff;
+  --surface-raised: #fafafa;
+  --border: #dcddde;
+  --border-strong: #c4c4c4;
+
+  /* text — four steps, matching the reference's density */
+  --foreground: #1a1a1a;
+  --body: #636466;
+  --muted: #a7a9ac;
+  --subtle: #c4c4c4;
+
+  /* brand */
+  --brand: #c1171e;
+  --brand-hover: #a41217;
+  --brand-contrast: #ffffff;
+
+  /* status */
+  --success: #34d399;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+
+  /* elevation — the reference leans on borders, not shadow */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 4px 16px rgb(0 0 0 / 0.08);
+  --shadow-overlay: 0 24px 64px rgb(0 0 0 / 0.28);
+
+  /* shape */
+  --radius-card: 16px;
+  --radius-control: 8px;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #121214;
+  --surface: #1a1a1d;
+  --surface-raised: #202024;
+  --border: #2e2e33;
+  --border-strong: #43434a;
+
+  --foreground: #f5f5f5;
+  --body: #b4b6ba;
+  --muted: #8a8d93;
+  --subtle: #63666c;
+
+  /* lifted so the red keeps contrast on a dark surface */
+  --brand: #e8394f;
+  --brand-hover: #f2596c;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-card-hover: 0 4px 16px rgb(0 0 0 / 0.6);
+  --shadow-overlay: 0 24px 64px rgb(0 0 0 / 0.7);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border-base: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-foreground: var(--foreground);
+  --color-body: var(--body);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-contrast: var(--brand-contrast);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --radius-card: 16px;
+  --radius-control: 8px;
+  --shadow-card: var(--shadow-card);
+  --shadow-card-hover: var(--shadow-card-hover);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* --------------------------------------------------------------------------
+   Motion
+
+   Every transition here is short enough to feel immediate (120–260ms) and is
+   fully disabled under prefers-reduced-motion — the reduced variant cuts to
+   the end state rather than easing to it.
+   -------------------------------------------------------------------------- */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.animate-fade-in { animation: fade-in 160ms ease-out both; }
+.animate-rise-in { animation: rise-in 200ms ease-out both; }
+.animate-slide-in-right { animation: slide-in-right 240ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--border) 25%,
+    var(--surface-raised) 37%,
+    var(--border) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .skeleton {
+    background: var(--border);
+  }
+}

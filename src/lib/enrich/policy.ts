@@ -1,0 +1,248 @@
+import { isDeliverableWebhook } from '@/lib/enrich/webhookTarget';
+
+/**
+ * Enrichment policy — the admin-editable parameters that govern WHO gets
+ * enriched, HOW MUCH gets spent, and WHICH engines run. Stored as a single
+ * `enrichment_policy` row and edited on /control/enrichment, in the same
+ * shape-with-defaults pattern as the routing and scoring policies.
+ *
+ * Enrichment costs money on every record (Claude + Apollo credits), so the
+ * defaults here are deliberately conservative: a small batch, the strongest
+ * records first, and no re-enriching anything touched in the last month.
+ */
+
+export interface EnrichmentPolicy {
+  /** Engines allowed to run. Turning one off never fails a batch — it degrades. */
+  engines: {
+    claude: boolean;
+    apollo: boolean;
+    /** GLEIF is keyless and free — corporate hierarchy lookup. */
+    gleif: boolean;
+  };
+  /** Default records per batch in the control centre. */
+  batchSize: number;
+  /** Hard ceiling a single batch may never exceed, whatever the UI asks for. */
+  maxBatchSize: number;
+  /** How many records are enriched in parallel. Keep low to respect rate limits. */
+  concurrency: number;
+  /** Records scoring below this are never auto-enriched. */
+  minPriorityScore: number;
+  /** Bands eligible for enrichment (empty = all). */
+  bands: string[];
+  /** Record types worth resolving an account for (empty = all). */
+  recordTypes: string[];
+  /** Business units eligible for enrichment (empty = all). */
+  bus: string[];
+  /** Verticals eligible for enrichment (empty = all). */
+  verticals: string[];
+  /**
+   * Skip records below this value. Records with no value at all are skipped
+   * too when this is above zero — an unpriced record cannot be shown to clear
+   * the bar, and guessing in its favour is how budget leaks.
+   */
+  minEstimatedValue: number;
+  /**
+   * Skip records with no company name. Apollo resolves contacts from a company;
+   * without one the call is spent to return nothing.
+   */
+  requireCompany: boolean;
+  /** Skip a record enriched more recently than this many days ago. */
+  reenrichAfterDays: number;
+  /** Safety rail: most records the batch endpoint will process in 24h. */
+  dailyCap: number;
+  /** Safety rail over 30 days. 0 disables it. Applied alongside dailyCap. */
+  monthlyCap: number;
+  /** Apollo contacts requested per account. */
+  contactsPerAccount: number;
+  /**
+   * Apollo seniority filter. Narrower means fewer, more senior contacts per
+   * credit spent; empty means Apollo returns whoever it has.
+   */
+  contactSeniorities: string[];
+  /**
+   * Job titles to target when the source's enrichment profile has none of its
+   * own. A profile's titles always win — they are tuned to that source.
+   */
+  fallbackTitles: string[];
+  /**
+   * Ask Apollo to reveal direct dials and mobiles. Off by default: this costs
+   * 8 Apollo credits per number against 1 for a work email, and needs a public
+   * HTTPS webhook for Apollo to deliver to.
+   */
+  revealPhoneNumbers: boolean;
+  /** Where Apollo delivers revealed numbers. Must be public HTTPS. */
+  phoneWebhookUrl: string;
+  /** Most reveals per run. Each is 8 credits, so this is a spend rail, not a batch size. */
+  maxPhoneRevealsPerRun: number;
+  /**
+   * Go back for the roles a first pass missed — a narrow Apollo search per
+   * missing role, then Claude for whatever Apollo still cannot supply.
+   *
+   * Costs more per account than a single call, deliberately: a list missing
+   * its economic buyer costs a BDR a week of calling people who cannot sign.
+   */
+  fillCommittee: boolean;
+  /** Which list-quality standard to fill to. */
+  committeeSize: 'enterprise' | 'mid_market';
+  /** Contacts to request per missing role. */
+  contactsPerRole: number;
+  /**
+   * What each lane needs before a lead can leave enrichment — the narrowest
+   * gate in the pipeline. `any` accepts whichever channel validates.
+   */
+  channelRules: Record<string, 'phone' | 'email' | 'both' | 'any' | 'none'>;
+  /** Only enrich records that still have no contact. */
+  onlyMissingContact: boolean;
+  /**
+   * Generate a Claude call-prep brief once a record is enriched. Separate from
+   * `engines.claude` so the briefs can be turned off — they are the expensive
+   * part — while Claude still resolves accounts.
+   */
+  generateCallPrep: boolean;
+  /** Contacts pushed to Apollo per daily export run. Apollo caps a batch at 100. */
+  apolloBatchSize: number;
+}
+
+export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
+  engines: { claude: true, apollo: true, gleif: true },
+  batchSize: 10,
+  maxBatchSize: 100,
+  concurrency: 3,
+  minPriorityScore: 35,
+  bands: ['P1', 'P2'],
+  recordTypes: ['project', 'tender', 'permit', 'account', 'filing'],
+  bus: [],
+  verticals: [],
+  minEstimatedValue: 0,
+  requireCompany: true,
+  reenrichAfterDays: 30,
+  dailyCap: 500,
+  monthlyCap: 10000,
+  contactsPerAccount: 5,
+  contactSeniorities: ['owner', 'founder', 'c_suite', 'partner', 'vp', 'head', 'director', 'manager'],
+  fallbackTitles: [],
+  revealPhoneNumbers: false,
+  phoneWebhookUrl: '',
+  maxPhoneRevealsPerRun: 10,
+  fillCommittee: true,
+  committeeSize: 'enterprise',
+  contactsPerRole: 3,
+  channelRules: { act_now: 'phone', qualify: 'phone', nurture: 'email' },
+  onlyMissingContact: true,
+  generateCallPrep: true,
+  apolloBatchSize: 100,
+};
+
+/** Coerce a saved (possibly partial or stale) policy onto the defaults. */
+export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
+  const d = DEFAULT_ENRICHMENT_POLICY;
+  if (!input || typeof input !== 'object') return d;
+  const p = input as Partial<EnrichmentPolicy>;
+
+  const num = (v: unknown, fallback: number, min: number, max: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, Math.round(v))) : fallback;
+  const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
+  const strList = (v: unknown, fallback: string[]) =>
+    Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : fallback;
+
+  const maxBatchSize = num(p.maxBatchSize, d.maxBatchSize, 1, 1000);
+  return {
+    engines: {
+      claude: bool(p.engines?.claude, d.engines.claude),
+      apollo: bool(p.engines?.apollo, d.engines.apollo),
+      gleif: bool(p.engines?.gleif, d.engines.gleif),
+    },
+    batchSize: num(p.batchSize, d.batchSize, 1, maxBatchSize),
+    maxBatchSize,
+    concurrency: num(p.concurrency, d.concurrency, 1, 10),
+    minPriorityScore: num(p.minPriorityScore, d.minPriorityScore, 0, 100),
+    bands: strList(p.bands, d.bands),
+    recordTypes: strList(p.recordTypes, d.recordTypes),
+    bus: strList(p.bus, d.bus),
+    verticals: strList(p.verticals, d.verticals),
+    minEstimatedValue: num(p.minEstimatedValue, d.minEstimatedValue, 0, 1_000_000_000_000),
+    requireCompany: bool(p.requireCompany, d.requireCompany),
+    reenrichAfterDays: num(p.reenrichAfterDays, d.reenrichAfterDays, 0, 3650),
+    dailyCap: num(p.dailyCap, d.dailyCap, 0, 100_000),
+    monthlyCap: num(p.monthlyCap, d.monthlyCap, 0, 3_000_000),
+    contactsPerAccount: num(p.contactsPerAccount, d.contactsPerAccount, 1, 25),
+    contactSeniorities: strList(p.contactSeniorities, d.contactSeniorities),
+    fallbackTitles: strList(p.fallbackTitles, d.fallbackTitles),
+    revealPhoneNumbers: bool(p.revealPhoneNumbers, d.revealPhoneNumbers),
+    phoneWebhookUrl: typeof p.phoneWebhookUrl === 'string' ? p.phoneWebhookUrl.trim() : d.phoneWebhookUrl,
+    maxPhoneRevealsPerRun: num(p.maxPhoneRevealsPerRun, d.maxPhoneRevealsPerRun, 0, 500),
+    fillCommittee: bool(p.fillCommittee, d.fillCommittee),
+    committeeSize: p.committeeSize === 'mid_market' ? 'mid_market' : d.committeeSize,
+    contactsPerRole: num(p.contactsPerRole, d.contactsPerRole, 1, 10),
+    channelRules: (() => {
+      const valid = ['phone', 'email', 'both', 'any', 'none'];
+      const out = { ...d.channelRules };
+      if (p.channelRules && typeof p.channelRules === 'object') {
+        for (const [lane, ch] of Object.entries(p.channelRules)) {
+          if (valid.includes(ch as string)) out[lane] = ch as EnrichmentPolicy['channelRules'][string];
+        }
+      }
+      return out;
+    })(),
+    onlyMissingContact: bool(p.onlyMissingContact, d.onlyMissingContact),
+    generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
+    apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),
+  };
+}
+
+/** Validation for the admin editor — stricter than merge, with a reason. */
+export function validateEnrichmentPolicy(
+  input: unknown
+): { ok: true; policy: EnrichmentPolicy } | { ok: false; error: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    return { ok: false, error: 'Policy must be an object.' };
+  const p = input as Partial<EnrichmentPolicy>;
+
+  if (p.engines && !p.engines.claude && !p.engines.apollo) {
+    return { ok: false, error: 'At least one of the Claude or Apollo engines must stay enabled.' };
+  }
+  if (p.batchSize !== undefined && p.maxBatchSize !== undefined && p.batchSize > p.maxBatchSize) {
+    return { ok: false, error: 'batchSize cannot exceed maxBatchSize.' };
+  }
+  for (const k of ['batchSize', 'maxBatchSize', 'concurrency', 'contactsPerAccount'] as const) {
+    if (p[k] !== undefined && (typeof p[k] !== 'number' || (p[k] as number) < 1)) {
+      return { ok: false, error: `${k} must be a number ≥ 1.` };
+    }
+  }
+  for (const k of ['minPriorityScore', 'reenrichAfterDays', 'dailyCap', 'monthlyCap', 'minEstimatedValue'] as const) {
+    if (p[k] !== undefined && (typeof p[k] !== 'number' || (p[k] as number) < 0)) {
+      return { ok: false, error: `${k} must be a number ≥ 0.` };
+    }
+  }
+  if (p.bands !== undefined) {
+    const valid = ['P1', 'P2', 'P3', 'P4'];
+    if (!Array.isArray(p.bands) || !p.bands.every((b) => valid.includes(b as string))) {
+      return { ok: false, error: 'bands must be a subset of P1, P2, P3, P4.' };
+    }
+  }
+  if (p.bands !== undefined && p.bands.length === 0) {
+    return { ok: false, error: 'At least one priority band must stay eligible, or nothing is ever enriched.' };
+  }
+  if (p.recordTypes !== undefined && Array.isArray(p.recordTypes) && p.recordTypes.length === 0) {
+    return { ok: false, error: 'At least one record type must stay eligible, or nothing is ever enriched.' };
+  }
+  if (p.dailyCap !== undefined && p.monthlyCap !== undefined && p.monthlyCap > 0 && p.dailyCap > p.monthlyCap) {
+    return { ok: false, error: 'dailyCap cannot exceed monthlyCap — the monthly rail would never be reachable.' };
+  }
+  // Turning reveal on without somewhere to deliver spends credits on numbers
+  // that can never arrive.
+  if (p.revealPhoneNumbers && !isDeliverableWebhook(p.phoneWebhookUrl)) {
+    return {
+      ok: false,
+      error:
+        'Phone reveal needs a public HTTPS webhook URL Apollo can reach — Apollo delivers numbers asynchronously and cannot call localhost.',
+    };
+  }
+  if (p.contactSeniorities !== undefined) {
+    const valid = ['owner', 'founder', 'c_suite', 'partner', 'vp', 'head', 'director', 'manager', 'senior', 'entry', 'intern'];
+    if (!Array.isArray(p.contactSeniorities) || !p.contactSeniorities.every((x) => valid.includes(x as string))) {
+      return { ok: false, error: `contactSeniorities must be a subset of: ${valid.join(', ')}.` };
+    }
+  }
+  return { ok: true, policy: mergeEnrichmentPolicy(input) };
+}
