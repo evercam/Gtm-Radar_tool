@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search, Play, CalendarClock, History, ChevronDown, Sparkles } from 'lucide-react';
+import { Search, Play, CalendarClock, History, ChevronDown, Sparkles, Bot } from 'lucide-react';
 import type { SourceConfig } from '@/lib/sources/config';
 import type { IngestionRun } from '@/lib/sources/runs';
 import { Badge, Button, StatusDot, Label, controlClass } from '@/components/ui';
@@ -10,6 +10,7 @@ import Toggle from '@/components/ui/Toggle';
 import { useToast } from '@/components/ui/Toast';
 import SourceSearch from '@/components/SourceSearch';
 import SchedulePicker from '@/components/control/SchedulePicker';
+import CollectorButton from '@/components/control/CollectorButton';
 import { buildCron, describeCron, parseCron, untilNextRun, type ScheduleParts } from '@/lib/cron';
 
 /** Records per API call. Publishers cap this — 100 is the common ceiling. */
@@ -58,7 +59,7 @@ function describeQuery(params: Record<string, unknown>): string {
   return parts.length ? parts.join(' · ') : 'no filters — pulls the adapter default';
 }
 
-type Panel = 'search' | 'schedule' | 'enrich' | 'history' | null;
+type Panel = 'search' | 'schedule' | 'enrich' | 'history' | 'collect' | null;
 
 /**
  * One source, end to end: query it, save that query as the schedule, and see
@@ -78,6 +79,7 @@ export default function SourceHubRow({
   keyless,
   canIngest,
   runs,
+  hasCollector = false,
 }: {
   config: SourceConfig;
   name: string;
@@ -88,6 +90,8 @@ export default function SourceHubRow({
   keyless: boolean;
   canIngest: boolean;
   runs: IngestionRun[];
+  /** True when a browser-based collector exists for this source. */
+  hasCollector?: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -239,6 +243,13 @@ export default function SourceHubRow({
           <History size={12} strokeWidth={2.2} />
           {runs.length}
         </Button>
+        {hasCollector ? (
+          <Button size="sm" variant="primary" onClick={() => toggle('collect')} className="flex items-center gap-1.5">
+            <Bot size={12} strokeWidth={2.2} />
+            Collect
+            <ChevronDown size={11} className={panel === 'collect' ? 'rotate-180' : ''} />
+          </Button>
+        ) : null}
         {canIngest ? (
           <Button size="sm" variant="primary" onClick={runNow} disabled={busy || !enabled} className="flex items-center gap-1.5">
             <Play size={11} strokeWidth={2.4} />
@@ -246,6 +257,12 @@ export default function SourceHubRow({
           </Button>
         ) : null}
       </div>
+
+      {panel === 'collect' ? (
+        <div className="border-border-base bg-surface-raised border-t px-5 py-4">
+          <CollectorButton slug={slug} label={name} />
+        </div>
+      ) : null}
 
       {panel === 'search' ? (
         <div className="border-border-base bg-surface-raised animate-rise-in border-t px-5 py-4">

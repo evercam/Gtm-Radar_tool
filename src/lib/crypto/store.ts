@@ -66,6 +66,13 @@ export const APP_SECRETS = {
     envVar: 'GOOGLE_CLIENT_SECRET',
     required: true,
   },
+  github_token: {
+    label: 'GitHub token',
+    description:
+      'Lets the Source Hub start the ConstructConnect collector. A browser cannot run in the deployment, so the work happens in GitHub Actions and this is what triggers it. Fine-grained token, this repository only, Actions: read and write',
+    envVar: 'GITHUB_TOKEN',
+    required: false,
+  },
   session_signing_key: {
     label: 'Session signing key',
     description:

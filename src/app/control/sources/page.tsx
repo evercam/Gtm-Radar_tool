@@ -76,6 +76,8 @@ export default async function SourceHubPage({ searchParams }: { searchParams: Pr
       config: configs[slug],
       cred: credStatuses[slug],
       runs: runsBySlug.get(slug) ?? [],
+      // Sources with no API key here, read by a browser running elsewhere.
+      hasCollector: slug === 'construct-connect',
     };
   });
 
@@ -226,6 +228,7 @@ export default async function SourceHubPage({ searchParams }: { searchParams: Pr
                   keyless={r.cred?.keyless ?? false}
                   canIngest={canIngest}
                   runs={r.runs}
+                  hasCollector={r.hasCollector}
                 />
               ))}
             </div>

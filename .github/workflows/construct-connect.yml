@@ -59,6 +59,7 @@ jobs:
           HUB_SECRET: ${{ secrets.HUB_SECRET }}
         run: |
           node collectors/construct-connect/browse.mjs \
+            --details=${{ inputs.details || '60' }} \
             ${{ inputs.dryRun && '--dry-run' || '' }}
 
       # Screenshots are the only way to see why a headless sign-in failed, and
