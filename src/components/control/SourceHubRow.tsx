@@ -91,6 +91,9 @@ export default function SourceHubRow({
 }) {
   const router = useRouter();
   const toast = useToast();
+  // Whether anything has ever been posted in for this source, rather than
+  // fetched by the adapter. Read from the runs already on the page.
+  const pushFed = runs.some((r) => (r.params as { via?: string } | undefined)?.via === 'push');
   const [panel, setPanel] = useState<Panel>(null);
   const [busy, setBusy] = useState(false);
   const [enabled, setEnabled] = useState(config.isEnabled);
@@ -197,6 +200,10 @@ export default function SourceHubRow({
               <Badge tone="neutral">keyless</Badge>
             ) : credentialed ? (
               <Badge tone="success">key set</Badge>
+            ) : pushFed ? (
+              // A source receiving pushed data has no key and does not need
+              // one. Showing "no key" here reads as broken when it is working.
+              <Badge tone="success">fed by collector</Badge>
             ) : (
               <Badge tone="warning">no key</Badge>
             )}

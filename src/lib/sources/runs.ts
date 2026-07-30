@@ -39,6 +39,8 @@ export interface IngestionRun {
   failed: number;
   error: string | null;
   errorKind: string | null;
+  /** How the run was fed. `via: 'push'` means a collector posted the data in. */
+  params: Record<string, unknown>;
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
@@ -59,6 +61,7 @@ function fromRow(r: Record<string, unknown>): IngestionRun {
     failed: (r.failed as number) ?? 0,
     error: (r.error as string) ?? null,
     errorKind: (r.error_kind as string) ?? null,
+    params: (r.params as Record<string, unknown>) ?? {},
     startedAt: r.started_at as string,
     finishedAt: (r.finished_at as string) ?? null,
     durationMs: (r.duration_ms as number) ?? null,

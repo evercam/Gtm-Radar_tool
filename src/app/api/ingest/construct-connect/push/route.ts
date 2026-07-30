@@ -137,12 +137,15 @@ export async function POST(request: NextRequest) {
 
   // Recorded like any other ingest so the Source Hub shows it alongside the
   // scheduled runs rather than the pushed data appearing from nowhere.
-  await service.from('ingestion_runs').insert({
+  const { error: runError } = await service.from('ingestion_runs').insert({
     slug: 'construct-connect',
     source_key: 'construct_connect',
     trigger: machine ? 'cron' : 'manual',
     params: { via: 'push', query: body.query ?? null },
-    status: 'succeeded',
+    // 'completed', not 'succeeded': the column has a CHECK constraint and the
+    // wrong value silently records nothing, so the data lands but the Source
+    // Hub shows no sign of it.
+    status: 'completed',
     fetched: body.docs.length,
     normalized: normalized.length,
     inserted,
@@ -155,7 +158,11 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    message: `${inserted} new, ${updated} updated${skipped.length ? `, ${skipped.length} skipped` : ''}.`,
+    // The records are already saved, so a failed run record is a reporting
+    // problem, not an ingest failure — say so rather than implying data loss.
+    message:
+      `${inserted} new, ${updated} updated${skipped.length ? `, ${skipped.length} skipped` : ''}.` +
+      (runError ? ` (Saved, but the run could not be logged: ${runError.message})` : ''),
     inserted,
     updated,
     skippedCount: skipped.length,
