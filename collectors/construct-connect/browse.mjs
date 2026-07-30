@@ -27,6 +27,14 @@ const AUTH_FILE = 'collectors/construct-connect/.auth.json';
 
 const DRY = process.argv.includes('--dry-run');
 const SHOW = process.argv.includes('--show');
+/** Skip the per-project pass and take only what the table shows. */
+const LIST_ONLY = process.argv.includes('--list-only');
+/**
+ * How many projects to open per search. Each one is a page load, so this is
+ * the difference between a two-minute run and an hour-long one — and a long
+ * run of rapid sequential loads is also the most bot-like thing here.
+ */
+const DETAIL_LIMIT = Number(process.argv.find((a) => a.startsWith('--details='))?.split('=')[1] ?? 60);
 
 const need = (k, required = true) => {
   const v = process.env[k];
@@ -139,9 +147,21 @@ async function main() {
     }
     console.log(`  ${rows.length} row(s) read`);
 
-    const docs = rows.map(toDoc).filter((d) => d.uniqueProjectId && d.title);
+    let docs = rows.map(toDoc).filter((d) => d.uniqueProjectId && d.title);
     console.log(`  ${docs.length} usable (a row needs both a project link and a name)`);
     if (docs.length === 0) continue;
+
+    // Opening a project makes the application fetch that project's own record,
+    // which is the complete one — description, value range, coordinates,
+    // contracting method, the fields the list view has no column for. The
+    // response is easy to recognise here because the project id is in it,
+    // which is exactly what made the search response hard to find.
+    if (!LIST_ONLY) {
+      docs = await addDetails(page, docs.slice(0, DETAIL_LIMIT)).then((filled) => [
+        ...filled,
+        ...docs.slice(DETAIL_LIMIT),
+      ]);
+    }
 
     if (DRY) {
       const file = `captured-${name.replace(/\W+/g, '-')}.json`;
@@ -163,6 +183,66 @@ async function main() {
   }
 
   await browser.close();
+}
+
+/**
+ * Opens each project and keeps the record the application fetches for it.
+ *
+ * Paced deliberately: a browser that opens sixty pages back to back is the
+ * least human thing in this script, and the run is not urgent.
+ */
+async function addDetails(page, docs) {
+  const out = [];
+  let hits = 0;
+
+  for (const [i, doc] of docs.entries()) {
+    /** Responses seen while this one project is open. */
+    const seen = [];
+    const listener = async (res) => {
+      const ct = res.headers()['content-type'] ?? '';
+      if (!/json/i.test(ct)) return;
+      // Only responses that mention this project, which rules out the
+      // analytics and configuration traffic that fires on every page.
+      if (!res.url().includes(doc.uniqueProjectId)) return;
+      try {
+        seen.push(await res.json());
+      } catch {
+        /* not parseable — nothing to merge */
+      }
+    };
+    page.on('response', listener);
+
+    try {
+      await page.goto(doc.projectUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+      await page.waitForTimeout(1200);
+    } catch {
+      /* a project that will not load is kept as the list row */
+    }
+    page.off('response', listener);
+
+    // The richest object among them: the project record has more fields than
+    // the permissions and preference payloads that also carry the id.
+    const best = seen
+      .map((b) => (b && typeof b === 'object' && !Array.isArray(b) ? b : null))
+      .filter(Boolean)
+      .sort((a, b) => Object.keys(b).length - Object.keys(a).length)[0];
+
+    if (best && Object.keys(best).length > 6) {
+      hits += 1;
+      // Detail wins on conflict, but the list row fills anything it lacks —
+      // neither view is a superset of the other.
+      out.push({ ...doc, ...best, uniqueProjectId: doc.uniqueProjectId, projectId: doc.projectId });
+    } else {
+      out.push(doc);
+    }
+
+    if ((i + 1) % 10 === 0) console.log(`    opened ${i + 1}/${docs.length} (${hits} with a full record)`);
+    await page.waitForTimeout(600 + Math.random() * 900);
+  }
+
+  console.log(`  ${hits}/${docs.length} project(s) returned a full record`);
+  return out;
 }
 
 /**
