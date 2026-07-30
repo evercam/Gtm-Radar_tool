@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": [
+    "cdg1"
+  ],
+  "crons": [
+    {
+      "path": "/api/cron?job=ingest",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron?job=daily",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
