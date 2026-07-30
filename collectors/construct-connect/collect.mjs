@@ -120,16 +120,26 @@ async function main() {
   const captured = [];
   /** Responses that held an array of objects — the candidates for the results feed. */
   const candidates = [];
+  /** Every response, JSON or not — written to MANIFEST.txt during discovery. */
+  const manifest = [];
   let seen = 0;
 
   page.on('response', async (res) => {
     const url = res.url();
-    // Discovery keeps everything that is JSON, judged by content type rather
-    // than by the shape of the URL. Filtering on the path missed the results
-    // outright: the search host is api.io.constructconnect.com/search/v1/...,
-    // which contains no '/api/', no 'json' and no 'graphql'.
-    const isJson = /json/i.test(res.headers()['content-type'] ?? '');
-    if (!DISCOVER && !/\/api\/|graphql|json/i.test(url)) return;
+    const ct = res.headers()['content-type'] ?? '';
+
+    // Every response, so the manifest shows what the browser actually asked
+    // for. Two runs went on guessing which URLs mattered; a full list answers
+    // that instead of inviting a third guess.
+    if (DISCOVER) {
+      manifest.push(`${String(res.status()).padEnd(4)} ${(ct.split(';')[0] || '-').padEnd(26)} ${url}`);
+    }
+
+    // Content type, not URL shape: the search host is
+    // api.io.constructconnect.com/search/v1/..., which contains no '/api/',
+    // no 'json' and no 'graphql', so filtering on the path dropped it.
+    const isJson = /json/i.test(ct);
+    if (!DISCOVER && !isJson && !/\/api\/|graphql/i.test(url)) return;
     if (DISCOVER && !isJson) return;
     let body;
     try {
@@ -193,10 +203,21 @@ async function main() {
     await page.waitForTimeout(8000);
 
     if (DISCOVER) {
-      console.log(`\n${seen} JSON response(s) written to ./discovery/`);
+      // Handing the browser over rather than guessing the URL a third time. A
+      // person clicking the search they want cannot be wrong about which one
+      // it is, and everything they trigger is recorded.
+      console.log('\n  ── over to you ────────────────────────────────────────');
+      console.log('  In the open browser, click the saved search you want and');
+      console.log('  let the results load. Scroll the list if it pages on scroll.');
+      console.log('  Recording everything. 3 minutes, or Ctrl+C when finished.');
+      await page.waitForTimeout(180_000).catch(() => {});
+
+      mkdirSync('discovery', { recursive: true });
+      writeFileSync('discovery/MANIFEST.txt', manifest.join('\n') + '\n');
+      console.log(`\n${manifest.length} response(s) listed in discovery/MANIFEST.txt`);
+      console.log(`${seen} of them were JSON and were saved in full.`);
       if (candidates.length === 0) {
-        console.log('None held an array of objects. The results may load on scroll —');
-        console.log('scroll the table in the open browser, then close it.');
+        console.log('\nNone held an array of objects — MANIFEST.txt will show why.');
       } else {
         // Field NAMES and shape only, never values: the responses hold the
         // vendor's project data, which should not have to leave the machine
@@ -218,7 +239,9 @@ async function main() {
         console.log('discovery/SUMMARY.txt holds the above - field names only, no project data.');
         console.log('That file is what finishes the mapping.');
       }
-      continue;
+      // One pass only. Discovery is driven by hand, so repeating it for each
+      // saved search would just be three more idle minutes each.
+      break;
     }
 
     if (captured.length === 0) {
