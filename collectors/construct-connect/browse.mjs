@@ -17,8 +17,28 @@
  * --show opens a visible browser, which is worth it the first time.
  */
 
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
+
+/**
+ * Fills in anything not already in the environment from .env.local.
+ *
+ * HUB_URL and HUB_SECRET are already there for the app, so asking for them a
+ * second time would only invite copying a secret around by hand — the thing
+ * most likely to end up pasted somewhere it should not be. Existing
+ * environment variables win, so CI (which has no .env.local) is unaffected.
+ */
+function loadEnvLocal() {
+  if (!existsSync('.env.local')) return;
+  for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const [, key, raw] = m;
+    if (process.env[key]) continue;
+    process.env[key] = raw.trim().replace(/^["']|["']$/g, '');
+  }
+}
+loadEnvLocal();
 
 const SEARCHES = ['Awarded Spec Next 90D V2', 'Data Centers USA', 'Priority 1 Spec 90D Awarded - 3M+'];
 
@@ -81,8 +101,14 @@ function money(text) {
 async function main() {
   const email = need('CC_EMAIL');
   const password = need('CC_PASSWORD');
-  const hubUrl = need('HUB_URL', !DRY);
-  const hubSecret = need('HUB_SECRET', !DRY);
+  // Falls back to the deployment this repo is linked to, so a local run needs
+  // no configuration beyond the ConstructConnect credentials.
+  const hubUrl = process.env.HUB_URL ?? 'https://evercam-raddar.vercel.app';
+  const hubSecret = process.env.HUB_SECRET ?? process.env.CRON_SECRET;
+  if (!DRY && !hubSecret) {
+    console.error('No HUB_SECRET or CRON_SECRET — add CRON_SECRET to .env.local, or use --dry-run.');
+    process.exit(1);
+  }
 
   const browser = await chromium.launch({
     headless: !SHOW,
