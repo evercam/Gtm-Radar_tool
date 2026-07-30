@@ -25,7 +25,7 @@ export interface RosterRow {
 }
 
 const RECEIVING_ROLES = ['bdr', 'sdr', 'ae', 'marketing', 'sales_manager'];
-const QUOTAS = [0, 10, 25, 50, 75, 100, 200];
+const QUOTAS = [0, 10, 25, 50, 75, 100, 200, 300, 500, 750, 1000];
 
 const roleLabel = (r: string) => ROLE_LABELS[r as Role] ?? titleize(r);
 

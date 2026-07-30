@@ -43,3 +43,6 @@ next-env.d.ts
 
 # GEM tracker data (local uploads, keep out of the repo)
 /data/gem/*.json
+
+.vercel
+.env*
