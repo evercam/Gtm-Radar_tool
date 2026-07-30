@@ -52,3 +52,4 @@ captured.json
 *.png
 !public/*.png
 !src/app/*.png
+captured-*.json
