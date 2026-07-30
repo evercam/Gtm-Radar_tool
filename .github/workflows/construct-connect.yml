@@ -1,0 +1,75 @@
+name: ConstructConnect collector
+
+# Runs the browser-based collector and posts what it finds to Source Hub.
+# It lives here rather than in the app because Chromium is ~300 MB and a Vercel
+# function may be 250 MB — there is no way to run a browser in the deployment.
+#
+# Required repository secrets:
+#   CC_EMAIL, CC_PASSWORD  the ConstructConnect account
+#   HUB_URL                https://evercam-raddar.vercel.app  (no trailing slash)
+#   HUB_SECRET             the same value as CRON_SECRET in Vercel
+
+on:
+  schedule:
+    # 06:30 UTC on weekdays — after the vendor's overnight update, before the
+    # working day. Source Hub's own daily pass runs at 06:00, so anything landing
+    # here is scored on the next one rather than sitting until tomorrow.
+    - cron: '30 6 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Capture to a file and post nothing'
+        type: boolean
+        default: false
+
+concurrency:
+  # One session at a time. Two runs signing in at once look far more like a
+  # bot than one, and they would fight over the saved session.
+  group: construct-connect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: npm install --no-save playwright && npx playwright install --with-deps chromium
+
+      # The session cookie survives between runs, so most runs skip the sign-in
+      # entirely — which is both faster and the part most likely to be blocked.
+      - name: Restore saved session
+        uses: actions/cache@v4
+        with:
+          path: collectors/construct-connect/.auth.json
+          key: cc-session-${{ github.run_id }}
+          restore-keys: cc-session-
+
+      - name: Collect
+        env:
+          CC_EMAIL: ${{ secrets.CC_EMAIL }}
+          CC_PASSWORD: ${{ secrets.CC_PASSWORD }}
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_SECRET: ${{ secrets.HUB_SECRET }}
+        run: |
+          node collectors/construct-connect/collect.mjs \
+            ${{ inputs.dryRun && '--dry-run' || '' }}
+
+      # Screenshots are the only way to see why a headless sign-in failed, and
+      # they are written only on failure.
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ github.run_id }}
+          path: |
+            *.png
+            captured.json
+          if-no-files-found: ignore
+          retention-days: 7

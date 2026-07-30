@@ -46,3 +46,9 @@ next-env.d.ts
 
 .vercel
 .env*
+collectors/**/.auth.json
+discovery/
+captured.json
+*.png
+!public/*.png
+!src/app/*.png
