@@ -112,6 +112,8 @@ async function main() {
 
   const page = await context.newPage();
   const captured = [];
+  /** Responses that held an array of objects — the candidates for the results feed. */
+  const candidates = [];
   let seen = 0;
 
   page.on('response', async (res) => {
@@ -130,7 +132,10 @@ async function main() {
       const name = `discovery/${String(seen).padStart(3, '0')}-${url.split('/').pop()?.slice(0, 40).replace(/[^\w.-]/g, '_')}.json`;
       writeFileSync(name, JSON.stringify({ url, body }, null, 2));
       const docs = findDocs(body);
-      if (docs) console.log(`  ${docs.length} document(s) at ${url.slice(0, 90)}`);
+      if (docs) {
+        console.log(`  ${docs.length} document(s) at ${url.slice(0, 90)}`);
+        candidates.push({ url, count: docs.length, topLevel: Object.keys(body), fields: Object.keys(docs[0]) });
+      }
       return;
     }
 
@@ -177,7 +182,30 @@ async function main() {
 
     if (DISCOVER) {
       console.log(`\n${seen} JSON response(s) written to ./discovery/`);
-      console.log('Find the file holding the project list, then set RESULTS_URL_MATCH and DOCS_PATH.');
+      if (candidates.length === 0) {
+        console.log('None held an array of objects. The results may load on scroll —');
+        console.log('scroll the table in the open browser, then close it.');
+      } else {
+        // Field NAMES and shape only, never values: the responses hold the
+        // vendor's project data, which should not have to leave the machine
+        // just to agree on a mapping.
+        const best = candidates.sort((a, b) => b.count - a.count)[0];
+        const summary = [
+          'ConstructConnect discovery summary',
+          '',
+          `endpoint : ${best.url}`,
+          `documents: ${best.count}`,
+          `wrapper  : ${best.topLevel.join(', ')}`,
+          '',
+          'document fields:',
+          ...best.fields.map((f) => `  ${f}`),
+        ].join('\n');
+        writeFileSync('discovery/SUMMARY.txt', summary + '\n');
+        console.log('\n' + summary);
+        console.log('\n---------------------------------------------');
+        console.log('discovery/SUMMARY.txt holds the above - field names only, no project data.');
+        console.log('That file is what finishes the mapping.');
+      }
       continue;
     }
 
