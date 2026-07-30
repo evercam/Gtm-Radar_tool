@@ -36,11 +36,17 @@ import { chromium } from 'playwright';
 
 /** Saved searches to run. Add as many as you like. */
 const SEARCHES = [
-  {
-    name: 'Awarded Spec Next 90D',
-    url: 'https://app.constructconnect.com/results?area=project&selectedContexts=documents&savedSearch=true&name=Awarded+Spec+Next+90D+V2&sort=startDate&sortDir=desc',
-  },
+  // Ids come from /api/agent/searchAPI/getElasticSavedSearches, captured during
+  // discovery. Driving by id rather than by name matters: a URL carrying only
+  // the name loads the app shell and runs nothing.
+  { name: 'Awarded Spec Next 90D V2', id: 'dc5351a5-ca97-4aea-bf39-3b708f8f9f3e' },
+  { name: 'Data Centers USA', id: 'a6cb7fc3-233b-4286-8160-cf8fb7d556a0' },
+  { name: 'Priority 1 Spec 90D Awarded - 3M+', id: '4b4e2400-92c1-4d52-bdbd-9d8d29708b93' },
 ];
+
+/** The results page for a saved search. */
+const searchUrl = (s) =>
+  `https://app.constructconnect.com/results?area=project&savedSearch=true&savedSearchId=${s.id}`;
 
 /**
  * Which response carries the results. Set this from the discovery run.
@@ -118,7 +124,13 @@ async function main() {
 
   page.on('response', async (res) => {
     const url = res.url();
-    if (!/\/api\/|graphql|json/i.test(url)) return;
+    // Discovery keeps everything that is JSON, judged by content type rather
+    // than by the shape of the URL. Filtering on the path missed the results
+    // outright: the search host is api.io.constructconnect.com/search/v1/...,
+    // which contains no '/api/', no 'json' and no 'graphql'.
+    const isJson = /json/i.test(res.headers()['content-type'] ?? '');
+    if (!DISCOVER && !/\/api\/|graphql|json/i.test(url)) return;
+    if (DISCOVER && !isJson) return;
     let body;
     try {
       body = await res.json();
@@ -174,11 +186,11 @@ async function main() {
   for (const search of SEARCHES) {
     console.log(`\n${search.name}`);
     captured.length = 0;
-    await page.goto(search.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.goto(searchUrl(search), { waitUntil: 'domcontentloaded', timeout: 60_000 });
     // The results arrive by XHR after the shell renders, so waiting for the
     // network to settle is what waiting for the data actually looks like.
     await page.waitForLoadState('networkidle', { timeout: 60_000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(8000);
 
     if (DISCOVER) {
       console.log(`\n${seen} JSON response(s) written to ./discovery/`);
