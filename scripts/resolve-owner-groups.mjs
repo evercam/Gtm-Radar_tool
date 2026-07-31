@@ -23,15 +23,14 @@
  *   - `--dry` prints the plan and writes nothing.
  */
 
-import pg from 'pg';
+import { connect } from './lib/pg-connect.mjs';
 
 // Shared with ingest and verify-owner-groups — see lib/keyaccount.ts on why
 // this must not be reimplemented here.
 const { ownerNameSlug } = await import('../src/lib/keyaccount.ts');
 
 const dry = process.argv.includes('--dry');
-const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-await c.connect();
+const c = await connect();
 
 const slugOf = ownerNameSlug;
 

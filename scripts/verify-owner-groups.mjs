@@ -13,13 +13,12 @@
  * an error anywhere — the list just quietly groups the wrong leads together.
  */
 
-import pg from 'pg';
+import { connect } from './lib/pg-connect.mjs';
 
 // The same slugifier ingest and the resolver use — see lib/keyaccount.ts.
 const { ownerNameSlug } = await import('../src/lib/keyaccount.ts');
 
-const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-await c.connect();
+const c = await connect();
 
 let passed = 0;
 let failed = 0;
