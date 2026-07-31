@@ -1,6 +1,8 @@
 import 'server-only';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
+import { SOURCE_SLUGS, KEYED_SLUGS } from '@/lib/sourceSlugs';
 import {
+  activeKeyId,
   decryptSecret,
   encryptSecret,
   isEncrypted,
@@ -12,12 +14,18 @@ import {
 /**
  * The one place platform-wide secrets are read and written.
  *
- * Precedence on read:
- *   1. the encrypted `app_secrets` row  (what Settings writes)
- *   2. the legacy environment variable  (so an existing install keeps working)
- *
- * Env vars are a migration path, not a destination: `importEnvSecrets` copies
+ * The encrypted `app_secrets` row is the ONLY source on read. Environment
+ * variables are a migration path, not a destination: `importEnvSecrets` copies
  * them into the encrypted table once, after which the variable can be deleted.
+ *
+ * They are deliberately no longer consulted when resolving a value. A silent
+ * env fallback means a key can be live in production without appearing in
+ * Settings, so rotating it from the UI looks like it worked and changes
+ * nothing — the stale variable keeps winning. Import is therefore explicit and
+ * one-way: `getSecretStatuses` still *detects* a value in the environment and
+ * reports `origin: 'env'` so Settings can offer the import, but nothing reads
+ * through to it.
+ *
  * Nothing here ever returns a secret to the browser — callers are server-side
  * adapters, and Settings only ever receives the `SecretStatus` shape.
  */
@@ -126,25 +134,23 @@ async function loadRows(): Promise<{ rows: Map<string, SecretRow>; tableMissing:
 }
 
 /**
- * Resolves one secret's plaintext for server-side use, database first then the
- * legacy env var. Returns null when neither has it.
+ * Resolves one secret's plaintext for server-side use from the encrypted
+ * store. Returns null when it is not stored, or when the stored ciphertext
+ * cannot be decrypted with any active key.
+ *
+ * An undecryptable row reads as absent rather than throwing: the caller's
+ * "not configured" path is a far better failure than a 500 on every request,
+ * and Settings reports the row as stale so it can be re-entered.
  */
 export async function readSecret(key: AppSecretKey): Promise<string | null> {
   const { rows } = await loadRows();
   const row = rows.get(key);
+  if (!row?.value_encrypted) return null;
 
-  if (row?.value_encrypted) {
-    // A value written before the encryption migration is stored raw; accept it
-    // so nothing breaks, and let the next save upgrade it.
-    if (!isEncrypted(row.value_encrypted)) return row.value_encrypted;
-    const plain = decryptSecret(row.value_encrypted);
-    if (plain) return plain;
-    // Undecryptable (wrong master key) — fall through to env rather than
-    // failing the request outright.
-  }
-
-  const env = process.env[APP_SECRETS[key].envVar];
-  return env && env.trim() ? env.trim() : null;
+  // A value written before the encryption migration is stored raw; accept it
+  // so nothing breaks, and let the next save upgrade it.
+  if (!isEncrypted(row.value_encrypted)) return row.value_encrypted;
+  return decryptSecret(row.value_encrypted) || null;
 }
 
 /** Encrypts and stores a secret. Pass an empty string to clear it. */
@@ -256,6 +262,118 @@ export async function importEnvSecrets(
     const res = await writeSecret(key, envValue.trim(), updatedBy);
     if (res.ok) imported.push(APP_SECRETS[key].label);
     else errors.push(`${APP_SECRETS[key].label}: ${res.message}`);
+  }
+
+  return { imported, skipped, errors };
+}
+
+/** Reads an env var, treating whitespace-only as absent. */
+function envValue(name?: string): string | null {
+  const raw = name ? process.env[name] : undefined;
+  return raw && raw.trim() ? raw.trim() : null;
+}
+
+/**
+ * One-time import of the four keyed adapters' credentials out of environment
+ * variables and into the encrypted `source_credentials` table.
+ *
+ * The sibling of `importEnvSecrets` for per-source keys. `adapters/credentials`
+ * no longer reads `process.env` at all, so this is the bridge an existing
+ * install crosses once: it reads the legacy variables named in `SOURCE_SLUGS`,
+ * encrypts the secret columns, and writes the row Settings would have written.
+ *
+ * A source that already stores an `api_key` is skipped, never overwritten. The
+ * database is authoritative, so a forgotten variable must not be able to
+ * clobber a key someone deliberately saved from the UI.
+ *
+ * Partial imports are allowed and reported: Barbour ABI needs a username and
+ * password alongside its key, and importing the key alone leaves a row that
+ * `getCredentialStatus` correctly reports as not configured. That is more
+ * useful than refusing, because the missing halves are then visible in
+ * Settings rather than hidden in a skipped-silently list.
+ */
+export async function importEnvSourceCredentials(): Promise<{
+  imported: string[];
+  skipped: string[];
+  errors: string[];
+}> {
+  const imported: string[] = [];
+  const skipped: string[] = [];
+  const errors: string[] = [];
+
+  if (!isSupabaseServiceConfigured()) {
+    return { imported, skipped, errors: ['Supabase service role is not configured.'] };
+  }
+  if (!isCryptoConfigured()) {
+    return { imported, skipped, errors: ['No encryption key available — refusing to store a credential in plaintext.'] };
+  }
+
+  const service = getServiceSupabase();
+
+  const configured = new Set<string>();
+  try {
+    const { data, error } = await service.from('source_credentials').select('source_key, api_key');
+    if (error) {
+      const hint = /does not exist|schema cache|relation/i.test(error.message)
+        ? ' Run the source_credentials migration first.'
+        : '';
+      return { imported, skipped, errors: [`${error.message}.${hint}`] };
+    }
+    for (const row of (data ?? []) as { source_key: string; api_key: string | null }[]) {
+      if (row.api_key?.trim()) configured.add(row.source_key);
+    }
+  } catch (err) {
+    return { imported, skipped, errors: [err instanceof Error ? err.message : String(err)] };
+  }
+
+  for (const slug of KEYED_SLUGS) {
+    const info = SOURCE_SLUGS[slug];
+
+    if (configured.has(info.sourceKey)) {
+      skipped.push(slug);
+      continue;
+    }
+
+    const apiKey = envValue(info.envApiKey);
+    const apiSecret = envValue(info.envApiSecret);
+    const username = envValue(info.envUsername);
+    const baseUrl = envValue(info.envBaseUrl);
+
+    // Nothing in the environment for this source — not an error, just absent.
+    if (!apiKey && !apiSecret && !username && !baseUrl) continue;
+
+    const payload: Record<string, unknown> = {
+      source_key: info.sourceKey,
+      updated_at: new Date().toISOString(),
+    };
+    if (apiKey) {
+      payload.api_key = encryptSecret(apiKey);
+      payload.api_key_last4 = apiKey.slice(-4);
+      payload.key_version = activeKeyId();
+    }
+    if (apiSecret) {
+      payload.api_secret = encryptSecret(apiSecret);
+      payload.api_secret_last4 = apiSecret.slice(-4);
+      payload.key_version = activeKeyId();
+    }
+    if (username) payload.username = username;
+    if (baseUrl) payload.base_url = baseUrl;
+
+    try {
+      const { error } = await service.from('source_credentials').upsert(payload, { onConflict: 'source_key' });
+      if (error) {
+        errors.push(`${slug}: ${error.message}`);
+        continue;
+      }
+    } catch (err) {
+      errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    const missing = info.needsUsername
+      ? [!apiKey ? 'key' : null, !username ? 'username' : null, !apiSecret ? 'password' : null].filter(Boolean)
+      : [!apiKey ? 'key' : null].filter(Boolean);
+    imported.push(missing.length ? `${slug} (still needs ${missing.join(' + ')})` : slug);
   }
 
   return { imported, skipped, errors };

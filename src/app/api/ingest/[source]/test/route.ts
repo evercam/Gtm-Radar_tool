@@ -21,13 +21,6 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   'planning-ie': 'planning_ie',
 };
 
-const ENV_HINT_BY_SLUG: Record<string, string> = {
-  'barbour-abi': 'BARBOUR_ABI_API_KEY / BARBOUR_ABI_BASE_URL',
-  glenigan: 'GLENIGAN_API_KEY / GLENIGAN_BASE_URL',
-  'construct-connect': 'CONSTRUCT_CONNECT_API_KEY / CONSTRUCT_CONNECT_BASE_URL',
-  'sam-gov': 'SAM_GOV_API_KEY / SAM_GOV_BASE_URL',
-};
-
 type TestResult = 'success' | 'auth_error' | 'network_error' | 'unexpected_shape';
 
 /** Records last_tested_at / last_test_result on source_credentials without touching api_key/base_url. */
@@ -90,12 +83,11 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
   }
 
   if (!(await adapter.isConfigured())) {
-    const envHint = ENV_HINT_BY_SLUG[source] ?? 'the source API key';
     return NextResponse.json(
       {
         ok: false,
         configured: false,
-        message: `Set an API key in /settings, or set ${envHint} in .env.local, to enable a connection test.`,
+        message: 'Add this source’s API key in /control/settings to enable a connection test.',
       },
       { status: 200 }
     );

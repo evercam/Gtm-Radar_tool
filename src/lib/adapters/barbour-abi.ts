@@ -17,7 +17,8 @@ import type { CriticalField } from '@/lib/supabase/types';
  * does NOT expose company or contact fields through this endpoint — those
  * columns are intentionally left null rather than guessed.
  *
- * Requires BARBOUR_ABI_USERNAME, BARBOUR_ABI_PASSWORD, BARBOUR_ABI_API_KEY.
+ * Requires a username, password and API key stored in `source_credentials`
+ * (Settings → API Keys).
  */
 
 const DEFAULT_BASE_URL = 'https://api.barbour-abi.com/v4';
@@ -65,16 +66,7 @@ let cachedToken: string | null = null;
 let cachedTokenExpiresAt = 0;
 
 async function getCredentials(override?: AdapterFetchParams['credentials']) {
-  const base = await resolveCredentials(
-    'barbour_abi',
-    'BARBOUR_ABI_API_KEY',
-    'BARBOUR_ABI_BASE_URL',
-    DEFAULT_BASE_URL,
-    {
-      usernameEnv: 'BARBOUR_ABI_USERNAME',
-      apiSecretEnv: 'BARBOUR_ABI_PASSWORD',
-    }
-  );
+  const base = await resolveCredentials('barbour_abi', DEFAULT_BASE_URL);
   if (!override) return base;
   return {
     apiKey: override.apiKey?.trim() || base.apiKey,
@@ -127,7 +119,7 @@ export const barbourAbiAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.username || !creds.apiSecret || !creds.baseUrl) {
       throw new Error(
-        'Barbour ABI adapter is not configured (set a username, password, and API key in /settings, or BARBOUR_ABI_USERNAME / BARBOUR_ABI_PASSWORD / BARBOUR_ABI_API_KEY in .env.local).'
+        'Barbour ABI adapter is not configured — add a username, password and API key in /control/settings.'
       );
     }
     const baseUrl = creds.baseUrl;

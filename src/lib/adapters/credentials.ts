@@ -25,62 +25,60 @@ interface SourceCredentialsRow {
   base_url: string | null;
 }
 
-export interface CredentialEnvFallback {
-  /** e.g. 'BARBOUR_ABI_USERNAME' — only Barbour ABI's two-step login needs this. */
-  usernameEnv?: string;
-  /** e.g. 'BARBOUR_ABI_PASSWORD'. */
-  apiSecretEnv?: string;
-}
-
 /**
- * Resolves an adapter's credentials with this precedence:
- *   1. the `source_credentials` row for this source_key (saved from /settings)
- *   2. env vars (BARBOUR_ABI_API_KEY / BARBOUR_ABI_BASE_URL, etc.)
+ * Resolves an adapter's credentials from the encrypted `source_credentials`
+ * row for this source_key — the one Settings writes.
  *
- * This lets a user configure keys from the UI without restarting the dev
- * server, while still working out-of-the-box for anyone who only set env
- * vars. Never throws — DB lookup failures silently fall back to env vars.
+ * The database is the only source. Environment variables were consulted as a
+ * fallback until they were removed deliberately: a silent fallback means a key
+ * can be live in production while Settings shows the source as unconfigured,
+ * so rotating it from the UI appears to work and changes nothing, because the
+ * stale variable keeps winning. `importEnvSourceCredentials` in
+ * `lib/crypto/store.ts` is the one-way bridge for an install upgrading from
+ * env vars; run `scripts/import-env-credentials.mjs` before deleting them.
+ *
+ * `baseUrl` still falls back — to the adapter's own `defaultBaseUrl` constant,
+ * not to the environment. Only an install pointing at a sandbox endpoint needs
+ * to override it, and that override belongs in the row alongside the key.
+ *
+ * Never throws. A DB failure resolves to no credentials, which each adapter
+ * already reports as "not configured" — a clear failure rather than a
+ * half-authenticated request against a live vendor API.
  */
 export async function resolveCredentials(
   sourceKey: string,
-  envApiKeyVar: string,
-  envBaseUrlVar: string,
-  defaultBaseUrl: string,
-  envFallback?: CredentialEnvFallback
+  defaultBaseUrl: string
 ): Promise<ResolvedCredentials> {
-  const envUsername = envFallback?.usernameEnv ? process.env[envFallback.usernameEnv] || null : null;
-  const envApiSecret = envFallback?.apiSecretEnv ? process.env[envFallback.apiSecretEnv] || null : null;
-
-  if (isSupabaseServiceConfigured()) {
-    try {
-      const supabase = getServiceSupabase();
-      const { data } = await supabase
-        .from('source_credentials')
-        .select('api_key, api_secret, username, base_url')
-        .eq('source_key', sourceKey)
-        .maybeSingle();
-
-      const row = data as SourceCredentialsRow | null;
-      if (row?.api_key || row?.username) {
-        return {
-          // Stored secrets are AES-256-GCM envelopes. `readStored` also passes
-          // through values written before encryption landed, so an existing
-          // install keeps working until its next save re-writes them.
-          apiKey: readStored(row.api_key) || process.env[envApiKeyVar] || null,
-          apiSecret: readStored(row.api_secret) || envApiSecret,
-          username: row.username || envUsername,
-          baseUrl: row.base_url || process.env[envBaseUrlVar] || defaultBaseUrl,
-        };
-      }
-    } catch {
-      // Fall through to env vars below — DB unavailability should never break the adapter.
-    }
-  }
-
-  return {
-    apiKey: process.env[envApiKeyVar] || null,
-    apiSecret: envApiSecret,
-    username: envUsername,
-    baseUrl: process.env[envBaseUrlVar] || defaultBaseUrl,
+  const unconfigured: ResolvedCredentials = {
+    apiKey: null,
+    apiSecret: null,
+    username: null,
+    baseUrl: defaultBaseUrl,
   };
+
+  if (!isSupabaseServiceConfigured()) return unconfigured;
+
+  try {
+    const supabase = getServiceSupabase();
+    const { data } = await supabase
+      .from('source_credentials')
+      .select('api_key, api_secret, username, base_url')
+      .eq('source_key', sourceKey)
+      .maybeSingle();
+
+    const row = data as SourceCredentialsRow | null;
+    if (!row) return unconfigured;
+
+    return {
+      // Stored secrets are AES-256-GCM envelopes. `readStored` also passes
+      // through values written before encryption landed, so an existing
+      // install keeps working until its next save re-writes them.
+      apiKey: readStored(row.api_key),
+      apiSecret: readStored(row.api_secret),
+      username: row.username,
+      baseUrl: row.base_url || defaultBaseUrl,
+    };
+  } catch {
+    return unconfigured;
+  }
 }

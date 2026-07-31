@@ -601,7 +601,7 @@ interface SearchResponse {
 
 interface CredentialStatus {
   configured: boolean;
-  origin: 'saved' | 'env' | 'none';
+  origin: 'saved' | 'none';
   keyless: boolean;
 }
 
@@ -867,7 +867,7 @@ export default function SourceSearch({
           ) : hasSavedCredentials ? (
             <div className="flex items-center gap-2 pb-1.5">
               <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
-                ● Using {saved?.origin === 'saved' ? 'saved' : 'env'} credentials
+                ● Using saved credentials
               </span>
             </div>
           ) : null}

@@ -19,7 +19,7 @@ import type { CriticalField } from '@/lib/supabase/types';
  * `source.RolesDetails[].Roles[].CompaniesInRole[].ContactsInCompanyInRole[]`
  * holds contact name/phone/title when present.
  *
- * Requires GLENIGAN_API_KEY.
+ * Requires an API key stored in `source_credentials` (Settings → API Keys).
  */
 
 const DEFAULT_BASE_URL = 'https://www.gleniganapi.com/glenigan';
@@ -137,7 +137,7 @@ function firstRolePhone(row: GleniganSource): string | null {
 }
 
 async function getCredentials(override?: AdapterFetchParams['credentials']) {
-  const base = await resolveCredentials('glenigan', 'GLENIGAN_API_KEY', 'GLENIGAN_BASE_URL', DEFAULT_BASE_URL);
+  const base = await resolveCredentials('glenigan', DEFAULT_BASE_URL);
   if (!override) return base;
   return {
     apiKey: override.apiKey?.trim() || base.apiKey,
@@ -159,7 +159,7 @@ export const gleniganAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.baseUrl) {
       throw new Error(
-        'Glenigan adapter is not configured (set an API key in /settings or GLENIGAN_API_KEY / GLENIGAN_BASE_URL in .env.local).'
+        'Glenigan adapter is not configured — add an API key in /control/settings.'
       );
     }
     const baseUrl = creds.baseUrl.replace(/\/$/, '');

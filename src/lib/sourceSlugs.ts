@@ -1,12 +1,11 @@
 /**
  * Single source of truth linking an adapter's URL slug (`barbour-abi`, used by
- * /api/search and /api/ingest) to its `source_registry.source_key`
- * (`barbour_abi`, used everywhere in the schema) and to the env vars its
- * credentials fall back to.
+ * /api/search and /api/ingest) to its `source_credentials.source_key`
+ * (`barbour_abi`, used everywhere in the schema).
  *
  * This used to be duplicated as an inline map in each route; keeping it here
  * means the search route, the ingest route and the credential-status endpoint
- * all agree on which sources need a key and where that key comes from.
+ * all agree on which sources need a key.
  */
 
 export interface SourceSlugInfo {
@@ -15,6 +14,14 @@ export interface SourceSlugInfo {
   keyless?: boolean;
   /** Needs username + password on top of the API key (Barbour ABI's login). */
   needsUsername?: boolean;
+
+  /**
+   * The legacy environment variables this source's credentials used to be read
+   * from. Nothing resolves through these any more — they exist solely so
+   * `importEnvSourceCredentials` can find the values on an upgrading install
+   * and encrypt them into the database once. Safe to delete an entry once no
+   * deployment still sets that variable.
+   */
   envApiKey?: string;
   envBaseUrl?: string;
   envUsername?: string;

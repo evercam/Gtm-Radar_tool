@@ -37,13 +37,6 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   gem: 'gem_energy_tracker',
 };
 
-const ENV_HINT_BY_SLUG: Record<string, string> = {
-  'barbour-abi': 'BARBOUR_ABI_API_KEY / BARBOUR_ABI_BASE_URL',
-  glenigan: 'GLENIGAN_API_KEY / GLENIGAN_BASE_URL',
-  'construct-connect': 'CONSTRUCT_CONNECT_API_KEY / CONSTRUCT_CONNECT_BASE_URL',
-  'sam-gov': 'SAM_GOV_API_KEY / SAM_GOV_BASE_URL',
-};
-
 /**
  * POST /api/ingest/[source]
  *
@@ -66,11 +59,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
   }
 
   if (!(await adapter.isConfigured())) {
-    const envHint = ENV_HINT_BY_SLUG[source] ?? 'the source API key';
     return NextResponse.json(
       {
         configured: false,
-        message: `Set an API key in /settings, or set ${envHint} in .env.local, to enable live ingestion`,
+        message: 'Add this source’s API key in /control/settings to enable live ingestion.',
       },
       { status: 200 }
     );

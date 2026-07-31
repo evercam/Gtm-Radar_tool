@@ -20,7 +20,8 @@ import type { CriticalField } from '@/lib/supabase/types';
  * `award.awardee` — documented SAM v2 fields the lean reference adapter did
  * not use — so contact + value populate when the notice carries them.
  *
- * Requires SAM_GOV_API_KEY. NOTE: SAM.gov requires postedFrom/postedTo and
+ * Requires an API key stored in `source_credentials` (Settings → API Keys).
+ * NOTE: SAM.gov requires postedFrom/postedTo and
  * rejects windows longer than ~1 year, so `since` is clamped to <=1 year back.
  */
 
@@ -78,7 +79,7 @@ function resolveNaics(sectors?: string[]): string {
 }
 
 async function getCredentials(override?: AdapterFetchParams['credentials']) {
-  const base = await resolveCredentials('sam_gov', 'SAM_GOV_API_KEY', 'SAM_GOV_BASE_URL', DEFAULT_BASE_URL);
+  const base = await resolveCredentials('sam_gov', DEFAULT_BASE_URL);
   if (!override) return base;
   return {
     apiKey: override.apiKey?.trim() || base.apiKey,
@@ -100,7 +101,7 @@ export const samGovAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.baseUrl) {
       throw new Error(
-        'SAM.gov adapter is not configured (set an API key in /settings or SAM_GOV_API_KEY / SAM_GOV_BASE_URL in .env.local). Get a free key at sam.gov.'
+        'SAM.gov adapter is not configured — add an API key in /control/settings. Get a free key at sam.gov.'
       );
     }
     const endpoint = creds.baseUrl;

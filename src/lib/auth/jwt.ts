@@ -68,6 +68,18 @@ let generating: Promise<string | null> | null = null;
  * own cookie, so the app is the right thing to choose it. 32 random bytes,
  * stored encrypted alongside every other secret. Rotating it is deleting it —
  * the next request makes a new one, and everyone signs in again.
+ *
+ * `SESSION_SIGNING_KEY` is read only when nothing is stored, and it is the one
+ * env var left in the secret path. That is deliberate and it is not a hole in
+ * the DB-only rule:
+ *
+ *   - It is not a vendor credential. Nothing is ever entered for it in
+ *     Settings, so it cannot produce the failure the rule exists to prevent —
+ *     a pasted key that appears to save while a stale variable keeps winning.
+ *     The stored value takes precedence here precisely so that cannot happen.
+ *   - Without it this module cannot be exercised without a live database, and
+ *     the tampering tests in scripts/test-jwt.mjs are the difference between a
+ *     forged cookie being rejected and it reading the whole lead book.
  */
 export async function jwtSecret(): Promise<string | null> {
   if (secretCache && Date.now() - secretCache.at < SECRET_TTL_MS) return secretCache.value;
@@ -75,6 +87,12 @@ export async function jwtSecret(): Promise<string | null> {
   const existing = await readSecret('session_signing_key');
   if (existing?.trim()) {
     secretCache = { value: existing.trim(), at: Date.now() };
+    return secretCache.value;
+  }
+
+  const fromEnv = process.env.SESSION_SIGNING_KEY;
+  if (fromEnv?.trim()) {
+    secretCache = { value: fromEnv.trim(), at: Date.now() };
     return secretCache.value;
   }
 

@@ -64,7 +64,9 @@ Verified against the live Supabase instance on 2026-07-26:
 5. **There is no authentication whatsoever.** No users, no roles, no session,
    no RLS. Every page is public. *(Still open — Phase 1.)*
 6. `canonical_projects` holds ~5,862 rows and is the only substantial table.
-7. `ANTHROPIC_API_KEY` is unset; Glenigan credentials resolve from env.
+7. ~~`ANTHROPIC_API_KEY` is unset; Glenigan credentials resolve from env.~~
+   *(Fixed — see Conflict 4. Every key now resolves only from the encrypted
+   store. Verify with `npm run verify:secrets`.)*
 
 ---
 
@@ -128,17 +130,50 @@ domain, and today Claude is what resolves it. Before inverting, decide how the
 account/domain gets resolved when Claude is off (Apollo org search by name?
 the record's existing `company_name_raw`?). **Ask.**
 
-### Conflict 4 — "No environment variables except the DB connection"
+### Conflict 4 — "No environment variables except the DB connection" — RESOLVED
 
-The app currently reads ~15 env vars (`ANTHROPIC_API_KEY`, `GLENIGAN_API_KEY`,
-`APOLLO_API_KEY`, per-source base URLs…), and `src/lib/adapters/credentials.ts`
-deliberately falls back DB → env.
+**Decision: honour the spec.** The database is now the only source for every
+API key. Resolved 2026-07-30.
 
-Honouring the spec means: DB becomes the **only** source, env fallback is
-removed from `credentials.ts` and `credentialStatus.ts`, and `apiConfig.ts` is
-reworked from "is the env var set" to "is the encrypted DB row present".
-Provide a one-time migration path that imports existing env values into the
-encrypted table, or the app goes dark on upgrade. Confirm before removing.
+What changed:
+
+- `adapters/credentials.ts` — `resolveCredentials(sourceKey, defaultBaseUrl)`
+  reads the `source_credentials` row and nothing else. The env-var name
+  parameters are gone from the signature and from all four adapter call sites.
+  `baseUrl` falls back to the adapter's own `defaultBaseUrl` constant, not env.
+- `adapters/credentialStatus.ts` — the `env` origin is gone; `origin` is now
+  `'saved' | 'none'`. It reads the same row `resolveCredentials` does, so the
+  two can no longer disagree and offer a source that then fails to authenticate.
+- `crypto/store.ts` — `readSecret` no longer falls through to `process.env`.
+  `getSecretStatuses` still *detects* env values and reports `origin: 'env'`,
+  which is what drives the import prompt in Settings.
+- `socrata-permits.ts` — was reading `process.env.SOCRATA_APP_TOKEN` directly,
+  bypassing the store even though `socrata_app_token` is a registered secret.
+
+The migration path (run it **before** deleting anything):
+
+```bash
+npm run import:secrets     # both stores: app_secrets + source_credentials
+npm run verify:secrets     # proves nothing resolves from env any more
+```
+
+`importEnvSourceCredentials` is the per-source half — the sibling of the
+existing `importEnvSecrets` — and the Settings "Import from env" button now runs
+both. A source that already stores a key is skipped, never overwritten, so a
+forgotten variable cannot clobber a rotated key.
+
+**Deliberate exceptions**, none of which are vendor credentials:
+
+| Variable | Why it cannot move |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `DATABASE_URL` | the DB connection itself |
+| `CRON_SECRET` | `/api/cron` must authenticate before any DB read |
+| `CREDENTIALS_MASTER_KEY[_PREVIOUS]` | the root of trust for the ciphertext |
+| `SESSION_SIGNING_KEY` | app-generated, never pasted; a stored key always wins, and without it `jwt.ts` cannot be tested without a live DB |
+| `GEM_DATA_DIR`, `ENRICH_MODEL`, `CALL_PREP_MODEL`, `APOLLO_BASE_URL` | non-secret operational config |
+
+There is no `apiConfig.ts` in this codebase — that part of the spec described a
+file that does not exist.
 
 ### Conflict 5 — Scoring engines overlap
 

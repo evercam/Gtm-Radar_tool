@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkPermission } from '@/lib/auth/session';
-import { writeSecret, importEnvSecrets, reEncryptAll, APP_SECRETS, type AppSecretKey } from '@/lib/crypto/store';
+import {
+  writeSecret,
+  importEnvSecrets,
+  importEnvSourceCredentials,
+  reEncryptAll,
+  APP_SECRETS,
+  type AppSecretKey,
+} from '@/lib/crypto/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,14 +32,25 @@ export async function POST(request: NextRequest) {
   const action = body.action ?? 'save';
 
   if (action === 'import') {
-    const res = await importEnvSecrets(auth.user.id);
+    // Two separate stores, both fed from environment variables on an upgrade:
+    // platform keys in `app_secrets` and the four keyed adapters in
+    // `source_credentials`. One button has to clear both, or a user who sees
+    // "imported" still has an adapter resolving from a variable it can no
+    // longer read.
+    const [secrets, sources] = await Promise.all([importEnvSecrets(auth.user.id), importEnvSourceCredentials()]);
+
+    const imported = [...secrets.imported, ...sources.imported];
+    const errors = [...secrets.errors, ...sources.errors];
+    const skipped = secrets.skipped.length + sources.skipped.length;
+
     const parts = [
-      res.imported.length ? `Imported ${res.imported.join(', ')}` : null,
-      res.skipped.length ? `${res.skipped.length} already stored` : null,
-      res.errors.length ? res.errors.join('; ') : null,
+      imported.length ? `Imported ${imported.join(', ')}` : null,
+      skipped ? `${skipped} already stored` : null,
+      errors.length ? errors.join('; ') : null,
     ].filter(Boolean);
+
     return NextResponse.json({
-      ok: res.errors.length === 0,
+      ok: errors.length === 0,
       message: parts.length ? parts.join(' · ') : 'Nothing to import — no keys found in the environment.',
     });
   }

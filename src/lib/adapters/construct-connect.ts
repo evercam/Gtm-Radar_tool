@@ -74,12 +74,7 @@ interface CcDoc {
 }
 
 async function getCredentials(override?: AdapterFetchParams['credentials']) {
-  const base = await resolveCredentials(
-    'construct_connect',
-    'CONSTRUCT_CONNECT_API_KEY',
-    'CONSTRUCT_CONNECT_BASE_URL',
-    DEFAULT_BASE_URL
-  );
+  const base = await resolveCredentials('construct_connect', DEFAULT_BASE_URL);
   if (!override) return base;
   return {
     apiKey: override.apiKey?.trim() || base.apiKey,
@@ -101,7 +96,7 @@ export const constructConnectAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.baseUrl) {
       throw new Error(
-        'ConstructConnect adapter is not configured (set an API key in /settings or CONSTRUCT_CONNECT_API_KEY / CONSTRUCT_CONNECT_BASE_URL in .env.local).'
+        'ConstructConnect adapter is not configured — add an API key in /control/settings.'
       );
     }
     const baseUrl = creds.baseUrl.replace(/\/$/, '');

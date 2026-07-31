@@ -215,12 +215,9 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
       const perPage = Math.min(pageSize, 200);
 
       // Free and self-serve, and it lifts NYC/Chicago off a shared-IP throttle
-      // onto 1,000 requests an hour. Read from the encrypted store first so it
-      // can be set in Settings like every other key, with env as a fallback.
-      const appToken =
-        params.credentials?.apiKey?.trim() ||
-        (await readSecret('socrata_app_token'))?.trim() ||
-        process.env.SOCRATA_APP_TOKEN?.trim();
+      // onto 1,000 requests an hour. Resolved from the encrypted store like
+      // every other key; absent is fine, it just means the shared-IP limit.
+      const appToken = params.credentials?.apiKey?.trim() || (await readSecret('socrata_app_token'))?.trim();
       const headers: Record<string, string> = {
         Accept: 'application/json',
         'User-Agent': 'EvercamSourceHub/1.0',

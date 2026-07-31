@@ -1,15 +1,20 @@
 import 'server-only';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
-import { SOURCE_SLUGS, type SourceSlugInfo } from '@/lib/sourceSlugs';
+import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 
 /**
  * Server-side answer to "can this source run without the user pasting a key?"
  *
- * The adapters already resolve credentials themselves (source_credentials row
- * first, then env vars — see adapters/credentials.ts). What was missing is a
+ * The adapters resolve credentials themselves from the encrypted
+ * `source_credentials` row (see adapters/credentials.ts). What was missing is a
  * way for the CALLER to know that before it demands a key: the Search route
  * used to reject any request with an empty apiKey field, so a perfectly
  * configured source still had to be re-typed on every search.
+ *
+ * This must agree with `resolveCredentials` about what "configured" means, so
+ * it reads the same row and consults nothing else. When it reported an `env`
+ * origin the two could disagree, and the UI would offer a source that then
+ * failed to authenticate.
  *
  * Reports only booleans — never a key, or any part of one.
  */
@@ -18,23 +23,12 @@ export interface CredentialStatus {
   /** Credentials resolve server-side, so the UI need not ask for a key. */
   configured: boolean;
   /** Where they came from — shown in the UI so it's clear what's in play. */
-  origin: 'saved' | 'env' | 'none';
+  origin: 'saved' | 'none';
   /** This source needs no credentials at all. */
   keyless: boolean;
 }
 
-function envConfigured(info: SourceSlugInfo): boolean {
-  const key = info.envApiKey ? process.env[info.envApiKey] : null;
-  if (!key?.trim()) return false;
-  if (info.needsUsername) {
-    const user = info.envUsername ? process.env[info.envUsername] : null;
-    const secret = info.envApiSecret ? process.env[info.envApiSecret] : null;
-    return Boolean(user?.trim() && secret?.trim());
-  }
-  return true;
-}
-
-/** Credential status for one slug. Never throws — a DB failure reads as env-only. */
+/** Credential status for one slug. Never throws — a DB failure reads as unconfigured. */
 export async function getCredentialStatus(slug: string): Promise<CredentialStatus> {
   const info = SOURCE_SLUGS[slug];
   if (!info) return { configured: false, origin: 'none', keyless: false };
@@ -54,13 +48,12 @@ export async function getCredentialStatus(slug: string): Promise<CredentialStatu
         if (complete) return { configured: true, origin: 'saved', keyless: false };
       }
     } catch {
-      // fall through to env
+      // A DB failure reads as unconfigured — see the note above on agreeing
+      // with resolveCredentials rather than guessing more optimistically.
     }
   }
 
-  return envConfigured(info)
-    ? { configured: true, origin: 'env', keyless: false }
-    : { configured: false, origin: 'none', keyless: false };
+  return { configured: false, origin: 'none', keyless: false };
 }
 
 /** Credential status for every known slug — used by the Search page on load. */
