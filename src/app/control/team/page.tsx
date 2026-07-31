@@ -289,27 +289,7 @@ export default async function TeamPage() {
             &ldquo;the export found nothing&rdquo; is almost never about the export. This checks every link, in order,
             and puts the fix next to the finding.
           </p>
-          <SetupChecklist
-            state={setupState}
-            rulesEditor={
-              <AssignmentEditor
-                initialRules={assignmentRules}
-                isDefault={isDefault}
-                unassigned={unassigned}
-                // The roster, not the app's user accounts — a rule must be able to
-                // target someone who has never logged in.
-                users={roster.rows.map((r) => ({
-                  id: r.id,
-                  name: r.name,
-                  role: r.role,
-                  bu: r.bu ?? [],
-                  verticals: r.verticals ?? [],
-                  regions: r.regions ?? [],
-                  isActive: r.is_active,
-                }))}
-              />
-            }
-          />
+          <SetupChecklist state={setupState} />
         </section>
       ) : null}
 
@@ -327,25 +307,55 @@ export default async function TeamPage() {
         </p>
       ) : null}
 
-      <div className="mb-8">
-        <AssignRunner team={team} isDefaultRules={isDefault} />
-      </div>
-
-      {canManageUsers ? (
-        <div className="mb-8">
-          <RosterEditor
-            rows={roster.rows.map((r) => ({ ...r, openLeads: byUser.get(r.id)?.openLeads ?? 0 }))}
-            tableMissing={roster.tableMissing}
-            apolloUsers={apolloUsers}
-          />
-        </div>
-      ) : null}
-
       {/*
-        The assignment-rules editor used to stand alone here, reached by a link
-        from the checklist step that judges it. It now renders inside that step —
-        one place that both reports the problem and fixes it.
+        Assignment, in one place and in use order: who can receive, what routes
+        where, then run it.
+
+        These were three separate surfaces, and two of them were duplicated in the
+        setup checklist — a second roster with its own Apollo picker, and a second
+        "Run assignment" button posting the same autoAssign. A lead is assigned
+        once, by one pass, so there is one place to set it up and one button to
+        fire it. The checklist reports whether it is working; it no longer carries
+        its own copies.
       */}
+      <section className="mb-10">
+        <h2 className="text-foreground text-lg font-semibold">Assignment</h2>
+        <p className="text-muted mb-4 mt-1 max-w-3xl text-sm">
+          A lead gets an owner once. Everyone on the roster receives by their own scope and quota — rules are only for
+          sending particular leads somewhere particular.
+        </p>
+
+        <div className="space-y-4">
+          {canManageUsers ? (
+            <RosterEditor
+              rows={roster.rows.map((r) => ({ ...r, openLeads: byUser.get(r.id)?.openLeads ?? 0 }))}
+              tableMissing={roster.tableMissing}
+              apolloUsers={apolloUsers}
+            />
+          ) : null}
+
+          {canManageUsers ? (
+            <AssignmentEditor
+              initialRules={assignmentRules}
+              isDefault={isDefault}
+              unassigned={unassigned}
+              // The roster, not the app's user accounts — a rule must be able to
+              // target someone who has never logged in.
+              users={roster.rows.map((r) => ({
+                id: r.id,
+                name: r.name,
+                role: r.role,
+                bu: r.bu ?? [],
+                verticals: r.verticals ?? [],
+                regions: r.regions ?? [],
+                isActive: r.is_active,
+              }))}
+            />
+          ) : null}
+
+          <AssignRunner team={team} isDefaultRules={isDefault} />
+        </div>
+      </section>
 
       <Card>
         <CardHeader

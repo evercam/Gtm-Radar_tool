@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Play, Plus } from 'lucide-react';
+import { Check, Play } from 'lucide-react';
 import { Badge, Button, Card, CardHeader, Label, controlClass } from '@/components/ui';
 
 type Channel = 'phone' | 'email' | 'both' | 'any' | 'none';
@@ -96,30 +96,10 @@ function whyRulesReachNobody(state: SetupState): string {
  * rather than a bare tick. Every step carries its own fix, because the whole
  * point is not having to find the right screen.
  */
-export default function SetupChecklist({
-  state,
-  rulesEditor,
-}: {
-  state: SetupState;
-  /**
-   * The assignment-rules editor, rendered inside the "a rule that reaches them"
-   * step. Passed in as a slot rather than imported here so the server page keeps
-   * assembling its data — the editor needs the full roster with BUs, verticals
-   * and regions, and threading all of that through SetupState would duplicate it
-   * for the sake of an import.
-   */
-  rulesEditor?: ReactNode;
-}) {
+export default function SetupChecklist({ state }: { state: SetupState }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<{ step: string; ok: boolean; text: string }[]>([]);
-  const [draft, setDraft] = useState({ name: '', email: '', role: 'bdr' });
-  // The Apollo directory. Loaded when this step is reached rather than with
-  // the page: it is a live API call, and most visits here are not adding
-  // anyone.
-  const [directory, setDirectory] = useState<{ name: string; email: string; onRoster: boolean }[] | null>(null);
-  const [loadingDir, setLoadingDir] = useState(false);
-  const [manual, setManual] = useState(false);
   const [rules, setRules] = useState(state.channelRules);
 
   const say = (step: string, ok: boolean, text: string) => setLog((l) => [{ step, ok, text }, ...l].slice(0, 8));
@@ -144,29 +124,6 @@ export default function SetupChecklist({
     }
   }
 
-  async function loadDirectory() {
-    setLoadingDir(true);
-    try {
-      const res = await fetch('/api/apollo/users');
-      const json = await res.json();
-      if (json.ok === false) {
-        say('roster', false, json.message ?? 'Could not read the Apollo directory.');
-        // Falling back to typing beats a dead end when Apollo is unreachable.
-        setManual(true);
-        setDirectory([]);
-      } else {
-        setDirectory(json.users);
-        if (json.users.length === 0) setManual(true);
-      }
-    } catch (e) {
-      say('roster', false, e instanceof Error ? e.message : String(e));
-      setManual(true);
-      setDirectory([]);
-    } finally {
-      setLoadingDir(false);
-    }
-  }
-
   const { counts, contacts } = state;
 
   // What each lane needs, against what the database can actually supply.
@@ -174,24 +131,22 @@ export default function SetupChecklist({
     ch === 'phone' ? contacts.withPhone : ch === 'email' ? contacts.withEmail : ch === 'any' ? contacts.withEmail + contacts.withPhone : ch === 'both' ? 0 : counts.total;
 
   const steps = [
+    // One step for the whole assignment concern, and it reports rather than
+    // controls. It used to be three — a roster, a rule, and a run — each with its
+    // own editor or button, duplicating the Assignment section further down the
+    // page. A lead is assigned once by one pass, so there is one place to set that
+    // up; this only says whether it is working.
     {
-      id: 'roster',
-      title: 'Someone to receive leads',
-      done: state.roster.length > 0,
+      id: 'assignment',
+      title: 'Leads reach a person',
+      done: state.roster.length > 0 && state.rulesCanReachSomeone,
       blocked: null as string | null,
       detail:
-        state.roster.length > 0
-          ? `${state.roster.length} on the roster: ${state.roster.map((r) => r.name).join(', ')}`
-          : 'Nobody can be assigned to. No invitation needed — a name is enough.',
-    },
-    {
-      id: 'rules',
-      title: 'A rule that reaches them',
-      done: state.rulesCanReachSomeone,
-      blocked: state.roster.length === 0 ? 'Add someone first' : null,
-      detail: state.rulesCanReachSomeone
-        ? describeReach(state)
-        : whyRulesReachNobody(state),
+        state.roster.length === 0
+          ? 'Nobody can be assigned to. Add someone under Assignment below — no invitation needed, a name is enough.'
+          : state.rulesCanReachSomeone
+            ? `${describeReach(state)} ${counts.assigned.toLocaleString()} assigned so far.`
+            : whyRulesReachNobody(state),
     },
     {
       id: 'channel',
@@ -206,13 +161,6 @@ export default function SetupChecklist({
       done: counts.enriched > 0,
       blocked: counts.queued === 0 ? 'Nothing selected yet — run prioritisation' : null,
       detail: `${counts.queued.toLocaleString()} queued · ${counts.enriched.toLocaleString()} enriched.`,
-    },
-    {
-      id: 'assign',
-      title: 'Give them an owner',
-      done: counts.assigned > 0,
-      blocked: counts.enriched === 0 ? 'Nothing has reached ENRICHED' : null,
-      detail: `${counts.assigned.toLocaleString()} assigned.`,
     },
     {
       id: 'export',
@@ -282,156 +230,6 @@ export default function SetupChecklist({
               </div>
               <p className="text-muted ml-7 mt-1 text-[11px]">{step.detail}</p>
 
-              {/* --- 1 · roster --- */}
-              {step.id === 'roster' ? (
-                <div className="ml-7 mt-3">
-                  {directory === null ? (
-                    <Button size="sm" disabled={loadingDir} onClick={loadDirectory}>
-                      {loadingDir ? 'Loading…' : 'Choose from Apollo'}
-                    </Button>
-                  ) : (
-                    <div className="flex flex-wrap items-end gap-3">
-                      {manual ? (
-                        <>
-                          <label className="block">
-                            <Label>Name</Label>
-                            <input
-                              value={draft.name}
-                              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                              placeholder="Jose Sanchez"
-                              className={`${controlClass} w-40`}
-                            />
-                          </label>
-                          <label className="block">
-                            <Label hint="must match their Apollo user exactly">Email</Label>
-                            <input
-                              value={draft.email}
-                              onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))}
-                              placeholder="jose.sanchez@evercam.io"
-                              className={`${controlClass} w-56`}
-                            />
-                          </label>
-                        </>
-                      ) : (
-                        <label className="block">
-                          <Label hint={`${directory.filter((u) => !u.onRoster).length} not yet on the roster`}>
-                            Who receives leads
-                          </Label>
-                          <select
-                            value={draft.email}
-                            onChange={(e) => {
-                              const picked = directory.find((u) => u.email === e.target.value);
-                              // Name and address travel together — picking one
-                              // and typing the other is how they drift apart.
-                              setDraft((d) => ({ ...d, email: picked?.email ?? '', name: picked?.name ?? '' }));
-                            }}
-                            className={`${controlClass} w-72`}
-                          >
-                            <option value="">Select someone…</option>
-                            {directory
-                              .filter((u) => !u.onRoster)
-                              .map((u) => (
-                                <option key={u.email} value={u.email}>
-                                  {u.name} — {u.email}
-                                </option>
-                              ))}
-                          </select>
-                        </label>
-                      )}
-
-                      <label className="block">
-                        <Label>Role</Label>
-                        <select
-                          value={draft.role}
-                          onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value }))}
-                          className={`${controlClass} w-32`}
-                        >
-                          {['bdr', 'sdr', 'ae', 'marketing'].map((r) => (
-                            <option key={r} value={r}>
-                              {r.toUpperCase()}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        disabled={busy !== null || !draft.name.trim()}
-                        onClick={async () => {
-                          const ok = await post('roster', '/api/leads', { action: 'saveAssignee', assignee: draft });
-                          if (ok?.ok) {
-                            setDraft({ name: '', email: '', role: 'bdr' });
-                            await loadDirectory();
-                          }
-                        }}
-                        className="flex items-center gap-1.5"
-                      >
-                        <Plus size={12} strokeWidth={2.4} />
-                        Add
-                      </Button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setManual(!manual);
-                          setDraft({ name: '', email: '', role: draft.role });
-                        }}
-                        className="text-muted hover:text-foreground pb-2 text-[11px] underline"
-                      >
-                        {manual ? 'Pick from Apollo instead' : 'Someone not in Apollo'}
-                      </button>
-                    </div>
-                  )}
-
-                  <p className="text-subtle mt-2 max-w-2xl text-[11px]">
-                    Picked from the Apollo workspace so the address matches exactly — the export attaches a lead&rsquo;s
-                    owner by email, and a typo there exports the contact with no owner and reports nothing.
-                  </p>
-                </div>
-              ) : null}
-
-              {/* --- 2 · rules --- */}
-              {step.id === 'rules' ? (
-                <div className="ml-7 mt-3 flex flex-wrap items-center gap-3">
-                  {state.roster.length > 0 && !state.rulesCanReachSomeone ? (
-                    <Button
-                      size="sm"
-                      disabled={busy !== null}
-                      onClick={() =>
-                        post('rules', '/api/leads', {
-                          action: 'saveRules',
-                          rules: [
-                            ...state.rulesRaw,
-                            {
-                              id: 'everything_to_' + state.roster[0].id.slice(0, 8),
-                              name: `Everything to ${state.roster[0].name}`,
-                              // Last resort: every other rule gets first refusal.
-                              priority: 999,
-                              enabled: true,
-                              conditions: {},
-                              toUserId: state.roster[0].id,
-                              toRole: null,
-                            },
-                          ],
-                        })
-                      }
-                    >
-                      Send everything to {state.roster[0].name}
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/*
-                The rules editor itself, in the step it belongs to. It used to sit
-                in its own section further down the page, reached by a link — and
-                before that, by a link to the page you were already on. Inlining it
-                is the same principle the rest of this checklist follows: the fix
-                lives next to the finding, so nobody has to work out which screen
-                to go to.
-              */}
-              {step.id === 'rules' && rulesEditor ? <div className="ml-7 mt-4">{rulesEditor}</div> : null}
 
               {/* --- 3 · channel --- */}
               {step.id === 'channel' ? (
@@ -506,18 +304,12 @@ export default function SetupChecklist({
                       </Button>
                     </>
                   ) : null}
-                  {step.id === 'assign' ? (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={busy !== null}
-                      onClick={() => post('assign', '/api/leads', { action: 'autoAssign' })}
-                      className="flex items-center gap-1.5"
-                    >
-                      <Play size={11} strokeWidth={2.4} />
-                      Run assignment
-                    </Button>
-                  ) : null}
+                  {/*
+                    No "Run assignment" here. It posted the same autoAssign the
+                    Distribution card fires, and two buttons for one irreversible
+                    pass is how you get a double run and a confused report of which
+                    one moved what.
+                  */}
                   {step.id === 'export' ? (
                     <>
                       <Button
