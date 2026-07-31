@@ -3,8 +3,19 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { GEM_SOURCE_KEY, normalizeGemFile, parseGemFile, trackerFromFilename, trackerLabel } from '@/lib/gem/normalize';
 import type { CanonicalProjectInsert } from '@/lib/adapters/types';
 import { sourceProvenance } from '@/lib/provenance';
+import { recordRunOutcome } from '@/lib/sources/config';
+import { startRun, finishRun } from '@/lib/sources/runs';
 
 const UPSERT_CHUNK = 500;
+
+/**
+ * GEM's slug, which is what `source_config` and `ingestion_runs` are keyed on.
+ *
+ * Not interchangeable with `GEM_SOURCE_KEY` (`gem_energy_tracker`) — that is
+ * the `canonical_projects.source_key`. Confusing the two is what made the
+ * health write below a silent no-op for as long as it existed.
+ */
+const GEM_SLUG = 'gem';
 
 export interface GemFileInput {
   name: string;
@@ -22,6 +33,13 @@ export interface GemFileResult {
   failed: number;
   inserted?: number;
   updated?: number;
+  /**
+   * Rows dropped because they resolved to a `source_unique_id` already claimed
+   * by an earlier row in the same file — GEM publishes at unit/phase grain and
+   * the id resolves to the site. Reported rather than swallowed: it is the gap
+   * between "20,524 parsed" and what a user finds in the table.
+   */
+  collapsed?: number;
   error?: string;
 }
 
@@ -29,7 +47,7 @@ export interface GemIngestResult {
   ok: boolean;
   persisted: boolean;
   message: string;
-  totals: { normalized: number; inserted: number; updated: number };
+  totals: { normalized: number; inserted: number; updated: number; collapsed: number };
   files: GemFileResult[];
   sample: CanonicalProjectInsert[];
 }
@@ -42,12 +60,22 @@ export interface GemIngestResult {
 export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestResult> {
   const dbReady = isSupabaseServiceConfigured();
   const supabase = dbReady ? getServiceSupabase() : null;
+  const startedAtMs = Date.now();
+
+  // Opened before any work so a run that throws unexpectedly still leaves a
+  // trace. Both helpers no-op without a service role and never throw.
+  const runId = dbReady
+    ? await startRun({ slug: GEM_SLUG, sourceKey: GEM_SOURCE_KEY, trigger: 'manual', params: { files: files.length } })
+    : null;
 
   const results: GemFileResult[] = [];
   const sample: CanonicalProjectInsert[] = [];
+  let totalParsed = 0;
   let totalNormalized = 0;
   let totalInserted = 0;
   let totalUpdated = 0;
+  let totalFailed = 0;
+  let totalCollapsed = 0;
 
   for (const file of files) {
     const tracker = file.tracker ?? trackerFromFilename(file.name);
@@ -67,15 +95,19 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
       for (const r of records) r.field_provenance = sourceProvenance(r as unknown as Record<string, unknown>);
       result.normalized = records.length;
       result.failed = failed;
+      totalParsed += rows.length;
       totalNormalized += records.length;
+      totalFailed += failed;
       if (sample.length < 5) sample.push(...records.slice(0, 5 - sample.length));
 
       if (supabase && records.length > 0) {
-        const { inserted, updated } = await upsertRecords(supabase, records);
+        const { inserted, updated, collapsed } = await upsertRecords(supabase, records);
         result.inserted = inserted;
         result.updated = updated;
+        result.collapsed = collapsed;
         totalInserted += inserted;
         totalUpdated += updated;
+        totalCollapsed += collapsed;
       }
     } catch (err) {
       result.error = err instanceof Error ? err.message : String(err);
@@ -84,23 +116,123 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
     results.push(result);
   }
 
-  if (supabase && totalNormalized > 0) {
-    await supabase
-      .from('source_registry')
-      .update({ last_successful_fetch: new Date().toISOString(), health_status: 'healthy', consecutive_failures: 0 })
-      .eq('source_key', GEM_SOURCE_KEY);
+  // Health used to be written to `source_registry`, keyed on `source_key` —
+  // wrong table (retired with the single-table model) AND wrong key, so the
+  // update matched nothing and GEM showed as permanently unconfigured on the
+  // Source Hub no matter how often it ran. It now goes through the same
+  // recorder every adapter uses, keyed on the slug `source_config` holds.
+  //
+  // Failures are recorded too, not just successes. The rolling health status is
+  // hysteretic — it needs 3 consecutive failures to read `failing` — which can
+  // only ever trigger if failures are reported. The old code reported none, so
+  // GEM could not have gone red if every upload had been garbage.
+  // Distinct from the `ok` this function returns, which means "did not throw"
+  // and stays true so one bad file never fails a whole batch for the caller.
+  // This one is the run's health: a run that normalized nothing achieved
+  // nothing, whatever the per-file detail says.
+  // Normalizing is not persisting. Keying health on the normalized count alone
+  // called a run "healthy" while 11 of 18 files had failed at the upsert — the
+  // records existed in memory and reached nothing. Any file-level error makes
+  // the run unhealthy, so a partial batch reads as degraded with the failing
+  // filename in `last_error` rather than as a clean success.
+  const fileErrors = results.filter((r) => r.error).map((r) => `${r.file}: ${r.error}`);
+  const runOk = totalNormalized > 0 && fileErrors.length === 0;
+  const error = runOk
+    ? undefined
+    : fileErrors.length
+      ? fileErrors.join('; ')
+      : 'No records normalized from any file.';
+
+  if (dbReady) {
+    await recordRunOutcome(GEM_SLUG, { ok: runOk, durationMs: Date.now() - startedAtMs, error });
+    await finishRun(runId, {
+      ok: runOk,
+      fetched: totalParsed,
+      normalized: totalNormalized,
+      inserted: totalInserted,
+      updated: totalUpdated,
+      failed: totalFailed,
+      error,
+      errorKind: runOk ? undefined : 'shape',
+      startedAtMs,
+    });
   }
 
   return {
     ok: true,
     persisted: dbReady,
     message: dbReady
-      ? `Ingested ${totalInserted} new + ${totalUpdated} updated GEM records into canonical_projects.`
+      ? `Ingested ${totalInserted} new + ${totalUpdated} updated GEM records into canonical_projects.` +
+        (totalCollapsed > 0 ? ` ${totalCollapsed} unit-level rows collapsed onto their site.` : '')
       : `Parsed and normalized ${totalNormalized} GEM records. Configure Supabase to persist them to the database.`,
-    totals: { normalized: totalNormalized, inserted: totalInserted, updated: totalUpdated },
+    totals: { normalized: totalNormalized, inserted: totalInserted, updated: totalUpdated, collapsed: totalCollapsed },
     files: results,
     sample,
   };
+}
+
+/**
+ * Collapses records that share a `source_unique_id`, keeping the first.
+ *
+ * Postgres refuses an `ON CONFLICT DO UPDATE` whose own batch names the same
+ * conflict target twice — "cannot affect row a second time" — so this is a hard
+ * precondition of the upsert, not a tidiness pass. GEM trackers are published at
+ * unit/phase grain while `source_unique_id` resolves to the site, so 11 of the
+ * 18 files carry duplicates and every one of them failed outright before this.
+ *
+ * First rather than last purely for determinism: re-running the same file must
+ * produce the same row. Where duplicates represent real distinct units, the fix
+ * is the id chosen in `normalize.ts` ID_KEYS, not this function — collapsing
+ * here is the floor that keeps the batch legal.
+ */
+function dedupeByUniqueId(records: CanonicalProjectInsert[]): {
+  unique: CanonicalProjectInsert[];
+  collapsed: number;
+} {
+  const seen = new Map<string, CanonicalProjectInsert>();
+  for (const r of records) {
+    if (!seen.has(r.source_unique_id)) seen.set(r.source_unique_id, r);
+  }
+  return { unique: [...seen.values()], collapsed: records.length - seen.size };
+}
+
+/**
+ * How many ids to put in one existence probe.
+ *
+ * The probe is a GET, so the ids travel in the URL — 500 of them overran what
+ * PostgREST would accept and the request failed. The error was discarded, the
+ * result read as "none of these exist", and every row was counted as new: a
+ * re-ingest of 2,009 unchanged records reported 2,000 inserted. The upserted
+ * data was always correct; only the numbers shown to the user were wrong, which
+ * is the kind of bug that survives for a long time.
+ */
+const PROBE_CHUNK = 100;
+
+/**
+ * Which of these `source_unique_id`s already exist for GEM.
+ *
+ * Throws rather than degrading to an empty set. A silent failure here does not
+ * corrupt anything, it just reports a full re-ingest as thousands of new leads —
+ * and that number is what someone judges an ingestion run by.
+ */
+async function findExisting(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  ids: string[]
+): Promise<Set<string>> {
+  const found = new Set<string>();
+
+  for (let i = 0; i < ids.length; i += PROBE_CHUNK) {
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('source_unique_id')
+      .eq('source_key', GEM_SOURCE_KEY)
+      .in('source_unique_id', ids.slice(i, i + PROBE_CHUNK));
+
+    if (error) throw new Error(`Could not check existing records: ${error.message}`);
+    for (const r of (data ?? []) as { source_unique_id: string }[]) found.add(r.source_unique_id);
+  }
+
+  return found;
 }
 
 /**
@@ -109,22 +241,20 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
  */
 async function upsertRecords(
   supabase: ReturnType<typeof getServiceSupabase>,
-  records: CanonicalProjectInsert[]
-): Promise<{ inserted: number; updated: number }> {
+  input: CanonicalProjectInsert[]
+): Promise<{ inserted: number; updated: number; collapsed: number }> {
   let inserted = 0;
   let updated = 0;
 
+  const { unique: records, collapsed } = dedupeByUniqueId(input);
+
   for (let i = 0; i < records.length; i += UPSERT_CHUNK) {
     const chunk = records.slice(i, i + UPSERT_CHUNK);
-    const ids = chunk.map((r) => r.source_unique_id);
+    const existingIds = await findExisting(
+      supabase,
+      chunk.map((r) => r.source_unique_id)
+    );
 
-    const { data: existing } = await supabase
-      .from('canonical_projects')
-      .select('source_unique_id')
-      .eq('source_key', GEM_SOURCE_KEY)
-      .in('source_unique_id', ids);
-
-    const existingIds = new Set((existing ?? []).map((r: { source_unique_id: string }) => r.source_unique_id));
     const chunkInserted = chunk.filter((r) => !existingIds.has(r.source_unique_id)).length;
     inserted += chunkInserted;
     updated += chunk.length - chunkInserted;
@@ -135,5 +265,5 @@ async function upsertRecords(
     if (error) throw new Error(`Supabase upsert failed: ${error.message}`);
   }
 
-  return { inserted, updated };
+  return { inserted, updated, collapsed };
 }

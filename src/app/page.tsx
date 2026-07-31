@@ -8,6 +8,7 @@ import KpiSummaryCards from '@/components/KpiSummaryCards';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
+import RecordLink from '@/components/RecordLink';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
 import { Card, CardHeader, CardBody, Badge, EmptyState, ProgressBar } from '@/components/ui';
 
@@ -180,17 +181,7 @@ export default async function DashboardPage({
                         {lead.priority_band} · {lead.priority_score}
                       </Badge>
                       <span className="text-foreground min-w-0 flex-1 truncate font-medium">
-                        {lead.account_key ? (
-                          <Link
-                            href={`/accounts/${encodeURIComponent(lead.account_key)}`}
-                            prefetch={false}
-                            className="hover:underline"
-                          >
-                            {lead.canonical_name}
-                          </Link>
-                        ) : (
-                          lead.canonical_name
-                        )}
+                        <RecordLink id={lead.id}>{lead.canonical_name}</RecordLink>
                       </span>
                       <span className="text-muted hidden shrink-0 text-xs sm:block">
                         {lead.priority_reasons?.slice(0, 2).join(' · ')}

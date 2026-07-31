@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getRecords, type RecordRow, type RecordSort } from '@/lib/queries';
+import { getRecords, getRecordDetail, type RecordRow, type RecordSort } from '@/lib/queries';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
 import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
@@ -20,6 +20,8 @@ import { PRIORITY_BANDS } from '@/lib/priority';
 import { LEAD_STATUSES, STATUS_COLORS, STATUS_LABELS, type LeadStatus } from '@/lib/lifecycle';
 import { Badge, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
+import RecordDrawer from '@/components/RecordDrawer';
+import RecordDetail from '@/components/RecordDetail';
 
 export const dynamic = 'force-dynamic';
 
@@ -81,7 +83,8 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     stage = sp.stage,
     band = sp.band,
     status = sp.status,
-    completenessTier = sp.tier;
+    completenessTier = sp.tier,
+    ownerGroup = sp.owner_group;
   // Sellers see their own book by default; managers and admins see everything
   // and opt into a narrower view. `mine=0` lets a seller look at the wider
   // pool their scope covers without pretending they own it.
@@ -109,6 +112,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       completenessTier,
       ownerId,
       unassigned,
+      ownerGroup,
       sort,
       search,
     });
@@ -138,9 +142,14 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     tier: completenessTier,
     mine,
     owner: sp.owner,
+    owner_group: ownerGroup,
     sort,
     q: search,
   };
+
+  // `record` is deliberately absent from `base`, so the drawer's close link is
+  // this same list with every filter intact and only the record dropped.
+  const openRecord = sp.record ? await getRecordDetail(sp.record) : null;
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
@@ -151,6 +160,28 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             {total.toLocaleString()} records{source ? ` from ${source}` : ''}
             {total > 0 ? ` · showing ${first.toLocaleString()}–${last.toLocaleString()}` : ''}
           </p>
+          {/*
+            An owner filter arrives by link from a record drawer, so without this
+            the user lands on a narrowed list with no visible cause and no way
+            back. States what is filtering, how trustworthy the grouping is, and
+            offers one click out.
+          */}
+          {ownerGroup ? (
+            <p className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <Badge tone={ownerGroup.startsWith('E:') ? 'success' : 'neutral'}>
+                {ownerGroup.startsWith('E:') ? 'verified owner id' : 'matched by name'}
+              </Badge>
+              <span className="text-muted">
+                showing one owner&rsquo;s leads · <span className="font-mono">{ownerGroup}</span>
+              </span>
+              <Link
+                href={qs({ ...base, owner_group: undefined }, {})}
+                className="text-brand underline underline-offset-2"
+              >
+                clear
+              </Link>
+            </p>
+          ) : null}
         </div>
         <Link href="/control/sources" className="text-brand text-sm underline underline-offset-2">
           Source catalog
@@ -321,18 +352,23 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
                       <span className="text-subtle text-[10px]">unscored</span>
                     )}
                   </Td>
+                  {/*
+                    Every record opens its own detail drawer. This used to link
+                    only when `account_key` was set — populated by Claude
+                    enrichment alone — so 16,332 of 16,515 project records were
+                    plain text with nothing to click. The account page is still
+                    reachable, from inside the drawer, where it belongs: it
+                    describes the company, not this record.
+                  */}
                   <Td className="text-foreground font-medium">
-                    {r.account_key ? (
-                      <Link
-                        href={`/accounts/${encodeURIComponent(r.account_key)}`}
-                        prefetch={false}
-                        className="hover:underline"
-                      >
-                        {r.canonical_name}
-                      </Link>
-                    ) : (
-                      r.canonical_name
-                    )}
+                    <Link
+                      href={qs(base, { record: r.id })}
+                      prefetch={false}
+                      scroll={false}
+                      className="hover:underline"
+                    >
+                      {r.canonical_name}
+                    </Link>
                   </Td>
                   <Td className="text-subtle font-mono text-[10px]">{r.ref_code ?? '—'}</Td>
                   <Td className="text-muted text-xs">{r.source_key}</Td>
@@ -416,6 +452,24 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             <span />
           )}
         </div>
+      ) : null}
+
+      {/*
+        Rendered whenever `?record=` is present, even if the row could not be
+        read — a deleted id, or one RLS does not grant this user. Saying so beats
+        a drawer that opens empty or a click that appears to do nothing.
+      */}
+      {sp.record ? (
+        <RecordDrawer title={openRecord?.canonical_name ?? 'Record'} closeHref={qs(base, { page: sp.page })}>
+          {openRecord ? (
+            <RecordDetail r={openRecord} />
+          ) : (
+            <p className="text-muted text-sm">
+              This record could not be loaded. It may have been deleted, or it may sit outside the records your role can
+              see.
+            </p>
+          )}
+        </RecordDrawer>
       ) : null}
     </div>
   );

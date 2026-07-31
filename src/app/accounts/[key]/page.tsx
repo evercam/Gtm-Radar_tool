@@ -4,6 +4,7 @@ import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getAccountDetail } from '@/lib/queries';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import EnrichAction from '@/components/EnrichAction';
+import RecordLink from '@/components/RecordLink';
 import { BU_LABELS } from '@/lib/semantics';
 
 export const dynamic = 'force-dynamic';
@@ -217,9 +218,15 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
             <ul className="mt-2 space-y-1.5">
               {records.slice(0, 12).map((r) => (
                 <li key={r.id} className="text-sm">
-                  <Link href={`/records?q=${encodeURIComponent(r.canonical_name)}`} className="hover:underline">
+                  {/*
+                    Was a keyword search for the record's own name, which is a
+                    guess: it could match a dozen similarly-named sites or, once
+                    the name contained punctuation, none at all. The id is right
+                    here — open the record itself.
+                  */}
+                  <RecordLink id={r.id}>
                     <span className="text-foreground">{r.canonical_name}</span>
-                  </Link>
+                  </RecordLink>
                   {r.current_phase ? (
                     <span className="text-muted ml-2 rounded bg-surface-raised px-1.5 py-0.5 text-[10px]">
                       {r.current_phase}

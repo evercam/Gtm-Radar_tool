@@ -1,4 +1,5 @@
 import { computeCompleteness, isPresent } from '@/lib/completeness';
+import { ownerNameSlug } from '@/lib/keyaccount';
 import type { CanonicalProjectInsert, RawProjectRecord } from '@/lib/adapters/types';
 import type { CriticalField, BusinessUnit } from '@/lib/supabase/types';
 
@@ -206,12 +207,29 @@ function flattenFeature(row: unknown): RawProjectRecord | null {
 
 // ---- field probing ----------------------------------------------------------
 
+/**
+ * Values GEM writes to mean "no value", which must not survive as data.
+ *
+ * `--` is the big one: it appears as `Phase Name` on 5,385 rows, and because it
+ * is a non-empty string it was being appended to the record name, producing
+ * `Dickinson Solar CT — --` on every list row and drawer title.
+ *
+ * `NA` is deliberately NOT here — it is a plausible real abbreviation (North
+ * America) in the region fields, and discarding a genuine value is worse than
+ * keeping an ugly one.
+ */
+const PLACEHOLDER_VALUES = new Set(['-', '--', '---', '—', '–', 'n/a', 'na/', 'unknown', 'tbd', 'none', 'null', 'nan']);
+
+function isPlaceholder(s: string): boolean {
+  return PLACEHOLDER_VALUES.has(s.toLowerCase());
+}
+
 function firstPresent(row: Record<string, unknown>, keys: string[]): string | null {
   for (const k of keys) {
     const v = row[k];
-    if (v !== null && v !== undefined && String(v).trim() !== '' && String(v).toLowerCase() !== 'unknown') {
-      return String(v).trim();
-    }
+    if (v === null || v === undefined) continue;
+    const s = String(v).trim();
+    if (s !== '' && !isPlaceholder(s)) return s;
   }
   return null;
 }
@@ -251,6 +269,39 @@ const OWNER_KEYS = [
   'Parent(s)',
 ];
 const OPERATOR_KEYS = ['Operator', 'VesselOperator', 'Owner', 'Owners', 'Parent'];
+
+/**
+ * GEM Entity ID columns, owner before parent.
+ *
+ * Twelve spellings across eighteen trackers, because GEM never settled on one.
+ * Owner first because it identifies who holds THIS asset; parent is the fallback
+ * so a subsidiary-owned site still groups under something real rather than
+ * dropping to a name slug.
+ *
+ * Present on only 7 of 18 trackers — solar, wind, nuclear, hydro,
+ * oil_gas_extraction, steel and coal_terminal publish no entity id at all,
+ * which is why the name fallback exists and why it covers most of the corpus.
+ */
+const OWNER_ENTITY_KEYS = [
+  'Owner GEM Entity ID',
+  'Owner GEM entity ID',
+  'Owner(s) GEM Entity ID',
+  'Owners GEM Entity ID',
+  'Owner Entity ID',
+  'OwnerEntityIDs',
+];
+const PARENT_ENTITY_KEYS = [
+  'Parent GEM Entity ID',
+  'Parent(s) GEM Entity ID',
+  'Parent Entity ID',
+  'ParentEntityIDs',
+];
+// Order is the record grain, and it is deliberate: location/site keys come
+// FIRST so a plant with four reactors is one lead, not four. GEM publishes at
+// unit/phase grain, so the finer keys below are the fallback for trackers that
+// carry no location id at all — never a preference. Reordering this changes
+// what a GEM lead means; see the dedupe in gem/ingest.ts, which is what
+// collapses the surplus unit rows onto their site.
 const ID_KEYS = [
   'GEM location ID',
   'GEM unit ID',
@@ -260,7 +311,9 @@ const ID_KEYS = [
   'GEM plant ID',
   'GEM Plant ID',
   'GEM Terminal ID',
-  'GEM Unit/Phase ID',
+  // Lower-case `unit` is what the coal and oil/gas trackers actually publish;
+  // the capitalised spelling this used to carry matched nothing.
+  'GEM unit/phase ID',
   'GEM Entity ID',
   'Unit ID',
   'UnitID',
@@ -289,6 +342,22 @@ const CAPACITY_KEYS = [
   'Design Net Capacity (MW)',
   'Design capacity (ttpa)',
 ];
+
+/**
+ * Capacity keys that are megawatts and nothing else — the only ones allowed to
+ * populate `capacity_mw`.
+ *
+ * The bare `Capacity` key above is NOT among them, because GEM reuses it for a
+ * different unit on every non-power tracker: Mtpa of coal on coal_mine
+ * (`20`, `22`), mtpa of LNG on lng, MMcf/d of gas on gas_pipeline, ttpa of steel
+ * on steel, and barrels per day on oil_ngl_pipeline (`120,000.00`). Feeding any
+ * of those into a megawatt column would put 120,000 "MW" next to a 265 MW coal
+ * unit and rank it top of every value-sorted list.
+ *
+ * Trackers that publish a `CapacityUnits` column never say MW in it — the values
+ * are mtpa, MMcf/d, bcm/y, bpd — so there is no additional MW to recover there.
+ */
+const MW_CAPACITY_KEYS = ['Capacity (MW)', 'Reference Net Capacity (MW)', 'Design Net Capacity (MW)'];
 const TYPE_DETAIL_KEYS = ['Reactor Type', 'Technology Type', 'Model', 'Fuel', 'Capacity Rating'];
 const URL_KEYS = ['Wiki URL', 'GEM wiki page URL', 'Url', 'URL'];
 const CONSTRUCTION_KEYS = ['Construction Start Date', 'Start date'];
@@ -318,10 +387,46 @@ function toDate(value: string | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+/**
+ * The owner grouping key for one row: `E:<entity id>` when the source names the
+ * owner, else `N:<slug of the owner's name>`, else null.
+ *
+ * Values are multi-owner and percentage-annotated in the raw data
+ * (`E100002018123 [60%]; E100000000980 [40%]`), so the first entity id wins —
+ * the majority holder is listed first throughout GEM. Same for names.
+ *
+ * The `N:` form is honest about being weaker: two spellings of one company stay
+ * in separate groups until an identifier appears for them. `resolveOwnerGroups`
+ * in scripts/ is what later upgrades an `N:` group to `E:` once any row in it
+ * turns out to carry an id.
+ */
+export function gemOwnerGroupKey(raw: RawProjectRecord): string | null {
+  const row = raw as Record<string, unknown>;
+
+  const entity = firstPresent(row, [...OWNER_ENTITY_KEYS, ...PARENT_ENTITY_KEYS]);
+  const id = entity?.match(/E\d{6,}/)?.[0];
+  if (id) return `E:${id}`;
+
+  const slug = ownerNameSlug(firstPresent(row, OWNER_KEYS));
+  return slug ? `N:${slug}` : null;
+}
+
 /** Best-effort capacity in the tracker's native unit (MW for power, ttpa for
  *  mines) — used by the GEM search adapter's min-capacity filter. */
 export function gemCapacity(raw: RawProjectRecord): number | null {
   return numOrNull(firstPresent(raw as Record<string, unknown>, CAPACITY_KEYS));
+}
+
+/**
+ * Capacity in megawatts, or null when this tracker does not measure in MW.
+ *
+ * Deliberately separate from `gemCapacity`, which returns the native unit and
+ * must keep doing so — the GEM search adapter's min-capacity filter compares
+ * against whatever the tracker publishes. This one is for `capacity_mw`, where a
+ * number is a claim about megawatts specifically.
+ */
+export function gemCapacityMw(raw: RawProjectRecord): number | null {
+  return numOrNull(firstPresent(raw as Record<string, unknown>, MW_CAPACITY_KEYS));
 }
 
 /** Resolve a raw row's business unit from its geography — used by the GEM
@@ -406,6 +511,11 @@ export function normalizeGemRecord(raw: RawProjectRecord, tracker: string): Cano
     project_type: label,
     building_type: buildingType,
     description: descriptionParts.length ? descriptionParts.join(' · ').slice(0, 1000) : null,
+    // Null for the non-power trackers on purpose — their capacity is tonnage or
+    // throughput, not megawatts. The native-unit figure is still in the
+    // description for every tracker, which is where a mine's Mtpa belongs.
+    capacity_mw: gemCapacityMw(raw),
+    technology_type: typeDetail,
     square_footage: null,
     address_line1: null,
     city,
@@ -423,6 +533,7 @@ export function normalizeGemRecord(raw: RawProjectRecord, tracker: string): Cano
     estimated_value: null,
     estimated_value_currency: null,
     company_name_raw: company,
+    owner_group_key: gemOwnerGroupKey(raw),
     contact_name: null,
     contact_title: null,
     contact_email: null,

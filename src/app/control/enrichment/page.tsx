@@ -17,6 +17,7 @@ import PolicyEditor from '@/components/settings/PolicyEditor';
 import { ENRICHMENT_FIELDS } from '@/lib/enrichmentFields';
 import { DEFAULT_ENRICHMENT_POLICY } from '@/lib/enrich/policy';
 import { Card, CardHeader } from '@/components/ui';
+import RecordLink from '@/components/RecordLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -290,14 +291,14 @@ export default async function EnrichmentPage() {
                         <span className="text-[10px] text-subtle">unscored</span>
                       )}
                     </td>
+                    {/*
+                      Opens the record, not the vendor's page. Deciding whether
+                      to spend an enrichment credit needs what WE hold on the
+                      record; the source link is still one click away inside the
+                      drawer.
+                    */}
                     <td className="px-3 py-1.5 font-medium text-foreground">
-                      {r.project_url ? (
-                        <a href={r.project_url} target="_blank" rel="noreferrer" className="hover:underline">
-                          {r.canonical_name}
-                        </a>
-                      ) : (
-                        r.canonical_name
-                      )}
+                      <RecordLink id={r.id}>{r.canonical_name}</RecordLink>
                     </td>
                     <td className="px-3 py-1.5 text-xs text-muted">{r.company_name_raw ?? '—'}</td>
                     <td className="px-3 py-1.5 text-xs text-muted">{r.bu ? (BU_LABELS[r.bu] ?? r.bu) : '—'}</td>

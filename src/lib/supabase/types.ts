@@ -213,4 +213,11 @@ export interface CanonicalProjectRow {
   value_angle: 'confidence' | 'evidence' | 'capacity' | null;
   pain_point: string | null;
   account_key: string | null;
+  /**
+   * Owner grouping (migration 20260730120000). `E:<id>` from a source-published
+   * owner identifier, `N:<slug>` from the owner's name — the prefix is how a
+   * caller tells an exact grouping from a best-effort one. Set at ingest and by
+   * `scripts/resolve-owner-groups.mjs`; never by enrichment.
+   */
+  owner_group_key: string | null;
 }

@@ -21,6 +21,17 @@ export interface CanonicalProjectInsert {
   description?: string | null;
   square_footage?: number | null;
   number_of_floors?: number | null;
+  /**
+   * Megawatts. Only ever MW — a source measuring throughput or tonnage must
+   * leave this null and put the native figure in `description`, or the column
+   * stops meaning anything and value-sorted lists rank a pipeline's 120,000
+   * barrels/day above a 265 MW power station.
+   */
+  capacity_mw?: number | null;
+  /** Reactor type, fuel, panel technology — whatever the source calls its kind. */
+  technology_type?: string | null;
+  is_remote_location?: boolean;
+  is_access_constrained?: boolean;
   address_line1?: string | null;
   city?: string | null;
   state_province?: string | null;
@@ -48,6 +59,15 @@ export interface CanonicalProjectInsert {
   field_provenance?: Record<string, string>;
   /** normalized company identity (set on account import + by enrichment). */
   account_key?: string | null;
+  /**
+   * Owner grouping, prefixed with its provenance: `E:<id>` from a
+   * source-published owner identifier, `N:<slug>` from the owner's name.
+   *
+   * Set by the adapter and never by enrichment, which is what makes it stable
+   * enough to group by — unlike `account_key`, which enrichment rewrites each
+   * run. See migration 20260730120000.
+   */
+  owner_group_key?: string | null;
   source_completeness_tier: CompletenessTierCode;
   source_completeness_score: number;
   fields_populated: Partial<Record<CriticalField, boolean>>;

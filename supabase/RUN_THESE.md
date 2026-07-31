@@ -155,10 +155,28 @@ it. Setting an explicit `CREDENTIALS_MASTER_KEY` avoids the coupling entirely.
 
 1. Open `/control/settings` → **API Keys**.
 2. If keys still live in `.env.local`, click **Import from env** — they are
-   encrypted into the database, after which the variables can be deleted.
+   encrypted into the database, after which the variables can be deleted. The
+   button covers both stores: `app_secrets` (platform keys) and
+   `source_credentials` (the four keyed adapters).
 3. Existing plaintext rows in `source_credentials` keep working (the reader
    passes non-envelope values through) and are upgraded on their next save, or
    all at once via **Re-encrypt**.
+
+**Nothing resolves from the environment any more.** The DB → env fallback was
+removed from `adapters/credentials.ts`, `adapters/credentialStatus.ts` and
+`crypto/store.ts`, so a key left only in `.env.local` will look configured and
+resolve to nothing. On a headless upgrade — or when the removal has taken
+Google sign-in's own credentials out of play and you cannot reach Settings —
+import from the command line instead, which is the safe order:
+
+```bash
+npm run import:secrets     # idempotent; already-stored keys are skipped
+npm run verify:secrets     # asserts every keyed source resolves from the DB
+```
+
+`verify:secrets` also cross-checks that what Settings reports and what the
+adapter actually receives agree — the failure mode otherwise shows up as a 401
+from a vendor mid-ingestion rather than as anything visible in the UI.
 
 ### Rotation without downtime
 
@@ -225,6 +243,43 @@ health) and `ingestion_runs` (one row per run, for history and live progress).
 with the single-table model. Those updates silently no-oped, so every source
 appeared permanently unconfigured no matter how many times it ran. Health now
 lands on `source_config`, which `/control/seeding` actually reads.
+
+**The GEM path had the same bug and was missed by that fix** (`lib/gem/ingest.ts`,
+corrected 2026-07-30). It was worse than a stale table name: the update filtered
+on `source_key`, which is not `source_config`'s key either — that is the `slug`
+(`gem`, not `gem_energy_tracker`). PostgREST answers a no-op update with a 2xx,
+so nothing anywhere surfaced it.
+
+GEM now records health *and* run history through the same `recordRunOutcome` /
+`startRun` / `finishRun` helpers as every adapter, so uploads appear on the
+Source Hub with latency and last error like anything else. Failures are recorded
+too, not only successes — the rolling status needs 3 consecutive failures to read
+`failing`, which could never have triggered when nothing reported a failure.
+
+Ingesting the folder for the first time surfaced three more defects in the same
+path, all of which had been there since the beginning:
+
+| Defect | Effect |
+|---|---|
+| `upsertRecords` never deduped a batch | GEM publishes at unit/phase grain while `source_unique_id` resolves to the site, so 11 of the 18 files contained duplicate conflict keys. Postgres rejects those outright (`ON CONFLICT DO UPDATE command cannot affect row a second time`) — **those 11 trackers had never ingested at all.** Duplicates are now collapsed onto the site and the count is reported, not swallowed. |
+| The existence probe put 500 ids in a GET URL | The request failed, the error was discarded, and the result read as "none exist" — so a re-ingest of 2,009 unchanged records reported 2,000 *inserted*. Probing is now chunked at 100 and propagates its error. Data was always correct; only the numbers were wrong. |
+| Health keyed on records normalized | Normalizing is not persisting. A run where 11 files failed at the upsert reported `healthy`. Any file-level error now makes the run unhealthy, with the filename in `last_error`. |
+
+Grain is a **product decision, not a detail**: `ID_KEYS` in `gem/normalize.ts` is
+ordered location-first on purpose, so a four-reactor station is one lead rather
+than four. 4,216 of 20,524 rows collapse as a result. Reordering that list
+changes what a GEM lead means — read the comment there before touching it.
+
+Guarded by `npm run verify:gem` (30 checks). It has to hit a real database,
+because the original defect was a write that succeeded and matched nothing; only
+reading the row back catches that. It snapshots `source_config` and asserts on
+deltas, so it is safe to run against an install with real GEM history, and it
+restores the snapshot and verifies its own cleanup on the way out.
+
+`npm run ingest:gem` loads `data/gem` from the command line (the Source Hub
+button needs a signed-in admin; this does not). `--dry` reports what would land
+per tracker without writing — worth running first, since the record count is not
+obvious from the file sizes.
 
 ### How health is derived
 

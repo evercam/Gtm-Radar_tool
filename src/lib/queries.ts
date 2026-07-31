@@ -20,6 +20,29 @@ export async function getRecentCanonicalProjects(limit = 25): Promise<CanonicalP
   return (data ?? []) as CanonicalProjectRow[];
 }
 
+/**
+ * One record, with everything on it — what the record drawer shows.
+ *
+ * `select('*')` rather than a column list on purpose: this is the one read that
+ * wants every field the schema happens to have, and asking for named columns
+ * would make it fail on exactly the half-migrated databases the tiered
+ * degradation in `getRecords` exists to tolerate.
+ *
+ * Returns null for a missing id, an unreadable row, or a row RLS does not grant
+ * the caller — the drawer renders "not found" for all three, which is the
+ * correct answer to give a user in each case.
+ */
+export async function getRecordDetail(id: string): Promise<CanonicalProjectRow | null> {
+  const supabase = await getReadSupabase();
+  try {
+    const { data, error } = await supabase.from('canonical_projects').select('*').eq('id', id).maybeSingle();
+    if (error) return null;
+    return (data as CanonicalProjectRow) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** One row per (BU, vertical, contact_status) with a count — the pipeline rollup. */
 export interface PipelineRollupRow {
   bu: string;
@@ -383,6 +406,7 @@ export interface RecordRow {
   sla_due_at: string | null;
   sla_breached: boolean | null;
   call_prep_summary: string | null;
+  owner_group_key: string | null;
   created_at: string;
 }
 export type RecordSort = 'priority' | 'newest' | 'value';
@@ -404,6 +428,8 @@ export interface RecordsQuery {
   ownerId?: string;
   /** Only leads with nobody assigned. */
   unassigned?: boolean;
+  /** Every lead owned by one company — an `owner_group_key` value. */
+  ownerGroup?: string;
   search?: string;
   sort?: RecordSort;
 }
@@ -418,7 +444,7 @@ const RECORD_COLUMNS_CORE =
 const RECORD_COLUMNS_ROUTING = `${RECORD_COLUMNS_CORE},route,stage`;
 const RECORD_COLUMNS_FULL =
   `${RECORD_COLUMNS_ROUTING},priority_score,priority_band,priority_reasons,status,` +
-  'owner_user_id,sla_due_at,sla_breached,call_prep_summary';
+  'owner_user_id,sla_due_at,sla_breached,call_prep_summary,owner_group_key';
 
 /** Which optional migrations a query may use. Degrades one tier at a time. */
 type ColumnTier = 'full' | 'routing' | 'core';
@@ -460,6 +486,10 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     if (hasPriority && q.status) query = query.eq('status', q.status);
     if (hasPriority && q.ownerId) query = query.eq('owner_user_id', q.ownerId);
     if (hasPriority && q.unassigned) query = query.is('assignee_id', null);
+    // Gated on the same tier flag as the column below, so a database without
+    // the owner_group_key migration ignores the filter rather than erroring on
+    // an unknown column — a stale bookmarked URL must not break the list.
+    if (hasPriority && q.ownerGroup) query = query.eq('owner_group_key', q.ownerGroup);
     if (q.search?.trim()) query = query.ilike('canonical_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
 
     // Priority-first by default — the whole point of scoring is that the top of

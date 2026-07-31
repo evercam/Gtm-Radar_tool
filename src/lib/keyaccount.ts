@@ -54,6 +54,24 @@ export const KEY_ACCOUNT_CONFIG = {
   coreVerticals: ['data_center', 'semiconductor', 'battery', 'nuclear', 'solar', 'wind', 'hydro', 'oil_gas'],
 };
 
+/**
+ * Slug for an owner name as sources publish it — the `N:` half of
+ * `owner_group_key`.
+ *
+ * Sources annotate ownership with shares and list co-owners in one field
+ * (`Alabama Power Co [50%]; Georgia Power Co [50%]`). The first owner is the
+ * majority holder throughout GEM, so it wins; the percentages are noise.
+ *
+ * Exported and shared on purpose: ingest, `resolve-owner-groups` and
+ * `verify-owner-groups` must agree on this exactly. Three private copies is how
+ * the resolver ends up unable to see rows it should have upgraded, and the
+ * verifier ends up reporting a clean run anyway.
+ */
+export function ownerNameSlug(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return accountKey(raw.split(';')[0].replace(/\[[^\]]*\]/g, ''));
+}
+
 /** Normalize a company name into a stable account_key (google-llc, aes-corp…). */
 export function accountKey(name: string | null | undefined): string | null {
   if (!name) return null;
