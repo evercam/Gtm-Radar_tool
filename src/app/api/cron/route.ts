@@ -74,9 +74,32 @@ function authorized(request: NextRequest): { ok: true } | { ok: false; status: 4
 }
 
 /** Calls one of our own endpoints with the service context the job needs. */
+/**
+ * Where this app can call itself.
+ *
+ * NOT `request.nextUrl.origin`. Vercel invokes a cron against the DEPLOYMENT
+ * url, and deployment urls are covered by Deployment Protection even when the
+ * production domain is not — so every self-call was answered by the edge with
+ * 401 "Protected deployment" and four of the five daily stages had never run.
+ * Nothing in the app logged a fault, because the app was never reached.
+ *
+ * `VERCEL_PROJECT_PRODUCTION_URL` is the production domain, injected by Vercel,
+ * and it is not protected. `CRON_BASE_URL` overrides it for anyone hosting
+ * elsewhere; the origin remains the fallback so local runs keep working.
+ */
+function selfBase(request: NextRequest): string {
+  const explicit = process.env.CRON_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/$/, '');
+
+  const production = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  if (production) return `https://${production.replace(/^https?:\/\//, '').replace(/\/$/, '')}`;
+
+  return request.nextUrl.origin;
+}
+
 async function callInternal(request: NextRequest, path: string, body: Record<string, unknown>): Promise<JobResult> {
   try {
-    const res = await fetch(`${request.nextUrl.origin}${path}`, {
+    const res = await fetch(`${selfBase(request)}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
