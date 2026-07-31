@@ -35,7 +35,7 @@ const COLLECTORS: Record<string, { workflow: string; label: string }> = {
  * environment variable rather than joining the encrypted store, alongside the
  * other non-secret endpoint overrides.
  */
-const REPO = process.env.GITHUB_REPO?.trim() || 'evercam/Evercam_Raddar';
+const REPO = process.env.GITHUB_REPO?.trim() || 'evercam/Gtm-Radar_tool';
 const BRANCH = process.env.GITHUB_REPO_BRANCH?.trim() || 'main';
 
 export async function POST(request: NextRequest) {
