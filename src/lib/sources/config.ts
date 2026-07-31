@@ -75,6 +75,33 @@ export interface SourceConfig {
 /** Daily at 04:00 — before the 06:00 prioritisation job reads what was ingested. */
 export const DEFAULT_SCHEDULE = '0 4 * * *';
 
+/**
+ * Per-source default query, used until someone saves one from the Source Hub.
+ *
+ * A source that returns nothing because it was asked a question with no answer
+ * is indistinguishable, in the UI, from one that is broken. These defaults exist
+ * so the Run button produces rows on a fresh install instead of a zero that
+ * looks like a fault.
+ *
+ * `lookbackDays` is relative on purpose. An absolute `since` would be correct on
+ * the day it was written and quietly wrong forever after.
+ *
+ * Deliberately sparse. Most adapters return plenty with no filter at all, and a
+ * blanket date window would make things WORSE — measured with
+ * `npm run diagnose:sources --defaults`, a 90-day window takes nyc-permits from
+ * 100 rows to 0 and nuclear-engineering from 10 to 0, because their date fields
+ * are not the ones a recency filter assumes. Add an entry only where a zero was
+ * actually observed.
+ */
+export const SOURCE_DEFAULT_QUERY: Record<string, Record<string, unknown>> = {
+  // Glenigan's /project/newproject is a NEW/updated-project event feed, and this
+  // subscription's events are historic: measured 2026-07-31, the account returns
+  // 0 projects for any window inside a year, 438 over three years and 5,071 over
+  // six. The adapter's own 180-day fallback therefore returned nothing at all,
+  // with a clean HTTP 200 and no error to explain it.
+  glenigan: { lookbackDays: 2190 },
+};
+
 export function defaultConfig(slug: string): SourceConfig {
   return {
     slug,
@@ -89,7 +116,7 @@ export function defaultConfig(slug: string): SourceConfig {
     timeoutMs: 30_000,
     rateLimitPerMinute: null,
     dedupeStrategy: 'source_id',
-    queryParams: {},
+    queryParams: SOURCE_DEFAULT_QUERY[slug] ?? {},
     querySavedAt: null,
     enrichClaude: null,
     enrichApollo: null,
@@ -123,7 +150,15 @@ function fromRow(r: Record<string, unknown>): SourceConfig {
     timeoutMs: (r.timeout_ms as number) ?? base.timeoutMs,
     rateLimitPerMinute: (r.rate_limit_per_minute as number) ?? null,
     dedupeStrategy: (r.dedupe_strategy as DedupeStrategy) ?? base.dedupeStrategy,
-    queryParams: (r.query_params as Record<string, unknown>) ?? {},
+    // A query saved from the hub always wins, including one deliberately saved
+    // empty — `query_saved_at` is what distinguishes that from never touched.
+    // Only an untouched source falls back to the shipped default.
+    queryParams: r.query_saved_at
+      ? ((r.query_params as Record<string, unknown>) ?? {})
+      : ((r.query_params as Record<string, unknown> | null) &&
+          Object.keys(r.query_params as Record<string, unknown>).length > 0
+          ? (r.query_params as Record<string, unknown>)
+          : base.queryParams),
     enrichClaude: (r.enrich_claude as boolean | null) ?? null,
     enrichApollo: (r.enrich_apollo as boolean | null) ?? null,
     enrichFillCommittee: (r.enrich_fill_committee as boolean | null) ?? null,

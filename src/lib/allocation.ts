@@ -164,13 +164,40 @@ function targetsFor(
   return targets;
 }
 
+/**
+ * The rule that applies when no authored rule does.
+ *
+ * Being on the roster is what makes someone assignable, so a lead nobody wrote a
+ * rule for still goes to whoever on the roster covers it and has the most room.
+ * Without this, a roster full of people and an empty rule list assigned nothing
+ * and said "matched no rule", which reads as a bug and was the most common state
+ * a new install sat in.
+ *
+ * It runs LAST and only on leftovers, so an authored rule always wins: the
+ * fallback widens who gets work, never redirects it. Scope and quota still bind —
+ * `userCoversLead` and `dailyQuota` are checked the same way as for any rule —
+ * so this hands nobody a lead outside their patch or beyond their limit.
+ */
+export const ROSTER_FALLBACK_RULE: AssignmentRule = {
+  id: 'roster_fallback',
+  name: 'Anyone on the roster who covers it',
+  priority: Number.MAX_SAFE_INTEGER,
+  enabled: true,
+  conditions: {},
+  toRole: null,
+  toUserId: null,
+};
+
 export function planAllocation(
   leads: AssignableLead[],
   rules: AssignmentRule[],
   users: AssignableUser[],
   policy: AllocationPolicy = DEFAULT_ALLOCATION
 ): AllocationResult {
-  const ordered = rules.filter((r) => r.enabled !== false).sort((a, b) => a.priority - b.priority);
+  const ordered = [
+    ...rules.filter((r) => r.enabled !== false).sort((a, b) => a.priority - b.priority),
+    ROSTER_FALLBACK_RULE,
+  ];
   const pool = users.filter((u) => u.isActive).map((u) => ({ ...u }));
   const byId = new Map(pool.map((u) => [u.id, u]));
 
@@ -211,7 +238,14 @@ export function planAllocation(
             pool.filter((u) => u.role === rule.toRole && userCoversLead(u, lead)),
             lead
           )
-        : null;
+        : // Neither a person nor a role named: anyone on the roster whose scope
+          // covers the lead. This used to resolve to null, so a rule with
+          // conditions and no recipient silently assigned nothing — and it is
+          // what makes ROSTER_FALLBACK_RULE work without a special case.
+          pick(
+            pool.filter((u) => userCoversLead(u, lead)),
+            lead
+          );
 
     if (!target) return 'no-owner';
     target.assignedToday += 1;

@@ -14,6 +14,16 @@ import { createHmac } from 'node:crypto';
 const SECRET = 'test-jwt-secret-at-least-32-chars-long!!';
 process.env.SESSION_SIGNING_KEY = SECRET;
 
+// Hermetic on purpose. `jwtSecret()` reads the encrypted store before falling
+// back to the variable above, so a shell that has sourced .env.local — which is
+// ordinary, `set -a; . ./.env.local` is in half the runbooks — lets the
+// "without a secret" case reach the real database, find a real signing key, and
+// fail a test that is asserting fail-closed behaviour. Unsetting the connection
+// here means the suite tests this module rather than the operator's shell.
+delete process.env.SUPABASE_SECRET_KEY;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+
 const {
   issueSession, verifySession, shouldRefresh, sessionCookieOptions, randomToken,
   SESSION_COOKIE, SESSION_TTL_SECONDS, resetJwtSecretCache,

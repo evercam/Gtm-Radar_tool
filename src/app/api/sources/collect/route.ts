@@ -22,8 +22,21 @@ const COLLECTORS: Record<string, { workflow: string; label: string }> = {
   'construct-connect': { workflow: 'construct-connect.yml', label: 'ConstructConnect' },
 };
 
-const REPO = 'evercam/Evercam_Raddar';
-const BRANCH = 'main';
+/**
+ * Which repository holds the collector workflows.
+ *
+ * Configurable because it is the one thing here that a repository rename
+ * invalidates, and it invalidates it silently: GitHub redirects browser and git
+ * traffic after a rename, but a REST dispatch to the old path 404s. Hardcoding
+ * the slug meant a rename could only be completed by editing this file and
+ * shipping a deploy, with the Collect button broken in between.
+ *
+ * `GITHUB_REPO` is not a secret — a repository slug is public — so it stays an
+ * environment variable rather than joining the encrypted store, alongside the
+ * other non-secret endpoint overrides.
+ */
+const REPO = process.env.GITHUB_REPO?.trim() || 'evercam/Evercam_Raddar';
+const BRANCH = process.env.GITHUB_REPO_BRANCH?.trim() || 'main';
 
 export async function POST(request: NextRequest) {
   const auth = await checkPermission('sources.run');

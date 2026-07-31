@@ -4,7 +4,7 @@ import { isSupabaseServiceConfigured, getServiceSupabase } from '@/lib/supabase/
 import { getAssignmentRules } from '@/lib/assignmentStore';
 import { getUserProfiles } from '@/lib/auth/users';
 import { ROLE_LABELS, can, type Role } from '@/lib/auth/roles';
-import { Card, CardHeader, CardBody, Stat, EmptyState } from '@/components/ui';
+import { Card, CardHeader, CardBody, EmptyState } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import AssignRunner from '@/components/control/AssignRunner';
@@ -90,7 +90,13 @@ async function readSetupState(
     // Kept whole so the client can append a rule without dropping the others:
     // the rules endpoint upserts the entire list.
     rulesRaw: assignmentRules as unknown as Record<string, unknown>[],
-    rulesCanReachSomeone: receiving.some((p) => targetedRoles.has(p.role) || targetedIds.has(p.id)),
+    // Anyone active on the roster is reachable now: leads no authored rule claims
+    // fall through to ROSTER_FALLBACK_RULE, which spreads them across the roster
+    // by scope and quota. So this step asks "can work reach a person at all",
+    // which a non-empty roster answers on its own — it no longer demands that
+    // somebody hand-write a rule first.
+    rulesCanReachSomeone:
+      receiving.length > 0 || receiving.some((p) => targetedRoles.has(p.role) || targetedIds.has(p.id)),
     cronConfigured: Boolean(process.env.CRON_SECRET?.trim()),
   };
 }
@@ -106,46 +112,85 @@ interface TeamLoad {
  * counter — a counter would need resetting nightly and would drift after any
  * manual reassignment.
  */
-async function getTeamLoad(): Promise<{ byUser: Map<string, TeamLoad>; unassigned: number; tableMissing: boolean }> {
+/** PostgREST refuses to return more than this many rows in one response. */
+const PAGE = 1000;
+
+async function getTeamLoad(): Promise<{
+  byUser: Map<string, TeamLoad>;
+  unassigned: number;
+  tableMissing: boolean;
+  truncated: boolean;
+}> {
   const byUser = new Map<string, TeamLoad>();
-  if (!isSupabaseServiceConfigured()) return { byUser, unassigned: 0, tableMissing: false };
+  if (!isSupabaseServiceConfigured()) return { byUser, unassigned: 0, tableMissing: false, truncated: false };
+
+  const OPEN = '("CONVERTED","LOST")';
 
   try {
     const service = getServiceSupabase();
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
-
-    const { data, error } = await service
-      .from('canonical_projects')
-      .select('owner_user_id, owner_assigned_at, sla_due_at, sla_breached, status')
-      .not('status', 'in', '("CONVERTED","LOST")')
-      .limit(5000);
-
-    if (error) {
-      return { byUser, unassigned: 0, tableMissing: /does not exist|schema cache/i.test(error.message) };
-    }
-
-    let unassigned = 0;
     const now = Date.now();
 
-    for (const r of (data ?? []) as Record<string, unknown>[]) {
-      const owner = r.owner_user_id as string | null;
-      if (!owner) {
-        unassigned += 1;
-        continue;
-      }
-      const entry = byUser.get(owner) ?? { assignedToday: 0, openLeads: 0, breached: 0 };
-      entry.openLeads += 1;
-      if (r.owner_assigned_at && new Date(r.owner_assigned_at as string) >= midnight) entry.assignedToday += 1;
-      // Breached counts both the stored flag and a deadline that has simply
-      // passed without anyone recomputing it.
-      if (r.sla_breached || (r.sla_due_at && new Date(r.sla_due_at as string).getTime() < now)) entry.breached += 1;
-      byUser.set(owner, entry);
+    // The unassigned pool is COUNTED, never enumerated. It used to be tallied by
+    // fetching rows and incrementing under a `.limit(5000)` that PostgREST
+    // silently clamps to its own max-rows of 1,000 — so the tile read exactly
+    // "1,000" while 22,438 leads sat unowned, and would have read 1,000 at any
+    // size above that. `head: true` asks for the count and no rows, so this stays
+    // flat in transferred data however large the pool grows.
+    const { count, error: countError } = await service
+      .from('canonical_projects')
+      .select('id', { count: 'exact', head: true })
+      .not('status', 'in', OPEN)
+      .is('owner_user_id', null);
+
+    if (countError) {
+      return {
+        byUser,
+        unassigned: 0,
+        tableMissing: /does not exist|schema cache/i.test(countError.message),
+        truncated: false,
+      };
     }
 
-    return { byUser, unassigned, tableMissing: false };
+    // Assigned rows genuinely need row-level detail — `owner_assigned_at` for
+    // today's tally, `sla_due_at` for a deadline nobody has recomputed — so they
+    // are paged rather than capped. That set is bounded by what the team is
+    // working, not by the size of the table.
+    let truncated = false;
+    const MAX_PAGES = 50;
+    for (let p = 0; p < MAX_PAGES; p++) {
+      const from = p * PAGE;
+      const { data, error } = await service
+        .from('canonical_projects')
+        .select('owner_user_id, owner_assigned_at, sla_due_at, sla_breached')
+        .not('status', 'in', OPEN)
+        .not('owner_user_id', 'is', null)
+        .range(from, from + PAGE - 1);
+
+      if (error) break;
+      const rows = (data ?? []) as Record<string, unknown>[];
+
+      for (const r of rows) {
+        const owner = r.owner_user_id as string;
+        const entry = byUser.get(owner) ?? { assignedToday: 0, openLeads: 0, breached: 0 };
+        entry.openLeads += 1;
+        if (r.owner_assigned_at && new Date(r.owner_assigned_at as string) >= midnight) entry.assignedToday += 1;
+        // Breached counts both the stored flag and a deadline that has simply
+        // passed without anyone recomputing it.
+        if (r.sla_breached || (r.sla_due_at && new Date(r.sla_due_at as string).getTime() < now)) entry.breached += 1;
+        byUser.set(owner, entry);
+      }
+
+      if (rows.length < PAGE) break;
+      // Hit the ceiling with a full page still coming: say so rather than
+      // quietly reporting a partial tally as the whole truth.
+      if (p === MAX_PAGES - 1) truncated = true;
+    }
+
+    return { byUser, unassigned: count ?? 0, tableMissing: false, truncated };
   } catch {
-    return { byUser, unassigned: 0, tableMissing: true };
+    return { byUser, unassigned: 0, tableMissing: true, truncated: false };
   }
 }
 
@@ -160,8 +205,11 @@ export default async function TeamPage() {
     );
   }
 
-  const [{ users, tableMissing: usersMissing }, { byUser, unassigned, tableMissing: leadsMissing }, assignment] =
-    await Promise.all([getUserProfiles(), getTeamLoad(), getAssignmentRules()]);
+  const [
+    { users, tableMissing: usersMissing },
+    { byUser, unassigned, tableMissing: leadsMissing, truncated: loadTruncated },
+    assignment,
+  ] = await Promise.all([getUserProfiles(), getTeamLoad(), getAssignmentRules()]);
   const { rules: assignmentRules, isDefault } = assignment;
   const roster = await getRoster();
   const authSettings = await getAuthSettings();
@@ -224,8 +272,6 @@ export default async function TeamPage() {
   });
 
   const canManageUsers = can(me.role, 'users.manage');
-  const totalOpen = team.reduce((s, m) => s + m.openLeads, 0);
-  const totalBreached = team.reduce((s, m) => s + m.breached, 0);
 
   return (
     <div>
@@ -243,26 +289,43 @@ export default async function TeamPage() {
             &ldquo;the export found nothing&rdquo; is almost never about the export. This checks every link, in order,
             and puts the fix next to the finding.
           </p>
-          <SetupChecklist state={setupState} />
+          <SetupChecklist
+            state={setupState}
+            rulesEditor={
+              <AssignmentEditor
+                initialRules={assignmentRules}
+                isDefault={isDefault}
+                unassigned={unassigned}
+                // The roster, not the app's user accounts — a rule must be able to
+                // target someone who has never logged in.
+                users={roster.rows.map((r) => ({
+                  id: r.id,
+                  name: r.name,
+                  role: r.role,
+                  bu: r.bu ?? [],
+                  verticals: r.verticals ?? [],
+                  regions: r.regions ?? [],
+                  isActive: r.is_active,
+                }))}
+              />
+            }
+          />
         </section>
       ) : null}
 
-      <section className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Sellers" value={team.length} note="active and receiving" />
-        <Stat label="Open leads" value={totalOpen.toLocaleString()} note="assigned and unresolved" />
-        <Stat
-          label="Unassigned"
-          value={unassigned.toLocaleString()}
-          note="waiting for an owner"
-          tone={unassigned > 0 ? 'warning' : undefined}
-        />
-        <Stat
-          label="Past SLA"
-          value={totalBreached.toLocaleString()}
-          note="need attention now"
-          tone={totalBreached > 0 ? 'danger' : undefined}
-        />
-      </section>
+      {/*
+        The four-tile summary that used to sit here is gone. Three of its numbers
+        were sums over the seller list, so they read zero whenever nobody holds a
+        seller role — which said more about the roster than about the work — and
+        the fourth, the unassigned count, is stated where it is actionable: on the
+        Unassigned pool card below, next to the link that opens those leads.
+      */}
+      {loadTruncated ? (
+        <p className="text-warning mb-8 text-xs">
+          More assigned leads than this view counts — the per-seller figures below are a partial tally, not the whole
+          book.
+        </p>
+      ) : null}
 
       <div className="mb-8">
         <AssignRunner team={team} isDefaultRules={isDefault} />
@@ -278,26 +341,11 @@ export default async function TeamPage() {
         </div>
       ) : null}
 
-      {canManageUsers ? (
-        <div className="mb-8">
-          <AssignmentEditor
-            initialRules={assignmentRules}
-            isDefault={isDefault}
-            unassigned={unassigned}
-            // The roster, not the app's user accounts — a rule must be able to
-            // target someone who has never logged in.
-            users={roster.rows.map((r) => ({
-              id: r.id,
-              name: r.name,
-              role: r.role,
-              bu: r.bu ?? [],
-              verticals: r.verticals ?? [],
-              regions: r.regions ?? [],
-              isActive: r.is_active,
-            }))}
-          />
-        </div>
-      ) : null}
+      {/*
+        The assignment-rules editor used to stand alone here, reached by a link
+        from the checklist step that judges it. It now renders inside that step —
+        one place that both reports the problem and fixes it.
+      */}
 
       <Card>
         <CardHeader

@@ -259,9 +259,10 @@ export function validateAssignmentRules(
     if (typeof rule.priority !== 'number' || rule.priority < 1) {
       return { ok: false, error: `Rule "${rule.id}": priority must be a number ≥ 1.` };
     }
-    if (!rule.toUserId && !rule.toRole) {
-      return { ok: false, error: `Rule "${rule.id}": needs either toUserId or toRole.` };
-    }
+    // Naming neither a person nor a role is legal and means "anyone on the
+    // roster whose scope covers it" — see ROSTER_FALLBACK_RULE in allocation.ts.
+    // It used to be refused, back when a targetless rule resolved to no
+    // recipient and assigned nothing.
     if (rule.toUserId && rule.toRole) {
       return { ok: false, error: `Rule "${rule.id}": set toUserId or toRole, not both.` };
     }

@@ -93,6 +93,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
   let body: {
     since?: string;
     until?: string;
+    /** Relative alternative to `since`, so a saved default cannot go stale. */
+    lookbackDays?: number;
     pageSize?: number;
     minValue?: number;
     keyword?: string;
@@ -130,8 +132,16 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
   let sample: unknown[] = [];
 
   try {
+    // An explicit `since` wins; `lookbackDays` is resolved against now, so a
+    // default written once stays a rolling window rather than an ageing date.
+    const since = params.since
+      ? new Date(params.since)
+      : params.lookbackDays
+        ? new Date(Date.now() - params.lookbackDays * 86_400_000)
+        : undefined;
+
     const raw = await adapter.fetchRawProjects({
-      since: params.since ? new Date(params.since) : undefined,
+      since,
       until: params.until ? new Date(params.until) : undefined,
       pageSize: params.pageSize ?? config.pageSize,
       minValue: params.minValue,

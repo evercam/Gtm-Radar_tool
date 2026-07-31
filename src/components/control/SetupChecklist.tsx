@@ -1,8 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { Check, Play, Plus } from 'lucide-react';
 import { Badge, Button, Card, CardHeader, Label, controlClass } from '@/components/ui';
 
@@ -35,6 +34,61 @@ const LANES = [
 ];
 
 /**
+ * How work currently reaches people.
+ *
+ * Says the roster part first, because that is now what does the work: a lead no
+ * authored rule claims goes to whoever on the roster covers it and has the most
+ * room. Rules are the exception layer on top, so a count of them is the detail,
+ * not the headline.
+ */
+function describeReach(state: SetupState): string {
+  const active = state.assignmentRules.filter((r) => r.enabled).length;
+  const people = `${state.roster.length} on the roster receive by scope and quota`;
+  return active > 0
+    ? `${people}; ${active} rule${active === 1 ? '' : 's'} route specific leads first.`
+    : `${people}. No rules needed — add one only to send particular leads somewhere particular.`;
+}
+
+/**
+ * Why no enabled rule reaches a real person.
+ *
+ * This used to read "Rules target nobody — no active person holds those roles"
+ * for every cause, which was misleading in the most common one: a rule pointing
+ * at a person by id who has since left the roster targets somebody very
+ * specifically, and no role is involved at all. Naming the actual cause is the
+ * difference between a step someone can clear and one they stare at.
+ */
+function whyRulesReachNobody(state: SetupState): string {
+  const enabled = state.assignmentRules.filter((r) => r.enabled);
+  if (enabled.length === 0) {
+    return state.assignmentRules.length === 0
+      ? 'No assignment rules yet — nothing is handed out until one exists.'
+      : `${state.assignmentRules.length} rule(s) exist but all are disabled.`;
+  }
+
+  const rosterIds = new Set(state.roster.map((p) => p.id));
+  const rosterRoles = new Set(state.roster.map((p) => p.role));
+
+  const orphaned = enabled.filter((r) => r.toUserId && !rosterIds.has(r.toUserId));
+  const deadRoles = [...new Set(enabled.map((r) => r.toRole).filter((x): x is string => Boolean(x)))].filter(
+    (role) => !rosterRoles.has(role)
+  );
+  // A rule naming no recipient is no longer a fault — it means "anyone on the
+  // roster who covers it" — so it is not listed as a reason here.
+  const reasons: string[] = [];
+  if (orphaned.length) {
+    reasons.push(
+      `${orphaned.length === 1 ? `“${orphaned[0].name}” targets` : `${orphaned.length} rules target`} someone who is no longer on the roster`
+    );
+  }
+  if (deadRoles.length) reasons.push(`no active person holds ${deadRoles.join(' or ')}`);
+
+  return reasons.length
+    ? `${reasons.join('; ')}. Point a rule at someone on the roster below.`
+    : 'No enabled rule resolves to an active person on the roster.';
+}
+
+/**
  * The setup checklist.
  *
  * Ordered by dependency, not importance: a step cannot be judged until the one
@@ -42,7 +96,20 @@ const LANES = [
  * rather than a bare tick. Every step carries its own fix, because the whole
  * point is not having to find the right screen.
  */
-export default function SetupChecklist({ state }: { state: SetupState }) {
+export default function SetupChecklist({
+  state,
+  rulesEditor,
+}: {
+  state: SetupState;
+  /**
+   * The assignment-rules editor, rendered inside the "a rule that reaches them"
+   * step. Passed in as a slot rather than imported here so the server page keeps
+   * assembling its data — the editor needs the full roster with BUs, verticals
+   * and regions, and threading all of that through SetupState would duplicate it
+   * for the sake of an import.
+   */
+  rulesEditor?: ReactNode;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<{ step: string; ok: boolean; text: string }[]>([]);
@@ -123,8 +190,8 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
       done: state.rulesCanReachSomeone,
       blocked: state.roster.length === 0 ? 'Add someone first' : null,
       detail: state.rulesCanReachSomeone
-        ? `${state.assignmentRules.filter((r) => r.enabled).length} active rule(s), at least one reaching a real person.`
-        : `Rules target ${[...new Set(state.assignmentRules.map((r) => r.toRole).filter(Boolean))].join(', ') || 'nobody'} — no active person holds those roles.`,
+        ? describeReach(state)
+        : whyRulesReachNobody(state),
     },
     {
       id: 'channel',
@@ -327,9 +394,6 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
               {/* --- 2 · rules --- */}
               {step.id === 'rules' ? (
                 <div className="ml-7 mt-3 flex flex-wrap items-center gap-3">
-                  <Link href="/control/team" className="text-brand text-[11px] underline">
-                    Edit assignment rules
-                  </Link>
                   {state.roster.length > 0 && !state.rulesCanReachSomeone ? (
                     <Button
                       size="sm"
@@ -358,6 +422,16 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
                   ) : null}
                 </div>
               ) : null}
+
+              {/*
+                The rules editor itself, in the step it belongs to. It used to sit
+                in its own section further down the page, reached by a link — and
+                before that, by a link to the page you were already on. Inlining it
+                is the same principle the rest of this checklist follows: the fix
+                lives next to the finding, so nobody has to work out which screen
+                to go to.
+              */}
+              {step.id === 'rules' && rulesEditor ? <div className="ml-7 mt-4">{rulesEditor}</div> : null}
 
               {/* --- 3 · channel --- */}
               {step.id === 'channel' ? (

@@ -315,8 +315,17 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       if (params.regions?.length) {
         const wanted = params.regions.map((x) => x.toLowerCase());
         filtered = filtered.filter((r) => {
-          const buyer = partyByRole(r.parties, 'procuringEntity') ?? partyByRole(r.parties, 'buyer');
-          const hay = [buyer?.address?.region, buyer?.address?.locality, buyer?.address?.countryName]
+          // Every party's address, not just the buyer's. On AusTender the
+          // procuringEntity carries no address at all — the region sits on the
+          // supplier — so a buyer-only haystack matched nothing and filtering by
+          // region silently returned zero. Naming all eight states, which should
+          // be a no-op, excluded every record.
+          //
+          // Widening the haystack can only ever admit more rows, so it cannot
+          // shrink the result for Find a Tender or Contracts Finder, whose
+          // buyers do publish a region.
+          const hay = (r.parties ?? [])
+            .flatMap((p) => [p.address?.region, p.address?.locality, p.address?.countryName])
             .filter(Boolean)
             .join(' ')
             .toLowerCase();

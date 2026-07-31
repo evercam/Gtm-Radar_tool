@@ -152,8 +152,13 @@ group('Nobody to assign to, nothing to assign');
   check('no users assigns nothing', planAllocation(many('coal', 10), [rule], [], DEFAULT_ALLOCATION).assignments.length === 0);
   check('no leads assigns nothing', planAllocation([], [rule], [user()], DEFAULT_ALLOCATION).assignments.length === 0);
   check('an inactive user receives nothing', planAllocation(many('coal', 5), [rule], [user({ isActive: false })], DEFAULT_ALLOCATION).assignments.length === 0);
+  // Behaviour changed deliberately: being on the roster is now enough to
+  // receive work, so leads no authored rule claims fall through to
+  // ROSTER_FALLBACK_RULE rather than piling up unassigned. A roster full of
+  // people and an empty rule list assigning nothing was the state most new
+  // installs sat in, and it read as a bug. See test-allocation-fallback.mjs.
   const noRule = planAllocation(many('coal', 5), [], [user()], DEFAULT_ALLOCATION);
-  check('no rules means everything is unassigned', noRule.unassigned === 5 && noRule.assignments.length === 0);
+  check('with no rules the roster still receives', noRule.assignments.length === 5 && noRule.unassigned === 0);
   const owned = planAllocation(many('coal', 5).map((l) => ({ ...l, owner_user_id: 'someone' })), [rule], [user()], DEFAULT_ALLOCATION);
   check('an already-owned lead is left alone', owned.assignments.length === 0);
 }

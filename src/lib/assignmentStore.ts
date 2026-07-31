@@ -64,6 +64,35 @@ export async function saveAssignmentRules(input: unknown): Promise<{ ok: boolean
   const validated = validateAssignmentRules(input);
   if (!validated.ok) return { ok: false, message: validated.error };
 
+  // A rule naming somebody by id who is not on the roster can never assign
+  // anything, and nothing anywhere says so: the pass simply matches no target
+  // and reports a successful run that moved nothing. This is how the shipped
+  // "Act Now leads to the admin" rule came to point at 2544d9da, an id present
+  // in neither `assignees` nor `user_profiles` — someone was removed from the
+  // roster and re-added, which mints a new id.
+  //
+  // Refused rather than warned, because the rule is inert either way and a
+  // refusal is the only version that gets fixed. `toRole` is NOT checked the
+  // same way: a role nobody holds yet is a legitimate thing to plan for, and
+  // the setup checklist already reports it.
+  const targetedIds = [...new Set(validated.rules.map((r) => r.toUserId).filter((x): x is string => Boolean(x)))];
+  if (targetedIds.length > 0) {
+    const { rows: roster, tableMissing } = await getRoster();
+    // Skip the check entirely if the roster table is missing — that is a
+    // migration problem, and blocking rule edits on it would help nobody.
+    if (!tableMissing && roster.length > 0) {
+      const known = new Set(roster.filter((p) => p.is_active).map((p) => p.id));
+      const unknown = validated.rules.filter((r) => r.toUserId && !known.has(r.toUserId));
+      if (unknown.length > 0) {
+        const names = unknown.map((r) => `“${r.name}”`).join(', ');
+        return {
+          ok: false,
+          message: `${names} ${unknown.length === 1 ? 'targets' : 'target'} someone who is not on the active roster. Pick a recipient from the roster, or remove the rule.`,
+        };
+      }
+    }
+  }
+
   const { error } = await getServiceSupabase()
     .from('assignment_rules')
     .upsert({ id: 'default', rules: validated.rules }, { onConflict: 'id' });
@@ -403,7 +432,31 @@ export async function removeAssignee(id: string): Promise<{ ok: boolean; message
   if (!isSupabaseServiceConfigured()) {
     return { ok: false, message: 'Supabase service role is not configured.' };
   }
-  const { error } = await getServiceSupabase().from('assignees').delete().eq('id', id);
+  const service = getServiceSupabase();
+
+  // Removing someone is what orphans a rule: the rule keeps their id, matches
+  // nobody, and reports successful runs that assign nothing. Disable those rules
+  // in the same breath and say which — leaving them enabled is how a rule ends
+  // up pointing at an id that exists nowhere, and disabling rather than deleting
+  // keeps the intent so it can be re-pointed at a colleague.
+  let disabled: string[] = [];
+  try {
+    const { rules } = await getAssignmentRules();
+    const affected = rules.filter((r) => r.toUserId === id && r.enabled !== false);
+    if (affected.length > 0) {
+      disabled = affected.map((r) => r.name);
+      const next = rules.map((r) => (r.toUserId === id ? { ...r, enabled: false } : r));
+      await service.from('assignment_rules').upsert({ id: 'default', rules: next }, { onConflict: 'id' });
+    }
+  } catch {
+    // No rules table yet, or unreadable — removal itself still stands.
+  }
+
+  const { error } = await service.from('assignees').delete().eq('id', id);
   if (error) return { ok: false, message: error.message };
-  return { ok: true, message: 'Removed — their leads are back in the pool.' };
+
+  const note = disabled.length
+    ? ` ${disabled.length} rule${disabled.length === 1 ? '' : 's'} pointed at them and ${disabled.length === 1 ? 'was' : 'were'} disabled: ${disabled.map((n) => `“${n}”`).join(', ')}.`
+    : '';
+  return { ok: true, message: `Removed — their leads are back in the pool.${note}` };
 }
