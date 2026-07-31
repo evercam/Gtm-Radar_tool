@@ -69,7 +69,7 @@ export default async function SignInPage({
           CSS here rather than stated. */}
       <Logo width={148} priority />
       <h1 className="text-foreground mt-6 text-2xl font-bold">{pending ? 'Almost there' : 'Sign in'}</h1>
-      <p className="text-muted mt-1 text-sm">Source Hub</p>
+      <p className="text-muted mt-1 text-sm">GTM Radar</p>
 
       {pending ? (
         <Card className="mt-6">

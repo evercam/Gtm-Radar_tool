@@ -47,19 +47,27 @@ for (const s of NAV_SECTIONS) {
   check(`${s.title}: labels are distinct`, d.length === 0, d.join(', '));
 }
 
-group('Each tab strip agrees with its sidebar section');
-// A page reachable from one but not the other is invisible from wherever it
-// was forgotten — and nothing fails, so only a person notices.
+group('The rail lands on a page that carries its section tabs');
+// The rail names each operator section ONCE and the tab strip names the pages
+// inside it, so these are deliberately no longer mirrors — asserting that every
+// tab has a rail entry would just re-demand the duplication that was removed.
+//
+// What still has to hold is reachability: whatever the rail points at must be a
+// page in that section's strip. If it is not, the strip never renders there and
+// every other page in the section is orphaned — nothing errors, the links simply
+// cease to exist for anyone who did not bookmark them.
 for (const [section, tabs] of [
   ['Operations', CONTROL_TABS],
   ['Administration', ADMIN_TABS],
 ]) {
-  const sidebarHrefs = new Set((NAV_SECTIONS.find((s) => s.title === section)?.items ?? []).map((i) => i.href));
+  const sidebarHrefs = [...new Set((NAV_SECTIONS.find((s) => s.title === section)?.items ?? []).map((i) => i.href))];
   const tabHrefs = new Set(tabs.map((i) => i.href));
-  const missingFromTabs = [...sidebarHrefs].filter((h) => !tabHrefs.has(h));
-  const missingFromSidebar = [...tabHrefs].filter((h) => !sidebarHrefs.has(h));
-  check(`${section}: every sidebar page has a tab`, missingFromTabs.length === 0, missingFromTabs.join(', '));
-  check(`${section}: every tab has a sidebar entry`, missingFromSidebar.length === 0, missingFromSidebar.join(', '));
+  const missingFromTabs = sidebarHrefs.filter((h) => !tabHrefs.has(h));
+
+  check(`${section}: the rail entry is one of the tabs`, missingFromTabs.length === 0, missingFromTabs.join(', '));
+  check(`${section}: the rail names the section once`, sidebarHrefs.length === 1, `${sidebarHrefs.length} entries`);
+  // Every page in the section must be a tab, or it is reachable from nowhere.
+  check(`${section}: the strip covers more than the landing page`, tabHrefs.size > 1, `${tabHrefs.size} tab(s)`);
 }
 
 group('A page is not offered from two different areas');

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { NAV_SECTIONS } from '@/lib/nav';
+import { NAV_SECTIONS, NAV_FOOTER } from '@/lib/nav';
 import Logo from './Logo';
 import type { Permission } from '@/lib/auth/roles';
 
@@ -31,12 +31,15 @@ export default function Sidebar({
   const pathname = usePathname();
   const granted = new Set(allowed);
 
-  // `/` would otherwise match every route, and `/control` would light up for
-  // all of its children — so the root is exact and the rest are prefix matches
-  // that stop at a path boundary.
+  // `/` would otherwise match every route, so the root is exact; everything else
+  // is a prefix match that stops at a path boundary.
+  //
+  // `/control` used to be exact too, back when its children each had their own
+  // rail entry to light up. Now the section is one entry, so it has to stay lit
+  // while you are anywhere inside it — otherwise opening Source Hub leaves the
+  // rail with nothing highlighted and no sense of where you are.
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/';
-    if (href === '/control') return pathname === '/control';
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
@@ -65,9 +68,17 @@ export default function Sidebar({
         <nav className="flex-1 space-y-5 overflow-y-auto px-2.5 py-4">
           {sections.map((section) => (
             <div key={section.title}>
-              <p className="mb-1.5 px-2.5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#3a3a3a]">
-                {section.title}
-              </p>
+              {/*
+                A heading over a single identically-named item reads as a stutter —
+                "Operations / Operations" — so the group label is dropped when it
+                would only repeat the one link beneath it. Groups that genuinely
+                name a set ("Administration" over "Settings") keep theirs.
+              */}
+              {section.items.length === 1 && section.items[0].label === section.title ? null : (
+                <p className="mb-1.5 px-2.5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#3a3a3a]">
+                  {section.title}
+                </p>
+              )}
               <div className="space-y-0.5">
                 {section.items.map((item) => {
                   const active = isActive(item.href);
@@ -96,9 +107,41 @@ export default function Sidebar({
           ))}
         </nav>
 
+        {/*
+          Outside the scrolling nav so it stays put — a link you reach for when
+          lost is no use if you have to scroll to find it. Green because it is the
+          only entry that explains rather than operates.
+        */}
+        <div className="border-t border-[#1c1c1c] px-2.5 py-2">
+          {NAV_FOOTER.map((item) => {
+            const active = isActive(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onClose}
+                aria-current={active ? 'page' : undefined}
+                className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 ${
+                  active
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : 'text-emerald-400/80 hover:bg-emerald-500/10 hover:text-emerald-300'
+                }`}
+              >
+                {active ? (
+                  <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-emerald-400" />
+                ) : null}
+                <span className="flex w-5 shrink-0 items-center justify-center">
+                  <item.icon size={15} strokeWidth={2} />
+                </span>
+                <span className="text-[12px] font-medium leading-none">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+
         <div className="flex items-center gap-2 border-t border-[#1c1c1c] px-4 py-3">
           <Logo variant="mark" width={16} className="shrink-0 opacity-60" />
-          <p className="text-[10px] text-[#5a5a5a]">Source Hub</p>
+          <p className="text-[10px] text-[#5a5a5a]">GTM Radar</p>
         </div>
       </aside>
     </>

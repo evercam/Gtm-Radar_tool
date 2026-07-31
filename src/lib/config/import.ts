@@ -158,7 +158,7 @@ export async function planImport(input: unknown): Promise<ImportPlan> {
 
   const version = bundle.schemaVersion;
   if (typeof version !== 'number') {
-    return { ok: false, error: 'Missing schemaVersion — is this a Source Hub configuration file?', sections: empty, warnings: [] };
+    return { ok: false, error: 'Missing schemaVersion — is this a GTM Radar configuration file?', sections: empty, warnings: [] };
   }
   if (version > CONFIG_SCHEMA_VERSION) {
     return {
