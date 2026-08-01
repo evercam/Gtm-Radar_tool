@@ -166,6 +166,10 @@ async function getTeamLoad(): Promise<{
         .select('owner_user_id, owner_assigned_at, sla_due_at, sla_breached')
         .not('status', 'in', OPEN)
         .not('owner_user_id', 'is', null)
+        // Ordered so the pages are stable. Each `.range()` is its own query, and
+        // without a sort Postgres may order them differently per page — repeating
+        // some rows and skipping others, which would silently miscount load.
+        .order('id', { ascending: true })
         .range(from, from + PAGE - 1);
 
       if (error) break;

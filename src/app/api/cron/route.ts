@@ -3,7 +3,7 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { getAllSourceConfigs, canRun } from '@/lib/sources/config';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { isCronSecret } from '@/lib/auth/cronSecret';
-import { cronMatches } from '@/lib/cron';
+import { isDue } from '@/lib/cron';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -27,6 +27,7 @@ export const maxDuration = 300;
  *
  * Jobs:
  *   ingest      pull from every source whose schedule is due
+ *   score       score and route what arrived — nothing can be selected unscored
  *   prioritise  select which records are worth enriching
  *   enrich      resolve accounts and find contacts for the queue
  *   assign      give finished leads an owner
@@ -38,8 +39,8 @@ export const maxDuration = 300;
  * quietly ingested and queued records that nothing ever finished.
  */
 
-type JobName = 'ingest' | 'prioritise' | 'enrich' | 'assign' | 'export' | 'daily';
-const JOBS: JobName[] = ['ingest', 'prioritise', 'enrich', 'assign', 'export', 'daily'];
+type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'assign' | 'export' | 'daily';
+const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'assign', 'export', 'daily'];
 
 interface JobResult {
   job: string;
@@ -141,10 +142,12 @@ async function runIngest(request: NextRequest, at: Date): Promise<JobResult> {
   if (tableMissing) return { job: 'ingest', ok: false, message: 'source_config is missing — run the migration.' };
 
   const due = Object.values(configs).filter(
-    (c) => c.ingestMode === 'cron' && canRun(c).allowed && c.scheduleCron && cronMatches(c.scheduleCron, at)
+    // Due, not "matches this minute" — see isDue. Vercel fired a 0 6 * * * cron
+    // at 06:59, so minute-exact matching skipped every scheduled source.
+    (c) => c.ingestMode === 'cron' && canRun(c).allowed && c.scheduleCron && isDue(c.scheduleCron, c.lastRunAt, at)
   );
 
-  if (due.length === 0) return { job: 'ingest', ok: true, message: 'No source is scheduled for this minute.' };
+  if (due.length === 0) return { job: 'ingest', ok: true, message: 'No source is due — every schedule has run since its last occurrence.' };
 
   const results = await Promise.all(due.map((c) => callInternal(request, `/api/ingest/${c.slug}`, {})));
   const ok = results.filter((r) => r.ok).length;
@@ -181,6 +184,17 @@ export async function POST(request: NextRequest) {
   // contact, assignment gives it an owner, and only then is there anything to
   // export. Running them in any other order just delays everything by a day.
   if (job === 'ingest' || job === 'daily') results.push(await runIngest(request, at));
+  // Between ingest and prioritisation, because prioritisation selects on band and
+  // score: a record ingested this morning has neither until this runs, so it is
+  // invisible to every enrichment rule. The chain had no scoring step at all —
+  // newly ingested records simply never became selectable, and the only way to
+  // score them was a button that cannot finish inside a function timeout.
+  //
+  // Scoped to unscored records, so this costs roughly what arrived today. A
+  // policy change still needs the full pass, run deliberately.
+  if (job === 'score' || job === 'daily') {
+    results.push(await callInternal(request, '/api/routing/apply', { scope: 'unscored' }));
+  }
   if (job === 'prioritise' || job === 'daily') results.push(await callInternal(request, '/api/prioritize', {}));
   if (job === 'enrich' || job === 'daily') results.push(await callInternal(request, '/api/enrich/batch', {}));
   if (job === 'assign' || job === 'daily') {

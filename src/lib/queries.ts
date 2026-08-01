@@ -92,9 +92,13 @@ interface AccountSignal {
 async function loadAccountSignals(client: SupabaseClient): Promise<Map<string, AccountSignal>> {
   const map = new Map<string, AccountSignal>();
   for (let from = 0; from < 500_000; from += 1000) {
+    // Ordered for the same reason as the scoring pass below: an unordered
+    // `.range()` walk can repeat rows and skip others, which here would silently
+    // drop key-account flags for part of the book.
     const { data, error } = await client
       .from('account_enrichment')
       .select('account_key, key_account, key_account_score')
+      .order('account_key', { ascending: true })
       .range(from, from + 999);
     if (error) break;
     for (const r of (data ?? []) as ({ account_key: string } & AccountSignal)[]) map.set(r.account_key, r);
@@ -193,10 +197,36 @@ const UPDATE_BATCH = 200;
  * outcome signature so the whole table updates in a handful of statements
  * rather than one per row.
  */
+/**
+ * How much of the table a scoring pass covers.
+ *
+ *   'unscored'  only records that have never been scored (`scored_at is null`).
+ *               What a daily run wants: bounded by what arrived since the last
+ *               one, so it finishes in seconds instead of ten minutes.
+ *   'all'       every record. Needed when the POLICY changes — new weights or
+ *               band cut-offs make every existing score wrong, and only a full
+ *               pass fixes that.
+ *
+ * The distinction matters because a full pass over 22,000 records takes 8–10
+ * minutes, against a 300-second function limit: as the only option it could not
+ * run in production at all, so new records were never scored and never reached a
+ * seller.
+ */
+export type ScoringScope = 'unscored' | 'all';
+
 export async function rerouteAll(
   rules: RoutingRule[],
-  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
-): Promise<{ total: number; byLane: Record<string, number>; byBand: Record<string, number> }> {
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG,
+  opts: { scope?: ScoringScope; maxRecords?: number } = {}
+): Promise<{
+  total: number;
+  byLane: Record<string, number>;
+  byBand: Record<string, number>;
+  scope: ScoringScope;
+  reachedCap: boolean;
+}> {
+  const scope = opts.scope ?? 'unscored';
+  const maxRecords = opts.maxRecords ?? Infinity;
   const service = getServiceSupabase();
   const signals = await loadAccountSignals(service);
   const nowMs = Date.now();
@@ -208,10 +238,21 @@ export async function rerouteAll(
   let total = 0;
 
   for (let from = 0; from < 1_000_000; from += 1000) {
-    const { data, error } = await service
+    // ORDER BY is not decoration here. Each `.range()` is its own query, so
+    // without a stable sort Postgres may return rows in a different order per
+    // page — pages then overlap and others are never seen. That is why a pass
+    // reporting "22,438 records" left 8,555 with a null band: it counted rows
+    // READ, duplicates included, not distinct rows covered. `id` is unique and
+    // indexed, which is all a keyset-stable page needs.
+    let page = service
       .from('canonical_projects')
       .select(SCORING_COLUMNS)
-      .range(from, from + 999);
+      .order('id', { ascending: true });
+    // Unscored-only reads shrink as the backlog clears, so a daily run costs
+    // roughly what arrived that day.
+    if (scope === 'unscored') page = page.is('scored_at', null);
+
+    const { data, error } = await page.range(from, from + 999);
     if (error) break;
     for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
       const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
@@ -233,8 +274,9 @@ export async function rerouteAll(
       byLane[lane] = (byLane[lane] ?? 0) + 1;
       byBand[priority.band] = (byBand[priority.band] ?? 0) + 1;
       total += 1;
+      if (total >= maxRecords) break;
     }
-    if (!data || data.length < 1000) break;
+    if (!data || data.length < 1000 || total >= maxRecords) break;
   }
 
   // batch-update each group (identical outcome) by id list
@@ -272,7 +314,7 @@ export async function rerouteAll(
       if (error) throw new Error(error.message);
     }
   }
-  return { total, byLane, byBand };
+  return { total, byLane, byBand, scope, reachedCap: total >= maxRecords };
 }
 
 export interface RoutingPreview {
