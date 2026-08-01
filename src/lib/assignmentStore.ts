@@ -184,9 +184,23 @@ export async function reassignLead(
     const fromUserId = (current as { owner_user_id: string | null } | null)?.owner_user_id ?? null;
     if (fromUserId === toUserId) return { ok: true, message: 'Already assigned to that owner.' };
 
+    // `toUserId` is a ROSTER id. `assignee_id` takes it; `owner_user_id` is a
+    // foreign key to user_profiles and takes the app account that roster entry is
+    // linked to — null for the majority of the roster, who never sign in.
+    //
+    // Writing the roster id straight into owner_user_id violated that key, so
+    // manually assigning to anyone without an account failed outright with a
+    // constraint error. `applyAssignments` has always mapped it; this did not.
+    let ownerAccountId: string | null = null;
+    if (toUserId) {
+      const { data: assignee } = await service.from('assignees').select('user_id').eq('id', toUserId).maybeSingle();
+      ownerAccountId = (assignee as { user_id: string | null } | null)?.user_id ?? null;
+    }
+
     const now = new Date();
     const patch: Record<string, unknown> = {
-      owner_user_id: toUserId,
+      assignee_id: toUserId,
+      owner_user_id: ownerAccountId,
       owner_assigned_at: toUserId ? now.toISOString() : null,
       owner_assigned_reason: options.reason ?? null,
       sla_due_at:

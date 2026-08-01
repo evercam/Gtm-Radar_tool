@@ -109,7 +109,13 @@ export async function runEnrichment(
 
     if (!account?.domain && input.company_name_raw?.trim()) {
       const location = [input.city, input.state_province, input.country].filter(Boolean).join(', ');
-      const org = await apolloFindOrganization(account?.name || input.company_name_raw, location || null);
+      const org = await apolloFindOrganization(account?.name || input.company_name_raw, location || null, {
+        // Tier 3 of the resolution ladder. It only fires when the published
+        // name and the rule-generated spellings both came back without a
+        // domain, so a run where Apollo's index is fine costs nothing extra.
+        useClaudeAliases: claudeAvailable,
+        vertical: input.vertical,
+      });
       if (org?.domain || org?.name) {
         accountSource = account?.name ? accountSource : 'apollo';
         switchboard = org.phone ?? null;

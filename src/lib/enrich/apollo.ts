@@ -1,6 +1,7 @@
 import 'server-only';
 import type { EnrichedContact } from './types';
 import { readSecret } from '@/lib/crypto/store';
+import { suggestCompanyAliases } from './companyAliases';
 
 /**
  * Apollo enrichment engine. Given the account (domain and/or company name)
@@ -260,6 +261,16 @@ export interface ApolloOrganization {
    * A main number that reaches the procurement desk beats no number at all.
    */
   phone: string | null;
+  /**
+   * Which tier resolved it: the published name, a rule-generated spelling, or a
+   * Claude-proposed alias. Carried so a surprising account is traceable to the
+   * step that produced it rather than looking like Apollo's own answer.
+   */
+  resolvedVia?: 'name' | 'rules' | 'claude';
+  /** The term Apollo actually matched. */
+  queriedAs?: string;
+  /** Claude's one-line justification, when tier 3 resolved it. */
+  aliasReasoning?: string | null;
 }
 
 interface ApolloOrgRaw {
@@ -320,40 +331,151 @@ function nameVariants(name: string): string[] {
   if (!base) return [];
 
   const out = [base];
+  // The word boundary on BOTH sides is load-bearing, and the two-letter forms are deliberately
+  // gone. Unanchored they matched inside ordinary words — "Renewables" lost its
+  // `ab` and became "Renew les", "Mesabi" lost its `sa` and became "Me bi". A
+  // mangled query matches nothing, so the ladder silently resolved nothing.
   const noSuffix = base
     .replace(
-      /(incorporated|inc|llc|l\.l\.c|ltd|limited|corporation|corp|company|co|plc|holdings|group|sa|s\.a|spa|gmbh|ag|bv|pty|lp|llp|ab|as|oy|nv)\.?/gi,
+      /\b(incorporated|inc|llc|ltd|limited|corporation|corp|company|co|plc|holdings|group|spa|gmbh|pty|llp)\b\.?/gi,
       ' '
     )
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (noSuffix && noSuffix !== base) out.push(noSuffix);
 
-  // Then drop the trailing descriptor — "Cypress Creek Renewables" -> "Cypress
-  // Creek". Only worth it while at least two words remain, or the query becomes
-  // so broad that the match means nothing.
+  // Then drop a trailing GENERIC descriptor — "Cypress Creek Renewables" ->
+  // "Cypress Creek". Only a generic word, never a distinctive one, because
+  // shortening past the distinctive part matches a different company entirely:
+  // "United States Steel" -> "United States" returns war.gov, and "Empire Iron
+  // Mining" -> "Empire Iron" returns a fence company. The `score < 2` guard below
+  // cannot catch those — the wrong org genuinely contains the query as a
+  // substring — and a confidently wrong domain is worse than no domain, because
+  // it puts contacts at an unrelated organisation in front of a seller.
   const words = (noSuffix || base).split(' ');
-  if (words.length >= 3) out.push(words.slice(0, -1).join(' '));
+  const GENERIC = new Set([
+    'renewables', 'renewable', 'energy', 'energies', 'mining', 'mines', 'resources',
+    'solar', 'wind', 'power', 'utilities', 'services', 'service', 'partners',
+    'ventures', 'development', 'developments', 'projects', 'international',
+    'industries', 'enterprises', 'systems', 'technologies', 'management',
+  ]);
+  if (words.length >= 3 && GENERIC.has(words[words.length - 1].toLowerCase())) {
+    out.push(words.slice(0, -1).join(' '));
+  }
 
   return [...new Set(out)].filter((v) => v.length >= 3);
 }
 
+export interface FindOrganizationOptions {
+  /**
+   * Let Claude propose alternative names when the string rules find no domain.
+   * Off by default, and gated by the enrichment policy's Claude toggle — this
+   * tier costs a model call per unresolved account.
+   */
+  useClaudeAliases?: boolean;
+  /** Extra context for the alias prompt; ignored when the tier is off. */
+  vertical?: string | null;
+}
+
+/**
+ * Resolve a company to an Apollo organization, in three tiers.
+ *
+ *   1. the name exactly as the source published it
+ *   2. rule-generated spellings — legal suffix dropped, trailing generic
+ *      descriptor dropped (see `nameVariants`)
+ *   3. names Claude proposes, when tiers 1–2 found no domain
+ *
+ * Tier 3 exists because tiers 1–2 are string edits, and the dominant failure is
+ * not spelling: sources publish the asset-owning entity ("Hibbing Taconite",
+ * "Cleveland-Cliffs Minorca Mine") while Apollo indexes the operating parent.
+ * No substring of the former is the latter. Of the 15 mining owners in the last
+ * export, 12 failed exactly this way and only 3 contacts reached the seller.
+ *
+ * Every tier ends at the same place — `searchOrganization`, with its `score < 2`
+ * guard. Claude only ever supplies a QUERY. Nothing it says about a company is
+ * believed unless Apollo independently holds a matching organisation, so a
+ * confidently wrong alias resolves to nothing rather than to the wrong company.
+ */
 export async function apolloFindOrganization(
   companyName: string | null | undefined,
-  location?: string | null
+  location?: string | null,
+  options: FindOrganizationOptions = {}
 ): Promise<ApolloOrganization | null> {
   const apiKey = await readSecret('apollo_api_key');
   if (!apiKey || !companyName?.trim()) return null;
 
   // Longest form first, then shorter ones, stopping at the first that yields a
   // domain — a domain is the whole point, since contact search needs one.
+  const tried = new Set<string>();
   let fallback: ApolloOrganization | null = null;
   for (const query of nameVariants(companyName)) {
+    tried.add(query.toLowerCase());
     const hit = await searchOrganization(apiKey, query, location);
-    if (hit?.domain) return hit;
+    if (hit?.domain) return { ...hit, resolvedVia: tried.size === 1 ? 'name' : 'rules', queriedAs: query };
     fallback = fallback ?? hit;
   }
+
+  if (!options.useClaudeAliases) return fallback;
+
+  const { names, domainHint, reasoning } = await suggestCompanyAliases(companyName, {
+    location,
+    vertical: options.vertical,
+  });
+  if (names.length === 0 && !domainHint) return fallback;
+
+  for (const alias of names) {
+    if (tried.has(alias.toLowerCase())) continue;
+    tried.add(alias.toLowerCase());
+    const hit = await searchOrganization(apiKey, alias, location);
+    if (hit?.domain) return { ...hit, resolvedVia: 'claude', queriedAs: alias, aliasReasoning: reasoning };
+    fallback = fallback ?? hit;
+  }
+
+  // The domain last, and still as a lookup rather than an answer: it is used to
+  // find Apollo's record for that company, and is dropped if Apollo has none.
+  if (domainHint) {
+    const hit = await searchOrganizationByDomain(apiKey, domainHint);
+    if (hit?.domain) return { ...hit, resolvedVia: 'claude', queriedAs: domainHint, aliasReasoning: reasoning };
+  }
+
   return fallback;
+}
+
+/**
+ * Look a company up by domain.
+ *
+ * Only ever called with a domain Claude proposed, and deliberately strict: the
+ * organisation Apollo returns must actually carry that domain. A near-miss here
+ * would attach a seller to a company nobody asked about.
+ */
+async function searchOrganizationByDomain(apiKey: string, domain: string): Promise<ApolloOrganization | null> {
+  try {
+    const res = await fetch(`${BASE}/mixed_companies/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify({ q_organization_domains_list: [domain], page: 1, per_page: 5 }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as { organizations?: ApolloOrgRaw[]; accounts?: ApolloOrgRaw[] };
+    const orgs = data.organizations ?? data.accounts ?? [];
+    const o = orgs.find((x) => (x.primary_domain ?? '').toLowerCase() === domain.toLowerCase());
+    if (!o) return null;
+
+    return {
+      name: o.name ?? null,
+      domain: o.primary_domain ?? null,
+      website: o.website_url ?? null,
+      industry: o.industry ?? null,
+      employeeCount: o.estimated_num_employees ?? null,
+      linkedinUrl: o.linkedin_url ?? null,
+      location: [o.city, o.state, o.country].filter(Boolean).join(', ') || null,
+      phone: orgPhone(o),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** One organization search, for one spelling of the name. */
