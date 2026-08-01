@@ -224,6 +224,23 @@ function isPlaceholder(s: string): boolean {
   return PLACEHOLDER_VALUES.has(s.toLowerCase());
 }
 
+/**
+ * First listed owner, with the share annotation removed.
+ *
+ * Deliberately not shared with `ownerNameSlug`, which does the same stripping for
+ * the grouping key: that returns a slug, and this has to stay a readable company
+ * name, because it is what a seller sees and what Apollo is asked about.
+ */
+export function cleanCompanyName(raw: string | null): string | null {
+  if (!raw) return null;
+  const first = raw
+    .split(';')[0]
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return first || null;
+}
+
 function firstPresent(row: Record<string, unknown>, keys: string[]): string | null {
   for (const k of keys) {
     const v = row[k];
@@ -474,7 +491,15 @@ export function normalizeGemRecord(raw: RawProjectRecord, tracker: string): Cano
   const uniqueId = `${tracker}:${gemId ?? `${slug(name)}|${slug(country ?? '')}`}`;
 
   const buildingType = typeDetail ? `${label} (${typeDetail})` : label;
-  const company = owner ?? operator;
+  // The owner as a company NAME, not as GEM writes it.
+  //
+  // GEM annotates ownership inline and lists co-owners in one field:
+  // "Alabama Power Co [50%]; Georgia Power Co [50%]". Stored verbatim, that
+  // reached Apollo as a search term and came back 422 "invalid character: [" —
+  // so every GEM lead with a share annotation, which is most of them, silently
+  // found no contacts. The share belongs to the ownership graph, not to the
+  // company's name; the first listed owner is the majority holder throughout.
+  const company = cleanCompanyName(owner ?? operator);
 
   const presentFields: Partial<Record<CriticalField, boolean>> = {
     project_name: isPresent(name),

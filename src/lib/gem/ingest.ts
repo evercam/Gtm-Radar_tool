@@ -3,6 +3,7 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { GEM_SOURCE_KEY, normalizeGemFile, parseGemFile, trackerFromFilename, trackerLabel } from '@/lib/gem/normalize';
 import type { CanonicalProjectInsert } from '@/lib/adapters/types';
 import { sourceProvenance } from '@/lib/provenance';
+import { dedupeBySourceUniqueId } from '@/lib/dedupeRecords';
 import { recordRunOutcome } from '@/lib/sources/config';
 import { startRun, finishRun } from '@/lib/sources/runs';
 
@@ -172,31 +173,6 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
 }
 
 /**
- * Collapses records that share a `source_unique_id`, keeping the first.
- *
- * Postgres refuses an `ON CONFLICT DO UPDATE` whose own batch names the same
- * conflict target twice — "cannot affect row a second time" — so this is a hard
- * precondition of the upsert, not a tidiness pass. GEM trackers are published at
- * unit/phase grain while `source_unique_id` resolves to the site, so 11 of the
- * 18 files carry duplicates and every one of them failed outright before this.
- *
- * First rather than last purely for determinism: re-running the same file must
- * produce the same row. Where duplicates represent real distinct units, the fix
- * is the id chosen in `normalize.ts` ID_KEYS, not this function — collapsing
- * here is the floor that keeps the batch legal.
- */
-function dedupeByUniqueId(records: CanonicalProjectInsert[]): {
-  unique: CanonicalProjectInsert[];
-  collapsed: number;
-} {
-  const seen = new Map<string, CanonicalProjectInsert>();
-  for (const r of records) {
-    if (!seen.has(r.source_unique_id)) seen.set(r.source_unique_id, r);
-  }
-  return { unique: [...seen.values()], collapsed: records.length - seen.size };
-}
-
-/**
  * How many ids to put in one existence probe.
  *
  * The probe is a GET, so the ids travel in the URL — 500 of them overran what
@@ -246,7 +222,7 @@ async function upsertRecords(
   let inserted = 0;
   let updated = 0;
 
-  const { unique: records, collapsed } = dedupeByUniqueId(input);
+  const { unique: records, collapsed } = dedupeBySourceUniqueId(input);
 
   for (let i = 0; i < records.length; i += UPSERT_CHUNK) {
     const chunk = records.slice(i, i + UPSERT_CHUNK);
