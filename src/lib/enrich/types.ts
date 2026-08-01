@@ -95,6 +95,17 @@ export interface EnrichedContact {
   linkedin_url: string | null;
   /** Where the contact came from: 'claude' | 'apollo'. */
   source: string;
+  /**
+   * Apollo's person id, and whether Apollo says an address exists.
+   *
+   * `api_search` returns neither the email nor the full surname — it reports
+   * `has_email` and obfuscates the name ("Ki***a"). Revealing either is a
+   * separate, credited `people/match` call, and the id is what that call matches
+   * on. Carried here so the reveal step knows which contacts are worth spending
+   * a credit on, rather than paying to discover there was nothing to find.
+   */
+  apolloPersonId?: string | null;
+  hasEmail?: boolean;
 }
 
 export interface EnrichedNews {

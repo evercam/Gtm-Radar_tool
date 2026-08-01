@@ -91,6 +91,29 @@ export interface EnrichmentPolicy {
    * gate in the pipeline. `any` accepts whichever channel validates.
    */
   channelRules: Record<string, 'phone' | 'email' | 'both' | 'any' | 'none'>;
+  /**
+   * Whether a lead must carry a validated phone/email for its lane before it
+   * counts as workable.
+   *
+   * On, a record missing its channel stays queued rather than reaching a seller
+   * who cannot act on it — which is right once contact details actually arrive.
+   * Off, the lane requirement is ignored entirely, for the case where no
+   * verification tool is connected AND the contact source does not return
+   * addresses: Apollo's api_search reports only THAT an email exists, revealing
+   * it is a separate credited call. Left on in that situation, nothing is ever
+   * workable and the queue grows forever with no explanation.
+   */
+  requireChannel: boolean;
+  /**
+   * How many contact addresses may be revealed per enrichment run.
+   *
+   * Apollo's search says an email EXISTS; getting it is a separate call at one
+   * credit each. So this is the real spend dial — `contactsPerAccount` decides
+   * how many people are found, this decides how many become contactable. 0 turns
+   * revealing off entirely, which leaves contacts with names and titles and
+   * nothing to send to.
+   */
+  maxEmailRevealsPerRecord: number;
   /** Only enrich records that still have no contact. */
   onlyMissingContact: boolean;
   /**
@@ -128,6 +151,8 @@ export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
   committeeSize: 'enterprise',
   contactsPerRole: 3,
   channelRules: { act_now: 'phone', qualify: 'phone', nurture: 'email' },
+  requireChannel: true,
+  maxEmailRevealsPerRecord: 3,
   onlyMissingContact: true,
   generateCallPrep: true,
   apolloBatchSize: 100,
@@ -184,6 +209,8 @@ export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
       }
       return out;
     })(),
+    requireChannel: bool(p.requireChannel, d.requireChannel),
+    maxEmailRevealsPerRecord: num(p.maxEmailRevealsPerRecord, d.maxEmailRevealsPerRecord, 0, 25),
     onlyMissingContact: bool(p.onlyMissingContact, d.onlyMissingContact),
     generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
     apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),

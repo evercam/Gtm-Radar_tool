@@ -1,6 +1,6 @@
 import 'server-only';
 import { enrichWithClaude, isClaudeConfigured, type ClaudeEnrichment } from '@/lib/enrich/claude';
-import { apolloFindContacts, apolloFindOrganization, isApolloConfigured } from '@/lib/enrich/apollo';
+import { apolloFindContacts, apolloFindOrganization, apolloRevealContacts, isApolloConfigured } from '@/lib/enrich/apollo';
 import type { EnrichInput, EnrichResult, EnrichedContact } from '@/lib/enrich/types';
 import { planEnrichmentApply, type AppliedField } from '@/lib/provenance';
 import { getEnrichmentProfile } from '@/lib/enrich/profiles';
@@ -236,9 +236,47 @@ export async function runEnrichment(
       committeeNotes = filled.notes;
     }
 
+    // Reveal addresses LAST, over the assembled committee.
+    //
+    // Search reports that an email exists; this is what gets it, and without it
+    // every contact reached export with a null email and was skipped — "contacts
+    // found" never became a lead anyone could act on.
+    //
+    // After the committee on purpose: `fillCommittee` goes back to Apollo for the
+    // roles the first search missed and returns its own list, so revealing before
+    // it covered only the openers. For accounts where the committee supplies most
+    // of the names — measured, 9 of 9 on one — that meant nothing was revealed at
+    // all. Capped by policy because each reveal is a credit.
+    if (budget.apollo && policy.maxEmailRevealsPerRecord > 0) {
+      const reveal = await apolloRevealContacts(committee, {
+        domain: account?.domain,
+        companyName: account?.name ?? input.company_name_raw,
+        limit: policy.maxEmailRevealsPerRecord,
+      });
+      committee = reveal.contacts;
+    }
+
+    // Reachability first, then role.
+    //
+    // Ranking on role alone put whoever held the most senior title in
+    // `contact_name` regardless of whether we had any way to reach them — and
+    // since only some contacts get an address revealed, the primary was routinely
+    // a name with a null email while three contactable people sat in
+    // `additional_contacts`. Export requires `contact_email`, so the record was
+    // skipped despite holding everything it needed.
+    //
+    // A Project Director who answers beats a VP who cannot be contacted. The
+    // committee keeps everyone either way, so nothing is lost by leading with the
+    // person a seller can actually open with.
     const ranked = committee
       .map((c) => ({ contact: c, role: classifyTitle(c.title, play) }))
-      .sort((a, b) => (a.role ? ROLE_META[a.role].priority : 0) < (b.role ? ROLE_META[b.role].priority : 0) ? 1 : -1);
+      .sort((a, b) => {
+        const reachable = (x: typeof a) => (x.contact.email ? 2 : x.contact.phone ? 1 : 0);
+        const byReach = reachable(b) - reachable(a);
+        if (byReach !== 0) return byReach;
+        const priority = (x: typeof a) => (x.role ? ROLE_META[x.role].priority : 0);
+        return priority(b) - priority(a);
+      });
 
     const topContact = ranked[0]?.contact ?? null;
     const topRole: BuyingRole | null = ranked[0]?.role ?? null;
@@ -380,7 +418,13 @@ export async function runEnrichment(
           // Act Now is a phone motion, Nurture an email motion — a record
           // missing its required channel is not workable, so it stays queued
           // rather than being handed to a seller who cannot act on it.
-          const channel = requiredChannel((row as Record<string, unknown>).stage as string | null, policy.channelRules);
+          // `requireChannel: false` drops the lane requirement wholesale — for
+          // when no verification tool is connected and the contact source does
+          // not hand back addresses, where enforcing it means nothing is ever
+          // workable and the queue grows with no explanation.
+          const channel = policy.requireChannel
+            ? requiredChannel((row as Record<string, unknown>).stage as string | null, policy.channelRules)
+            : 'none';
           const validation = await validateForChannel(channel, {
             email: (plan.updates.contact_email as string) ?? (row.contact_email as string) ?? null,
             phone: (plan.updates.contact_phone as string) ?? (row.contact_phone as string) ?? null,

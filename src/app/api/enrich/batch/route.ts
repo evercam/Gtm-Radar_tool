@@ -173,6 +173,10 @@ export async function POST(request: NextRequest) {
   let fatal: string | null = null;
   let fieldsAdded = 0;
   let contactsFound = 0;
+  // How many are actually contactable. Apollo's search says an address EXISTS;
+  // only a revealed one can be sent anywhere, so a count of contacts alone
+  // reads as progress that export cannot use.
+  let contactsWithEmail = 0;
 
   // Bounded concurrency: a pool of workers pulling from one cursor. Keeps the
   // Anthropic/Apollo rate limits happy without serializing the whole batch.
@@ -212,6 +216,7 @@ export async function POST(request: NextRequest) {
           succeeded += 1;
           fieldsAdded += res.applied?.length ?? 0;
           contactsFound += res.contacts.length;
+          contactsWithEmail += res.contacts.filter((c) => c.email).length;
         } else {
           failed += 1;
           if (res.fatal) fatal ??= res.message ?? 'Provider unavailable.';
@@ -275,12 +280,13 @@ export async function POST(request: NextRequest) {
     fatal,
     message: fatal
       ? `Stopped after ${succeeded + failed} of ${rows.length}. ${fatal}${stopped > 0 ? ` ${stopped} record${stopped === 1 ? '' : 's'} left untouched in the queue.` : ''}`
-      : `Enriched ${succeeded} of ${rows.length} — ${contactsFound} contact${contactsFound === 1 ? '' : 's'} found, ${fieldsAdded} field${fieldsAdded === 1 ? '' : 's'} filled${failed ? `, ${failed} failed` : ''}.`,
+      : `Enriched ${succeeded} of ${rows.length} — ${contactsFound} contact${contactsFound === 1 ? '' : 's'} found (${contactsWithEmail} with an email), ${fieldsAdded} field${fieldsAdded === 1 ? '' : 's'} filled${failed ? `, ${failed} failed` : ''}.`,
     requested: rows.length,
     succeeded,
     failed,
     fieldsAdded,
     contactsFound,
+    contactsWithEmail,
     queueTotal: total,
     durationMs,
     results,

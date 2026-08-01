@@ -220,4 +220,20 @@ export interface CanonicalProjectRow {
    * `scripts/resolve-owner-groups.mjs`; never by enrichment.
    */
   owner_group_key: string | null;
+
+  /**
+   * Contact verification (migration 20260726150000).
+   *
+   * `*_verified` false with a `*_validation_source` set means a validator ran and
+   * was not satisfied; false with a NULL source means nothing ever checked. The
+   * difference matters once leads are allowed to export unverified — an
+   * unconfirmed address must not read like a confirmed one.
+   */
+  email_verified: boolean;
+  email_confidence: number | null;
+  email_validation_source: string | null;
+  phone_verified: boolean;
+  phone_confidence: number | null;
+  phone_type: string | null;
+  phone_validation_source: string | null;
 }

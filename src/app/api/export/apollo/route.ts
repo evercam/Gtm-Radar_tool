@@ -16,10 +16,15 @@ export const maxDuration = 300;
  *
  * Pushes finished leads into Apollo in batches of 100.
  *
- * Eligibility is deliberately strict: a lead needs an owner, a validated
- * email, and must not have been sent before. Exporting an unowned or
- * unverified contact pollutes the destination list with records nobody is
- * working, which is worse than exporting nothing.
+ * Eligibility: a lead needs an owner, an email address, and must not have been
+ * sent before. Exporting an unowned contact pollutes the destination list with
+ * records nobody is working, which is worse than exporting nothing.
+ *
+ * Whether the address must be VERIFIED follows `requireChannel`. With no
+ * verification tool connected, requiring it held every lead at the last step
+ * with nothing able to clear it — so unverified leads travel, and they travel
+ * marked: the response counts them, and `email_verified` on the record stays
+ * false so nobody downstream mistakes an unconfirmed address for a checked one.
  */
 export async function POST(request: NextRequest) {
   const auth = await checkPermission('leads.export');
@@ -41,22 +46,32 @@ export async function POST(request: NextRequest) {
   const startedAtMs = Date.now();
   const limit = Math.max(1, Math.min(1000, body.limit ?? policy.apolloBatchSize ?? APOLLO_BATCH_LIMIT));
 
+  // Verification is required only while the policy asks for it. With no
+  // verification tool connected — and Apollo's api_search returning whether an
+  // address exists rather than the address itself — insisting on `email_verified`
+  // held every lead at the last step with nothing able to clear it. Unverified
+  // leads now export and travel WITH that fact: `email_verified` stays false and
+  // `email_validation_source` records how it was checked, so the receiving end
+  // can tell a confirmed address from an unconfirmed one.
+  const requireVerified = policy.requireChannel;
+
   let query = service
     .from('canonical_projects')
     .select(
-      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key'
+      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key'
     )
     .is('apollo_exported_at', null)
     // Ownership is assignee_id now — owner_user_id is null for everyone on the
     // roster without an app account, so this filter found nothing.
     .not('assignee_id', 'is', null)
     .eq('do_not_contact', false)
+    // An address is always required — there is nothing to export without one.
     .not('contact_email', 'is', null)
-    .eq('email_verified', true)
     .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED'])
     .order('priority_score', { ascending: false, nullsFirst: false })
     .limit(limit);
 
+  if (requireVerified) query = query.eq('email_verified', true);
   if (body.bu) query = query.eq('bu', body.bu);
 
   const { data, error } = await query;
@@ -69,13 +84,26 @@ export async function POST(request: NextRequest) {
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
-      message: 'Nothing eligible — leads need an owner, a verified email, no do-not-contact flag, and must not have been sent already.',
+      message: requireVerified
+        ? 'Nothing eligible — leads need an owner, a VERIFIED email, no do-not-contact flag, and must not have been sent already. Turn off "Require a validated phone or email" in Settings to export unverified addresses.'
+        : 'Nothing eligible — leads need an owner, an email address, no do-not-contact flag, and must not have been sent already.',
       requested: 0,
       created: 0,
       existing: 0,
       failed: 0,
     });
   }
+
+  // Stated, not implied. An export that quietly includes unconfirmed addresses
+  // is how a sales tool fills with bounces nobody can account for.
+  const unverifiedEmails = rows.filter((r) => r.email_verified !== true).length;
+  const unverifiedPhones = rows.filter((r) => r.contact_phone && r.phone_verified !== true).length;
+  const caveat =
+    unverifiedEmails > 0 || unverifiedPhones > 0
+      ? ` ${unverifiedEmails} email${unverifiedEmails === 1 ? '' : 's'}` +
+        (unverifiedPhones > 0 ? ` and ${unverifiedPhones} phone${unverifiedPhones === 1 ? '' : 's'}` : '') +
+        ' unverified.'
+      : '';
 
   // Who owns each lead, and their Apollo user id — that is what puts a BDR's
   // name on the contact instead of leaving it unowned. Resolved once for the
@@ -158,7 +186,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       dryRun: true,
-      message: `${contacts.length} contact${contacts.length === 1 ? '' : 's'} would be sent to Apollo in ${chunk(contacts).length} batch(es).`,
+      message: `${contacts.length} contact${contacts.length === 1 ? '' : 's'} would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}`,
       requested: contacts.length,
       batches: chunk(contacts).length,
       preview: contacts.slice(0, 10).map((c) => ({
@@ -255,7 +283,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     ok: failed < contacts.length,
-    message: `Sent ${contacts.length} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.`,
+    message: `Sent ${contacts.length} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}`,
     requested: contacts.length,
     created,
     existing,

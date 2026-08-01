@@ -157,6 +157,37 @@ export default function RecordDetail({ r }: { r: CanonicalProjectRow }) {
             ['Website', r.company_website ?? r.company_domain],
           ]}
         />
+        {/*
+          Whether an address was actually confirmed, stated next to it. Leads
+          export without verification when the policy allows it, so "we have an
+          email" and "we checked this email" have to be tellable apart on the
+          record — otherwise an unconfirmed address reads as a confirmed one and
+          the bounce is a surprise. `never checked` is distinct from `unverified`
+          on purpose: no validator ran at all versus one ran and was not
+          satisfied.
+        */}
+        {r.contact_email || r.contact_phone ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {r.contact_email ? (
+              <Badge tone={r.email_verified ? 'success' : 'warning'}>
+                {r.email_verified
+                  ? `email verified${r.email_validation_source ? ` · ${r.email_validation_source}` : ''}`
+                  : r.email_validation_source
+                    ? `email unverified · ${r.email_validation_source}`
+                    : 'email never checked'}
+              </Badge>
+            ) : null}
+            {r.contact_phone ? (
+              <Badge tone={r.phone_verified ? 'success' : 'warning'}>
+                {r.phone_verified
+                  ? `phone verified${r.phone_validation_source ? ` · ${r.phone_validation_source}` : ''}`
+                  : r.phone_validation_source
+                    ? `phone unverified · ${r.phone_validation_source}`
+                    : 'phone never checked'}
+              </Badge>
+            ) : null}
+          </div>
+        ) : null}
       </Section>
 
       <Section title="Sales intelligence">

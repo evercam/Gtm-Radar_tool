@@ -124,6 +124,20 @@ export const ENRICHMENT_FIELDS: PolicyField[] = [
     hint: 'The point of enrichment is a name to call. Turning this off re-enriches records that already have one.',
   },
   {
+    path: 'maxEmailRevealsPerRecord',
+    label: 'Email reveals per record',
+    kind: 'number',
+    group: 'Contacts',
+    hint: 'Apollo search says an address exists; getting it is a separate call at one credit each. This is the real spend dial — contacts per account decides how many people are found, this decides how many become contactable. 0 turns revealing off, leaving contacts with a name and title and nothing to send to.',
+  },
+  {
+    path: 'requireChannel',
+    label: 'Require a validated phone or email',
+    kind: 'toggle',
+    group: 'Who gets enriched',
+    hint: 'On, a lead stays queued until it has the channel its lane works through — right once contact details actually arrive. Turn it OFF while no verification tool is connected and the contact source returns no addresses: Apollo reports only that an email exists, and revealing it is a separate credited call. Left on in that state nothing is ever workable and the queue grows with no explanation.',
+  },
+  {
     path: 'requireCompany',
     label: 'Require a company name',
     kind: 'toggle',
