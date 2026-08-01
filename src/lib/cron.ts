@@ -197,6 +197,58 @@ export function nextRun(expression: string | null | undefined, from: Date = new 
   return null;
 }
 
+/**
+ * The most recent moment this expression fired, at or before `from`.
+ *
+ * The mirror of `nextRun`, and it shares the same matcher for the same reason: a
+ * second implementation could disagree with the one that decides what runs.
+ */
+export function previousRun(expression: string | null | undefined, from: Date = new Date()): Date | null {
+  const expr = (expression ?? '').trim();
+  if (!expr || !isValidCron(expr)) return null;
+
+  const at = new Date(from.getTime());
+  at.setUTCSeconds(0, 0);
+
+  const MINUTES_IN_A_YEAR = 366 * 24 * 60;
+  for (let i = 0; i < MINUTES_IN_A_YEAR; i++) {
+    if (cronMatches(expr, at)) return at;
+    at.setUTCMinutes(at.getUTCMinutes() - 1);
+  }
+  return null;
+}
+
+/**
+ * Whether a schedule is owed a run.
+ *
+ * Asking "does the expression match this minute" — which is what this used to
+ * do — assumes the trigger arrives in the exact minute the schedule names.
+ * Vercel does not promise that: a `0 6 * * *` cron was observed firing at
+ * 06:59, so `0 6 * * *` matched nothing and the source never ran. Not once,
+ * silently, for every scheduled source.
+ *
+ * So dueness is a question about the SOURCE, not the clock: has it run since
+ * its last scheduled time? That is self-correcting — a late trigger still
+ * catches the occurrence it missed, a skipped day is picked up by the next
+ * tick, and it cannot double-run, because once `lastRunAt` is at or after the
+ * occurrence the answer is no.
+ *
+ * A source that has never run is due as soon as its schedule has passed once.
+ */
+export function isDue(
+  expression: string | null | undefined,
+  lastRunAt: Date | string | null | undefined,
+  now: Date = new Date()
+): boolean {
+  const occurrence = previousRun(expression, now);
+  if (!occurrence) return false;
+  if (!lastRunAt) return true;
+
+  const last = lastRunAt instanceof Date ? lastRunAt : new Date(lastRunAt);
+  if (Number.isNaN(last.getTime())) return true;
+  return last.getTime() < occurrence.getTime();
+}
+
 /** "in 3h 12m" — how long until the schedule next fires. */
 export function untilNextRun(expression: string | null | undefined, from: Date = new Date()): string | null {
   const next = nextRun(expression, from);
