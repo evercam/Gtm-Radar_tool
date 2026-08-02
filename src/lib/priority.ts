@@ -106,6 +106,17 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
   { match: 'retired', weight: 0, label: 'retired' },
   { match: 'shelved', weight: 0.05, label: 'shelved' },
   { match: 'mothballed', weight: 0.05, label: 'mothballed' },
+  // Measured against the live corpus: 679 records carried a phase this table did
+  // not match, so they fell through to the record-type default of 0.4 — a MIDDLE
+  // timing score. That is the wrong direction for the dead ones. "Closed" and
+  // "Idled" were being weighted like live projects, and 0.4 of a 30-point
+  // component is enough to lift a finished asset above a real pre-construction
+  // project. Ordered above the live rules because 'closed' must not be reached
+  // by anything else first.
+  { match: 'closed', weight: 0, label: 'closed' },
+  { match: 'idled', weight: 0.05, label: 'idled' },
+  { match: 'idle', weight: 0.05, label: 'idle' },
+  { match: 'on hold', weight: 0.05, label: 'on hold' },
   // prime window — breaking ground now
   { match: 'pre-construction', weight: 1, label: 'pre-construction — prime window' },
   { match: 'preconstruction', weight: 1, label: 'pre-construction — prime window' },
@@ -135,6 +146,27 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
   { match: 'announced', weight: 0.3, label: 'announced only' },
   { match: 'conceptual', weight: 0.25, label: 'conceptual' },
   { match: 'pre-announcement', weight: 0.2, label: 'pre-announcement' },
+  // The rest of the unmatched values, each placed by what it means for install
+  // timing rather than by how early it sounds.
+  //
+  // `commissioning` is the one worth arguing about: the plant is being handed
+  // over, so construction is essentially done and there is nothing left to put a
+  // camera on. It reads late-stage-and-active, which is exactly why the 0.4
+  // default flattered it.
+  { match: 'commissioning', weight: 0.15, label: 'commissioning — build finishing' },
+  { match: 'in process', weight: 0.8, label: 'in process' },
+  { match: 'issued', weight: 0.7, label: 'permit issued' },
+  { match: 'new application', weight: 0.45, label: 'application filed' },
+  { match: 'pre_validation', weight: 0.4, label: 'awaiting validation' },
+  { match: 'ai received', weight: 0.4, label: 'application received' },
+  { match: 'officer allocation', weight: 0.4, label: 'with a case officer' },
+  { match: 'valid', weight: 0.4, label: 'application valid' },
+  { match: 'announcement', weight: 0.3, label: 'announced only' },
+  { match: 'proposed', weight: 0.3, label: 'proposed' },
+  { match: 'in-development', weight: 0.3, label: 'in development' },
+  { match: 'active', weight: 0.3, label: 'active — stage unstated' },
+  { match: 'pipeline', weight: 0.2, label: 'in the pipeline' },
+  { match: 'discovered', weight: 0.15, label: 'newly discovered — stage unknown' },
 ];
 
 export const DEFAULT_PRIORITY_CONFIG: PriorityConfig = {
