@@ -4,6 +4,7 @@ import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
 import { configForBu, type ScoringPolicySet } from '@/lib/policies';
+import { arrivalFor } from '@/lib/arrival';
 
 // ============================================================================
 // canonical_projects
@@ -919,6 +920,13 @@ export interface EnrichQueueRow {
 export interface EnrichQueueFilters {
   bu?: string;
   /**
+   * Include projects that are already built or cancelled.
+   *
+   * Off by default: enrichment spends Apollo credits, and a finished project
+   * cannot become a lead however well it scores. Turn on to re-enrich history.
+   */
+  includeUnreachable?: boolean;
+  /**
    * Bands the policy permits — the standing eligibility rule.
    *
    * Distinct from `band`, which is one caller narrowing within it. Both apply.
@@ -1003,17 +1011,26 @@ function applyQueueFilters<
  */
 export async function getEnrichmentQueue(
   f: EnrichQueueFilters = {}
-): Promise<{ rows: EnrichQueueRow[]; total: number }> {
+): Promise<{ rows: EnrichQueueRow[]; total: number; unreachableSkipped: number }> {
   const supabase = await getReadSupabase();
+  const want = Math.min(500, Math.max(1, f.limit ?? 50));
+
+  /**
+   * Ask for more than we need, because rows are dropped after they arrive.
+   *
+   * "Already built" is decided by `arrivalFor`, which reads the admin-editable
+   * phase table — so expressing it in SQL would mean maintaining the same list
+   * of phases in two places, and they would drift. Over-fetching keeps one
+   * source of truth, at the cost of a wider read.
+   */
+  const overfetch = f.includeUnreachable ? want : Math.min(500, want * 4);
 
   const run = async (withStatus: boolean) => {
     const columns = withStatus ? `${ENRICH_QUEUE_COLUMNS},status` : ENRICH_QUEUE_COLUMNS;
     const base = supabase.from('canonical_projects').select(columns, { count: 'exact' });
     const filters = withStatus ? { ...f, statuses: f.statuses ?? CLAIMABLE_STATUSES } : { ...f, statuses: undefined };
     const query = applyQueueFilters(base as never, filters) as unknown as typeof base;
-    return query
-      .order('priority_score', { ascending: false, nullsFirst: false })
-      .limit(Math.min(500, Math.max(1, f.limit ?? 50)));
+    return query.order('priority_score', { ascending: false, nullsFirst: false }).limit(overfetch);
   };
 
   try {
@@ -1022,10 +1039,35 @@ export async function getEnrichmentQueue(
     // silently reporting zero eligible records.
     let { data, error, count } = await run(true);
     if (isMissingColumn(error)) ({ data, error, count } = await run(false));
-    if (error) return { rows: [], total: 0 };
-    return { rows: (data ?? []) as unknown as EnrichQueueRow[], total: count ?? 0 };
+    if (error) return { rows: [], total: 0, unreachableSkipped: 0 };
+
+    const fetched = (data ?? []) as unknown as EnrichQueueRow[];
+    if (f.includeUnreachable) return { rows: fetched.slice(0, want), total: count ?? 0, unreachableSkipped: 0 };
+
+    /**
+     * Drop the projects that are already built, cancelled or commissioning.
+     *
+     * Not a change of SCOPE — every record stays in the table, on the list, and
+     * says how early we are. It is a change of SPEND: buying contacts for a
+     * plant that started operating in 2019 produces a lead nobody can sell, and
+     * the priority score cannot prevent that on its own, because a large owner
+     * scores well on value, ICP and key-account whether or not this particular
+     * asset is finished.
+     *
+     * Measured before this: of ~111 records enriched, 13 were built or dead and
+     * only 11 were in-scope construction projects.
+     */
+    const keep = fetched.filter((r) => arrivalFor(r).verdict !== 'too_late');
+    return {
+      rows: keep.slice(0, want),
+      total: count ?? 0,
+      // Only what was seen on this page. The database count is unfiltered, and
+      // extrapolating a global figure from a sample would be a guess presented
+      // as a number.
+      unreachableSkipped: fetched.length - keep.length,
+    };
   } catch {
-    return { rows: [], total: 0 };
+    return { rows: [], total: 0, unreachableSkipped: 0 };
   }
 }
 

@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
   }
   const effectiveLimit = rails.reduce((n, r) => Math.min(n, r.cap - r.used), limit);
 
-  const { rows, total } = await getEnrichmentQueue({ ...filters, limit: effectiveLimit });
+  const { rows, total, unreachableSkipped } = await getEnrichmentQueue({ ...filters, limit: effectiveLimit });
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
@@ -116,6 +116,7 @@ export async function POST(request: NextRequest) {
       succeeded: 0,
       failed: 0,
       queueTotal: total,
+    unreachableSkipped,
       results: [],
     });
   }
@@ -287,7 +288,12 @@ export async function POST(request: NextRequest) {
     fatal,
     message: fatal
       ? `Stopped after ${succeeded + failed} of ${rows.length}. ${fatal}${stopped > 0 ? ` ${stopped} record${stopped === 1 ? '' : 's'} left untouched in the queue.` : ''}`
-      : `Enriched ${succeeded} of ${rows.length} — ${contactsFound} contact${contactsFound === 1 ? '' : 's'} found (${contactsWithEmail} with an email), ${fieldsAdded} field${fieldsAdded === 1 ? '' : 's'} filled${failed ? `, ${failed} failed` : ''}.`,
+      : `Enriched ${succeeded} of ${rows.length} — ${contactsFound} contact${contactsFound === 1 ? '' : 's'} found (${contactsWithEmail} with an email), ${fieldsAdded} field${fieldsAdded === 1 ? '' : 's'} filled${failed ? `, ${failed} failed` : ''}.` +
+        // Said out loud, because a queue that quietly drops records looks like a
+        // queue that has run out of work. This is spend avoided, not work lost.
+        (unreachableSkipped > 0
+          ? ` Skipped ${unreachableSkipped} already-built or cancelled project${unreachableSkipped === 1 ? '' : 's'} — no contacts bought for work that is over.`
+          : ''),
     requested: rows.length,
     succeeded,
     failed,
