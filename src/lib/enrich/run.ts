@@ -117,7 +117,11 @@ export async function runEnrichment(
     // thinking budget, so it routinely succeeds on a record where the 16k-token
     // research call times out — and that is exactly the record that needs it.
     const claudeUsable = budget.claude && (await isClaudeConfigured());
-    let claudeAvailable = claudeUsable;
+    // The deep research call is the one that does not fit in a batch — see
+    // `researchInline` on the policy. The `brief` job turns it on and runs a
+    // couple of records at a time; the enrichment batch leaves it off and stays
+    // fast. Tier-3 alias resolution is unaffected: it needs `claudeUsable` only.
+    let claudeAvailable = claudeUsable && policy.researchInline;
     let claude: ClaudeEnrichment = NO_CLAUDE;
     let claudeError: string | null = null;
     if (claudeAvailable) {
@@ -309,7 +313,9 @@ export async function runEnrichment(
         .join(', ');
       committeeNotes = [
         ...committeeNotes,
-        `Reveal · ${reveal.revealed} of ${reveal.attempted} attempted${why ? ` (skipped: ${why})` : ''}.`,
+        `Reveal · ${reveal.revealed} known, ${reveal.attempted} credit(s) spent` +
+          (reveal.fromCache ? `, ${reveal.fromCache} from cache` : '') +
+          `${why ? ` (skipped: ${why})` : ''}.`,
       ];
     }
 

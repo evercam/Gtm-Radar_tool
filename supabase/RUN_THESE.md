@@ -17,6 +17,13 @@ always safe.
 | 7 | `20260726160000_source_config_and_runs.sql` | `source_config`, `ingestion_runs` |
 | 8 | `20260726170000_prioritisation.sql` | `enrichment_rules`, `prioritisation_runs`, snooze |
 | 9 | `20260726180000_bootstrap_first_admin.sql` | makes the first signup an admin |
+| 10 | `20260802100000_apollo_reveal_cache.sql` | `apollo_reveal_cache` — one Apollo credit per person, not per record |
+
+**File 10 is optional but pays for itself.** Without it, reveals still work;
+the cache read logs a warning and every reveal is billed again. With it, a
+person Apollo has already been asked about is free on every subsequent record.
+That matters most where one company owns many projects — four Cleveland-Cliffs
+mining records revealed the same three people for twelve credits.
 
 **Validate before running.** `./scripts/test-migrations.sh` applies every
 migration to a throwaway Postgres in a Docker container, then re-applies them

@@ -124,6 +124,23 @@ export interface EnrichmentPolicy {
   generateCallPrep: boolean;
   /** Contacts pushed to Apollo per daily export run. Apollo caps a batch at 100. */
   apolloBatchSize: number;
+  /**
+   * Run Claude's deep account research INSIDE the enrichment batch.
+   *
+   * Off, because the arithmetic does not allow it: `batchSize` 10 at
+   * `concurrency` 3 gives each record roughly 75 seconds of the route's
+   * 300-second budget, and the research call — 16k tokens, adaptive thinking,
+   * up to six web-search resumes — wants 150 or more on its own. Measured, it
+   * timed out on every Cleveland-Cliffs record, and raising the ceiling only
+   * converts "one brief missing" into "the batch dies mid-write".
+   *
+   * So enrichment does the part that makes a lead WORKABLE — domain, contacts,
+   * revealed addresses, all of it Apollo — and the `brief` job does the part
+   * that makes it well-briefed, a couple of records at a time with the whole
+   * function to itself. Turn this on only if briefs must land in the same pass
+   * as contacts and the research prompt has been shrunk to fit.
+   */
+  researchInline: boolean;
 }
 
 export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
@@ -156,6 +173,7 @@ export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
   onlyMissingContact: true,
   generateCallPrep: true,
   apolloBatchSize: 100,
+  researchInline: false,
 };
 
 /** Coerce a saved (possibly partial or stale) policy onto the defaults. */
@@ -214,6 +232,7 @@ export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
     onlyMissingContact: bool(p.onlyMissingContact, d.onlyMissingContact),
     generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
     apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),
+    researchInline: bool(p.researchInline, d.researchInline),
   };
 }
 

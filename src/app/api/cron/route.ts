@@ -39,8 +39,8 @@ export const maxDuration = 300;
  * quietly ingested and queued records that nothing ever finished.
  */
 
-type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'assign' | 'export' | 'daily';
-const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'assign', 'export', 'daily'];
+type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'brief' | 'assign' | 'export' | 'daily';
+const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'brief', 'assign', 'export', 'daily'];
 
 interface JobResult {
   job: string;
@@ -197,6 +197,11 @@ export async function POST(request: NextRequest) {
   }
   if (job === 'prioritise' || job === 'daily') results.push(await callInternal(request, '/api/prioritize', {}));
   if (job === 'enrich' || job === 'daily') results.push(await callInternal(request, '/api/enrich/batch', {}));
+  // After enrich, before assign: a brief is worth most while the lead is still
+  // waiting to be handed to somebody. It is also the only step allowed to come
+  // back empty without the day being a failure — briefs that do not finish stay
+  // queued for tomorrow, and nothing downstream waits on one.
+  if (job === 'brief' || job === 'daily') results.push(await callInternal(request, '/api/enrich/brief', {}));
   if (job === 'assign' || job === 'daily') {
     results.push(await callInternal(request, '/api/leads', { action: 'autoAssign' }));
   }

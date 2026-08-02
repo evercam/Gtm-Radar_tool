@@ -2,6 +2,7 @@ import 'server-only';
 import type { EnrichedContact } from './types';
 import { readSecret } from '@/lib/crypto/store';
 import { suggestCompanyAliases } from './companyAliases';
+import { readRevealCache, writeRevealCache } from './revealCache';
 
 /**
  * Apollo enrichment engine. Given the account (domain and/or company name)
@@ -185,7 +186,10 @@ export async function apolloFindContacts(params: {
 export interface RevealOutcome {
   contacts: EnrichedContact[];
   revealed: number;
+  /** Paid calls to `people/match`. This is the credit spend. */
   attempted: number;
+  /** Answered from `apollo_reveal_cache` — no credit spent. */
+  fromCache: number;
   /** Why the rest produced nothing. Counts, one bucket per reason. */
   skipped: {
     noKey: number;
@@ -195,6 +199,8 @@ export interface RevealOutcome {
     /** Apollo answered 200 with `person: null`. */
     notFound: number;
     httpError: number;
+    /** Reached the per-record credit cap with people still unrevealed. */
+    overCreditCap: number;
   };
 }
 
@@ -209,28 +215,57 @@ export async function apolloRevealContacts(
   // trying, Apollo refusing the call, Apollo having no record — and the three
   // skips plus the `!person` branch all `continue`d without a word. Diagnosing a
   // zero meant reproducing the whole run by hand.
-  const skipped = { noKey: 0, alreadyHasEmail: 0, noEmailOnFile: 0, noPersonId: 0, notFound: 0, httpError: 0 };
+  const skipped = { noKey: 0, alreadyHasEmail: 0, noEmailOnFile: 0, noPersonId: 0, notFound: 0, httpError: 0, overCreditCap: 0 };
   if (!apiKey || limit <= 0) {
     if (!apiKey) skipped.noKey = contacts.length;
-    return { contacts, revealed: 0, attempted: 0, skipped };
+    return { contacts, revealed: 0, attempted: 0, fromCache: 0, skipped };
   }
 
   const out = [...contacts];
   let revealed = 0;
   let attempted = 0;
+  let fromCache = 0;
 
-  for (let i = 0; i < out.length && attempted < limit; i++) {
+  // What we already paid to learn about these people. Read in one go rather than
+  // per contact, so the saving does not cost a round trip each.
+  const cached = await readRevealCache(out.map((c) => c.apolloPersonId).filter((id): id is string => Boolean(id)));
+
+  for (let i = 0; i < out.length; i++) {
     const c = out[i];
     if (isRealEmail(c.email)) {
       skipped.alreadyHasEmail++;
       continue;
     }
+    if (!c.apolloPersonId) {
+      skipped.noPersonId++;
+      continue;
+    }
+
+    // The cache first, and BEFORE the credit cap — a cache hit costs nothing, so
+    // letting `limit` gate it would be spending the budget on people we already
+    // know. It also comes before the `hasEmail === false` skip: search reporting
+    // no address on file does not mean we never revealed one.
+    const hit = cached.get(c.apolloPersonId);
+    if (hit) {
+      fromCache++;
+      out[i] = {
+        ...c,
+        name: hit.fullName ?? c.name,
+        email: hit.email ?? c.email,
+        phone: hit.phone ?? c.phone,
+        linkedin_url: hit.linkedinUrl ?? c.linkedin_url,
+        hasEmail: Boolean(hit.email) || c.hasEmail,
+      };
+      if (hit.email) revealed += 1;
+      continue;
+    }
+
     if (c.hasEmail === false) {
       skipped.noEmailOnFile++;
       continue;
     }
-    if (!c.apolloPersonId) {
-      skipped.noPersonId++;
+    if (attempted >= limit) {
+      skipped.overCreditCap++;
       continue;
     }
 
@@ -261,6 +296,9 @@ export async function apolloRevealContacts(
         // used to look identical to it.
         console.warn(`Apollo reveal: 200 but no person for ${c.name ?? c.apolloPersonId}.`);
         skipped.notFound++;
+        // Cached anyway. "Apollo has nobody for this id" cost a credit to learn
+        // and is just as true on the next record that meets this person.
+        await writeRevealCache(c.apolloPersonId, { email: null, fullName: null, phone: null, linkedinUrl: null }, domain ?? null);
         continue;
       }
 
@@ -280,13 +318,23 @@ export async function apolloRevealContacts(
         hasEmail: Boolean(email) || c.hasEmail,
       };
       if (email) revealed += 1;
+      await writeRevealCache(
+        c.apolloPersonId,
+        {
+          email,
+          fullName: fullName ?? null,
+          phone: personPhone(person),
+          linkedinUrl: person.linkedin_url ?? null,
+        },
+        domain ?? null
+      );
     } catch (err) {
       console.error(`Apollo reveal threw: ${err instanceof Error ? err.message : String(err)}`);
       skipped.httpError++;
     }
   }
 
-  return { contacts: out, revealed, attempted, skipped };
+  return { contacts: out, revealed, attempted, fromCache, skipped };
 }
 
 /** An organization as Apollo knows it — the account behind a record. */
