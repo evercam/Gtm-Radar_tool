@@ -242,8 +242,18 @@ export default async function HelpPage() {
           the right people, and checks their details are real.
         </p>
         <p className="text-body text-sm">
-          It is not run on everything, because every lookup costs money. Records are queued in score order and only the
-          top {policy.batchSize} are worked at a time, up to {policy.maxBatchSize} in one run.
+          It is not run on everything, because every lookup costs money. {policy.batchSize} records are worked at a
+          time, up to {policy.maxBatchSize} in one run.
+        </p>
+        <p className="text-body text-sm">
+          Which {policy.batchSize} is decided by <Term>who is short</Term>, not by score alone. Each person&rsquo;s
+          share of the month is their quota&rsquo;s share of the total, and the batch is split between whoever is
+          furthest from theirs. Score still decides which record within a person, so the bar does not drop — but a
+          seller covering one sector is never crowded out by a bigger colleague&rsquo;s stronger leads.
+        </p>
+        <p className="text-body text-sm">
+          If nothing can be found for somebody — their sector has no live projects this month — the run says so by
+          name rather than quietly topping up everyone else.
         </p>
 
         <Card>
@@ -280,9 +290,16 @@ export default async function HelpPage() {
                   'A lead only leaves enrichment once it carries what its lane is worked through.',
                 ],
                 [
-                  'Spending limit',
+                  'How many a month',
+                  policy.monthlyReadyTarget
+                    ? `${policy.monthlyReadyTarget.toLocaleString()} enriched leads`
+                    : 'no monthly target set',
+                  'The month’s goal. Once it is made, enrichment stops until the 1st — there is no point paying to build stock nobody is waiting for.',
+                ],
+                [
+                  'Hard spending ceiling',
                   policy.monthlyCap ? `${policy.monthlyCap.toLocaleString()} records a month` : 'no monthly limit set',
-                  'A ceiling so a misconfigured run cannot spend without bound.',
+                  'A separate backstop, above the target, so a misconfigured run cannot spend without bound.',
                 ],
               ].map(([label, value, note]) => (
                 <div key={label as string}>
@@ -376,6 +393,60 @@ export default async function HelpPage() {
       </Step>
 
       {/* ---------------------------------------------------------------- */}
+      <Step n={5} title="Export — and then it is gone">
+        <p className="text-body text-sm">
+          A lead leaves here when it is sent to Apollo. Each person receives up to their own daily quota, in their own
+          priority order, so a big quota cannot eat a small one&rsquo;s share.
+        </p>
+        <p className="text-body text-sm">
+          Once sent, a lead is <Term>archived</Term>. It disappears from the working list, is never enriched again, and
+          stops counting as stock. Nothing is deleted — the record still opens from a direct link, and the records page
+          shows archived leads with <code className="text-[11px]">?archived=1</code> — but it is out of the queue,
+          because it is somebody else&rsquo;s job now.
+        </p>
+        <p className="text-body text-sm">
+          A <Term>failed</Term> send is not archived. It stays in the queue for the next run and the record shows why it
+          failed, so a bad address is fixed rather than silently dropped.
+        </p>
+      </Step>
+
+      {/* ---------------------------------------------------------------- */}
+      <section className="mt-12">
+        <h2 className="text-foreground text-lg font-bold">How early are we arriving?</h2>
+        <p className="text-body mt-2 text-sm">
+          Separate from the score, and often more useful. Cameras go up when a site mobilises, so what decides whether a
+          project is worth a call is where it sits in its life — not how big it is.
+        </p>
+        <ul className="text-body mt-3 space-y-2 text-sm">
+          {[
+            ['early', 'ahead of the work — the window we want'],
+            ['on time', 'mobilising now; no time to waste'],
+            ['late', 'mid-build. Still sellable, but the easy win has gone'],
+            ['too late', 'built, commissioning, or cancelled. Nothing to install'],
+            ['no date', 'a company record with no project attached, or nothing published to time it by'],
+          ].map(([label, meaning]) => (
+            <li key={label} className="flex flex-wrap gap-2">
+              <span className="text-foreground min-w-24 font-semibold">{label}</span>
+              <span className="text-muted flex-1">{meaning}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="border-border-base bg-surface-raised mt-4 rounded-lg border px-4 py-3">
+          <p className="text-body text-xs">
+            <Term>Every verdict says how it knows.</Term> Only about one project in nine publishes a construction start
+            date; most offer a completion date, an announcement date, or nothing but a phase. So a record says
+            &ldquo;seven months before ground-breaking&rdquo; or &ldquo;announced three months ago, so this is inferred
+            from the phase&rdquo; — never the second dressed up as the first. A verdict with no dates behind it is
+            marked with a <code className="text-[11px]">?</code> in the list.
+          </p>
+        </div>
+        <p className="text-subtle mt-3 text-xs">
+          Where a date and the phase disagree, the phase wins and the record says so. Sources often publish a year
+          rather than a date, and a completion date on a project that has not started is a target, not time remaining.
+        </p>
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
       <section className="mt-12">
         <h2 className="text-foreground text-lg font-bold">If something looks wrong</h2>
         <p className="text-body mt-2 text-sm">
@@ -386,7 +457,8 @@ export default async function HelpPage() {
           {[
             ['Nothing to call', 'nothing was assigned — check the rules reach a real person with capacity'],
             ['Nothing assigned', 'nothing finished enrichment — check what its lane requires it to find'],
-            ['Nothing enriched', 'nothing was queued, or the monthly limit is reached'],
+            ['Nothing enriched', 'the month’s target is already met, or nothing was queued'],
+            ['One person has nothing', 'their sector has no live projects — the enrichment run names who it could not source for'],
             ['Nothing queued', 'nothing was routed into a sales lane'],
             ['Nothing routed', 'no routing rule matched, or nothing has been scored'],
           ].map(([symptom, cause]) => (
