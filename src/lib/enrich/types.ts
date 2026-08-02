@@ -31,6 +31,22 @@ export interface EnrichInput {
   project_url?: string | null;
   /** Drives which sales play — and therefore which committee — is searched. */
   vertical?: string | null;
+  /**
+   * Phase and dates, so a brief can say how early we are arriving.
+   *
+   * Absent before, which meant the call brief could not mention timing at all —
+   * and for Evercam timing IS the pitch. "Seven months before ground-breaking"
+   * and "already operating" call for opposite conversations, and the brief was
+   * being written blind to which one it was.
+   *
+   * Optional: a caller that omits them gets an `unknown` arrival that says so,
+   * rather than a confident guess.
+   */
+  current_phase?: string | null;
+  construction_start_date?: string | null;
+  estimated_completion_date?: string | null;
+  announced_date?: string | null;
+  bid_date?: string | null;
 }
 
 export interface RelatedEntity {

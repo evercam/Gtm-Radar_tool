@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
   const service = getServiceSupabase();
 
   const columns =
-    'id,canonical_name,record_type,icp_code,company_name_raw,contact_name,contact_email,contact_phone,description,city,state_province,country,estimated_value,estimated_value_currency,source_key,project_url,vertical';
+    'id,canonical_name,record_type,icp_code,company_name_raw,contact_name,contact_email,contact_phone,description,city,state_province,country,estimated_value,estimated_value_currency,source_key,project_url,vertical,current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
 
   let query = service.from('canonical_projects').select(columns);
   if (body.ids?.length) {

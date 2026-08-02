@@ -81,8 +81,22 @@ function months(iso: string | null | undefined, now: number): number | null {
   return Math.round(((t - now) / MS_PER_MONTH) * 10) / 10;
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${Math.abs(n) === 1 ? one : many}`;
+/**
+ * A duration a person would say out loud.
+ *
+ * "0.1 months ago" is arithmetically right and reads as a machine talking. These
+ * strings end up in call briefs a rep reads before dialling and in the prompt the
+ * model writes them from, so an awkward one propagates.
+ */
+function span(n: number): string {
+  const a = Math.abs(n);
+  if (a < 0.5) return 'less than two weeks';
+  if (a < 1.5) return 'about a month';
+  if (a < 18) return `${Math.round(a)} months`;
+  const years = a / 12;
+  return Number.isInteger(Math.round(years * 2) / 2) && Math.round(years * 2) % 2 !== 0
+    ? `${Math.round(years * 2) / 2} years`
+    : `${Math.round(years)} years`;
 }
 
 /**
@@ -140,10 +154,10 @@ export function arrivalFor(
     const verdict: ArrivalVerdict = toStart > 1 ? 'early' : toStart > -2 ? 'on_time' : 'late';
     const summary =
       toStart > 1
-        ? `Early — ${plural(toStart, 'month', 'months')} before ground-breaking.`
+        ? `Early — ${span(toStart)} before ground-breaking.`
         : toStart > -2
           ? 'On time — mobilising now.'
-          : `Late — ground was broken ${plural(Math.abs(toStart), 'month', 'months')} ago.`;
+          : `Late — ground was broken ${span(toStart)} ago.`;
     return { verdict, phaseLabel, phasePosition, leadMonths: toStart, basis: 'construction_start', summary, dated: true };
   }
 
@@ -157,7 +171,7 @@ export function arrivalFor(
       phasePosition,
       leadMonths: toBid,
       basis: 'construction_start',
-      summary: `Early — ${plural(toBid, 'month', 'months')} before the bid date.`,
+      summary: `Early — ${span(toBid)} before the bid date.`,
       dated: true,
     };
   }
@@ -171,8 +185,8 @@ export function arrivalFor(
       toCompletion <= 0
         ? 'Too late — the completion date has passed.'
         : toCompletion < 6
-          ? `Late — only ${plural(toCompletion, 'month', 'months')} of build left.`
-          : `${plural(toCompletion, 'month', 'months')} of build remaining` +
+          ? `Late — only ${span(toCompletion)} of build left.`
+          : `${span(toCompletion)} of build remaining` +
             (phaseLabel ? `, ${phaseLabel}.` : '.');
     return { verdict, phaseLabel, phasePosition, leadMonths: toCompletion, basis: 'completion', summary, dated: true };
   }
@@ -191,7 +205,7 @@ export function arrivalFor(
       leadMonths: sinceAnnounced,
       basis: 'announced',
       summary:
-        `Announced ${plural(age, 'month', 'months')} ago` +
+        `Announced ${span(age)} ago` +
         (phaseLabel ? `, ${phaseLabel}` : '') +
         '. No build dates published, so how early we are is inferred from the phase.',
       dated: true,

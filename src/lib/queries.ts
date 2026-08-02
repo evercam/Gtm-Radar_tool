@@ -909,6 +909,11 @@ export interface EnrichQueueRow {
   route: string | null;
   stage: string | null;
   enriched_at: string | null;
+  current_phase: string | null;
+  construction_start_date: string | null;
+  estimated_completion_date: string | null;
+  announced_date: string | null;
+  bid_date: string | null;
 }
 
 export interface EnrichQueueFilters {
@@ -949,7 +954,11 @@ export const CLAIMABLE_STATUSES = ['RAW', 'PENDING_ENRICHMENT', 'ENRICHED'];
 const ENRICH_QUEUE_COLUMNS =
   'id,canonical_name,source_key,record_type,icp_code,bu,vertical,company_name_raw,contact_name,contact_email,' +
   'contact_phone,contact_status,city,state_province,country,estimated_value,estimated_value_currency,project_url,' +
-  'description,priority_score,priority_band,route,stage,enriched_at';
+  'description,priority_score,priority_band,route,stage,enriched_at,' +
+  // Phase and dates travel with the queue row so the call brief can say how
+  // early we are arriving. Without them the brief was written blind to timing,
+  // which for Evercam is the pitch.
+  'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
 
 function applyQueueFilters<
   T extends {

@@ -206,6 +206,13 @@ export async function POST(request: NextRequest) {
             estimated_value_currency: r.estimated_value_currency,
             source_key: r.source_key,
             project_url: r.project_url,
+            // Timing, for the call brief. Passed through rather than re-read:
+            // the queue already selects them.
+            current_phase: r.current_phase,
+            construction_start_date: r.construction_start_date,
+            estimated_completion_date: r.estimated_completion_date,
+            announced_date: r.announced_date,
+            bid_date: r.bid_date,
             // Decides which sales play's buying committee gets searched.
             vertical: r.vertical,
           },

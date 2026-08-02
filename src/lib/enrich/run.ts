@@ -555,7 +555,13 @@ export async function runEnrichment(
               // it is generated as soon as the record becomes workable. It is
               // optional: a failure here leaves the record ENRICHED and
               // usable, just without the prep.
-              if (policy.generateCallPrep !== false && claudeAvailable) {
+              // `claudeUsable`, not `claudeAvailable`. Splitting the research
+              // call out made `claudeAvailable` mean "the 16k web-search call
+              // succeeded", which call prep has nothing to do with — it is a
+              // 2k-token prompt with no tools and no search. Gated on the wrong
+              // flag it could never run at all, so turning `generateCallPrep`
+              // on would have changed nothing and looked like a broken setting.
+              if (policy.generateCallPrep !== false && claudeUsable) {
                 const prep = await generateCallPrep(
                   { ...input, contact_name: topContact?.name ?? input.contact_name },
                   { accountName: account?.name, contactName: topContact?.name }

@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { readSecret } from '@/lib/crypto/store';
 import { getEnrichmentProfile } from '@/lib/enrich/profiles';
 import type { EnrichInput } from '@/lib/enrich/types';
+import { arrivalFor } from '@/lib/arrival';
 
 /**
  * Call preparation.
@@ -83,6 +84,7 @@ function toSummary(i: CallPrepInsights): string {
 
 function buildPrompt(input: EnrichInput, accountName: string | null, contactName: string | null): string {
   const profile = getEnrichmentProfile(input);
+  const arrival = arrivalFor(input);
   const facts = [
     `Record: ${input.canonical_name}`,
     accountName ? `Company: ${accountName}` : null,
@@ -96,6 +98,12 @@ function buildPrompt(input: EnrichInput, accountName: string | null, contactName
       : null,
     input.description ? `Description: ${input.description.slice(0, 1200)}` : null,
     input.project_url ? `Source URL: ${input.project_url}` : null,
+    // Timing, and how well we know it. Evercam is installed at mobilisation, so
+    // where the project sits relative to that decides the whole conversation —
+    // and the brief had no way of knowing it. The basis travels with it so the
+    // model does not assert a date we only inferred from a phase.
+    arrival.verdict !== 'unknown' ? `Timing: ${arrival.summary}` : null,
+    arrival.dated ? null : 'Timing confidence: no build dates published — the timing above is inferred from the project phase, so hedge it.',
   ]
     .filter(Boolean)
     .join('\n');
