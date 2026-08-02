@@ -7,6 +7,7 @@ import type { RoutingRule } from '@/lib/routing';
 import { BU_LABELS } from '@/lib/semantics';
 import { Card, CardBody, CardHeader } from '@/components/ui';
 import HowItRuns from '@/components/help/HowItRuns';
+import SourceLimits from '@/components/help/SourceLimits';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 
@@ -412,6 +413,8 @@ export default async function HelpPage() {
       </Step>
 
       <HowItRuns />
+
+      <SourceLimits />
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-12">
