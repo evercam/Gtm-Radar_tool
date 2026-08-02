@@ -18,6 +18,12 @@ always safe.
 | 8 | `20260726170000_prioritisation.sql` | `enrichment_rules`, `prioritisation_runs`, snooze |
 | 9 | `20260726180000_bootstrap_first_admin.sql` | makes the first signup an admin |
 | 10 | `20260802100000_apollo_reveal_cache.sql` | `apollo_reveal_cache` — one Apollo credit per person, not per record |
+| 11 | `20260802110000_account_research.sql` | `researched_at` + `research_summary` on `account_enrichment` — research a company once, not once per project |
+
+**File 11, likewise optional and likewise pays for itself.** Without it the
+brief job still works; it simply cannot tell that a company has already been
+researched, so it pays for that research again on every one of that company's
+projects. NextEra Energy holds 270 records.
 
 **File 10 is optional but pays for itself.** Without it, reveals still work;
 the cache read logs a warning and every reveal is billed again. With it, a

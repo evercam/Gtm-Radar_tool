@@ -1,50 +1,64 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { getEnrichmentPolicy } from '@/lib/policies';
-import { runEnrichment } from '@/lib/enrich/run';
 import { isClaudeConfigured } from '@/lib/enrich/claude';
+import { ensureAccountResearch } from '@/lib/enrich/accountResearch';
+import { generateSdrBrief } from '@/lib/enrich/sdrBrief';
+import { accountIdentity } from '@/lib/keyaccount';
 import { checkPermission } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 /**
- * How many records one invocation attempts.
+ * POST /api/enrich/brief
  *
- * Small on purpose. The whole reason this route exists is that the research
- * call needs most of a 300-second function to itself; batching it would
- * recreate the problem it was split out of. Two, sequentially, with the last
- * one likely to be cut short — which is fine, because a record that misses its
- * brief today is picked up by the next run unchanged.
+ * The qualifying half of enrichment. `/api/enrich/batch` produces a WORKABLE
+ * lead — domain, contacts, revealed addresses, all from Apollo, in about thirty
+ * seconds. This produces a QUALIFIED one: ICP fit, timing, trigger, the opening
+ * hook.
+ *
+ * Two steps with deliberately different grains, which is what makes it possible
+ * at all:
+ *
+ *   1. COMPANY research — one web-search call, cached in `account_enrichment`
+ *      for 90 days. ~60s the first time, free every time after.
+ *   2. PROJECT judgement — searchless, ~5s, reading the research from step 1.
+ *
+ * The first version ran one 16k-token web-search call per RECORD and timed out
+ * on every attempt. The corpus is 22,990 records across 11,592 accounts and
+ * NextEra Energy alone holds 270, so that design was buying the same paragraph
+ * about NextEra 270 times — and each purchase needed more time than the function
+ * was allowed to live. Grouping the expensive half by company is the fix; making
+ * the cheap half cheap is what lets it keep up.
+ *
+ * Records are taken oldest-first among those that already have a contact and no
+ * ICP score, so a lead a rep can already work is never held up by the part that
+ * only makes it easier to open.
  */
-const DEFAULT_LIMIT = 2;
+
+/**
+ * Records per invocation.
+ *
+ * Higher than it looks. Step 2 costs about five seconds, so the ceiling is set
+ * by how many NEW companies appear in the slice — the accounts already
+ * researched cost nothing. Ordering by account below means a batch tends to
+ * cluster on the same company, which is exactly the cheap case.
+ */
+const DEFAULT_LIMIT = 12;
+
+/** Stop starting new work with less than this left, so a record is not cut mid-write. */
+const RESERVE_MS = 45_000;
+const BUDGET_MS = Number(process.env.BRIEF_BUDGET_MS) || 240_000;
 
 interface BriefResult {
   id: string;
   name: string;
   ok: boolean;
-  briefed: boolean;
+  researchCached: boolean;
   message?: string;
 }
 
-/**
- * POST /api/enrich/brief
- *
- * The second half of enrichment. `/api/enrich/batch` produces a WORKABLE lead —
- * domain, contacts, revealed addresses, all from Apollo, in about thirty
- * seconds. This produces a BRIEFED one: Claude's web research, the SDR
- * playbook, the account portfolio.
- *
- * They are split because they run on different clocks. Ten records at
- * concurrency three leaves each about seventy-five seconds of the batch route's
- * budget; the research call wants at least twice that and timed out on every
- * Cleveland-Cliffs record when it shared. Nothing downstream blocks on a brief,
- * so it is the half that can afford to wait.
- *
- * Picks records that already have a contact and no ICP score, oldest first, so
- * a lead a seller can already work is never held up by the part that only makes
- * it easier to open.
- */
 export async function POST(request: NextRequest) {
   const auth = await checkPermission('enrichment.run');
   if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
@@ -77,22 +91,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, 10));
+  const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, 50));
   const service = getServiceSupabase();
 
   const columns =
-    'id,canonical_name,record_type,icp_code,company_name_raw,contact_name,contact_email,contact_phone,description,city,state_province,country,estimated_value,estimated_value_currency,source_key,project_url,vertical,current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
+    'id,canonical_name,record_type,icp_code,company_name_raw,company_domain,account_key,contact_name,contact_email,' +
+    'description,city,state_province,country,estimated_value,estimated_value_currency,source_key,project_url,vertical,' +
+    'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
 
   let query = service.from('canonical_projects').select(columns);
   if (body.ids?.length) {
     query = query.in('id', body.ids);
   } else {
-    // Enriched enough to be worth briefing, not yet briefed. Oldest first so a
-    // record cannot sit unbriefed forever behind newer arrivals.
     query = query
       .not('enriched_at', 'is', null)
       .not('contact_email', 'is', null)
       .is('icp_fit_score', null)
+      // By account first, so records of the same company sit together and share
+      // one piece of research. Then oldest, so nothing waits indefinitely.
+      .order('account_key', { ascending: true, nullsFirst: false })
       .order('enriched_at', { ascending: true });
   }
 
@@ -107,56 +124,84 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Research ON — the one place it is. Apollo stays enabled so the run can
-  // still fill anything the fast pass left, and reveals it has already paid for
-  // come back from the cache rather than being bought twice.
-  const briefPolicy = { ...policy, researchInline: true };
-
+  const deadline = Date.now() + BUDGET_MS;
   const results: BriefResult[] = [];
   let briefed = 0;
+  let researched = 0;
+  let stoppedEarly = false;
 
-  // Sequential, deliberately. Two research calls at once would each get half
-  // the function's remaining time and both would be cut short.
   for (const r of rows) {
-    const row = r as Record<string, unknown>;
+    if (Date.now() > deadline - RESERVE_MS) {
+      stoppedEarly = true;
+      break;
+    }
+    const row = r as unknown as Record<string, unknown>;
+    const name = String(row.canonical_name ?? '');
+    const company = (row.company_name_raw as string | null) ?? null;
+
     try {
-      const res = await runEnrichment(row as never, briefPolicy, {
-        claude: true,
-        apollo: policy.engines.apollo,
-        fillCommittee: false, // the committee was assembled by the fast pass
-        maxApolloCalls: null,
-        maxClaudeCalls: null,
-        overridden: true,
-      });
-      // `engines.claude` is true only when the research call actually returned,
-      // so this reports what landed rather than what was attempted.
-      const didBrief = res.ok && res.engines.claude;
-      if (didBrief) briefed++;
-      results.push({
-        id: String(row.id),
-        name: String(row.canonical_name ?? ''),
-        ok: res.ok,
-        briefed: didBrief,
-        message: res.message ?? undefined,
-      });
+      // The account key the rest of the app groups by — the resolved domain
+      // where there is one, so subsidiaries share their parent's research
+      // instead of each buying their own.
+      const key =
+        (row.account_key as string | null) ??
+        accountIdentity(row.company_domain as string | null, company) ??
+        null;
+
+      const research = company && key
+        ? await ensureAccountResearch(key, company, {
+            domain: row.company_domain as string | null,
+            vertical: row.vertical as string | null,
+          })
+        : null;
+      if (research && !research.cached) researched++;
+
+      const brief = await generateSdrBrief(row as never, research, company);
+      if (!brief.ok || !brief.sdr) {
+        results.push({ id: String(row.id), name, ok: false, researchCached: research?.cached ?? false, message: brief.message });
+        continue;
+      }
+
+      // Only the fields that came back. A null from the model is "I could not
+      // say", which must not overwrite something a previous run established.
+      const update: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(brief.sdr)) if (v !== null) update[k] = v;
+      if (Object.keys(update).length === 0) {
+        results.push({ id: String(row.id), name, ok: false, researchCached: research?.cached ?? false, message: 'Nothing to write.' });
+        continue;
+      }
+
+      const { error: writeError } = await service.from('canonical_projects').update(update).eq('id', row.id as string);
+      if (writeError) {
+        results.push({ id: String(row.id), name, ok: false, researchCached: research?.cached ?? false, message: writeError.message });
+        continue;
+      }
+
+      briefed++;
+      results.push({ id: String(row.id), name, ok: true, researchCached: research?.cached ?? false });
     } catch (err) {
       results.push({
         id: String(row.id),
-        name: String(row.canonical_name ?? ''),
+        name,
         ok: false,
-        briefed: false,
+        researchCached: false,
         message: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
-  const short = results.length - briefed;
+  const failed = results.filter((r) => !r.ok).length;
   return NextResponse.json({
     ok: true,
     briefed,
+    researched,
+    attempted: results.length,
     results,
     message:
-      `Briefed ${briefed} of ${results.length} record(s).` +
-      (short > 0 ? ` ${short} did not complete their research and stay in the queue for the next run.` : ''),
+      `Briefed ${briefed} of ${results.length} record(s)` +
+      (researched ? `, researching ${researched} new compan${researched === 1 ? 'y' : 'ies'}` : ', all from cached research') +
+      '.' +
+      (failed ? ` ${failed} failed and stay queued.` : '') +
+      (stoppedEarly ? ' Stopped at the time budget; the rest are picked up next run.' : ''),
   });
 }
