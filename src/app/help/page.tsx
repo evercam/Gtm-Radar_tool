@@ -6,6 +6,7 @@ import { describeAllocation } from '@/lib/allocation';
 import type { RoutingRule } from '@/lib/routing';
 import { BU_LABELS } from '@/lib/semantics';
 import { Card, CardBody, CardHeader } from '@/components/ui';
+import HowItRuns from '@/components/help/HowItRuns';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 
@@ -409,6 +410,8 @@ export default async function HelpPage() {
           failed, so a bad address is fixed rather than silently dropped.
         </p>
       </Step>
+
+      <HowItRuns />
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-12">
