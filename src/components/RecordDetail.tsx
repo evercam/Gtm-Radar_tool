@@ -254,6 +254,27 @@ export default function RecordDetail({ r }: { r: CanonicalProjectRow }) {
       <Section title="Record">
         <Facts
           rows={[
+            // Handover, first. Once a lead has gone to Apollo it is archived out
+            // of the working list, and somebody looking at it needs to know that
+            // before they read anything else — otherwise they work a lead that
+            // has already been handed over.
+            [
+              'Exported',
+              r.apollo_exported_at ? (
+                <span key="exp" className="flex flex-wrap items-center gap-2">
+                  <Badge tone="success">archived — sent to Apollo</Badge>
+                  <span className="text-muted">
+                    {fmtDate(r.apollo_exported_at)}
+                    {r.apollo_export_status ? ` · ${r.apollo_export_status}` : ''}
+                  </span>
+                </span>
+              ) : r.apollo_export_status === 'failed' ? (
+                <span key="expf" className="flex flex-wrap items-center gap-2">
+                  <Badge tone="danger">export failed</Badge>
+                  <span className="text-muted">{r.apollo_export_error ?? 'no reason recorded'}</span>
+                </span>
+              ) : null,
+            ],
             ['Created', fmtDate(r.created_at)],
             ['Updated', fmtDate(r.updated_at)],
             ['Processing', r.processing_status ? titleize(r.processing_status) : null],

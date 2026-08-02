@@ -112,6 +112,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   const mine = sp.mine ?? (canSeeAll ? '0' : '1');
   const ownerId = mine === '1' ? user.id : undefined;
   const unassigned = sp.owner === 'none';
+  // Exported leads are archived out of the working list. `archived=1` brings
+  // them back for anyone auditing what was sent.
+  const includeExported = sp.archived === '1';
   const sort = (['priority', 'newest', 'value'].includes(sp.sort ?? '') ? sp.sort : 'priority') as RecordSort;
 
   let rows: RecordRow[] = [];
@@ -133,6 +136,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       ownerId,
       unassigned,
       ownerGroup,
+      includeExported,
       sort,
       search,
     });

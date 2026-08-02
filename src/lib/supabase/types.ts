@@ -222,6 +222,19 @@ export interface CanonicalProjectRow {
   owner_group_key: string | null;
 
   /**
+   * Apollo handover. `apollo_exported_at` is the archive flag: once set, the
+   * lead has left the working list and is never re-enriched, re-exported or
+   * counted as ready stock. Stamped only on a SUCCESSFUL send, so a failure
+   * leaves the lead eligible for the next run rather than silently dropping it —
+   * which is why `apollo_export_status` can read 'failed' while
+   * `apollo_exported_at` is still null.
+   */
+  apollo_exported_at: string | null;
+  apollo_contact_id: string | null;
+  apollo_export_status: string | null;
+  apollo_export_error: string | null;
+
+  /**
    * Contact verification (migration 20260726150000).
    *
    * `*_verified` false with a `*_validation_source` set means a validator ran and

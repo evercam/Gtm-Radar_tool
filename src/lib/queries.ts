@@ -473,6 +473,15 @@ export interface RecordsQuery {
   unassigned?: boolean;
   /** Every lead owned by one company — an `owner_group_key` value. */
   ownerGroup?: string;
+  /**
+   * Include leads already sent to Apollo.
+   *
+   * Off by default: once a lead has been handed over it is archived, and leaving
+   * it in the working list makes the list lie about how much work is left. The
+   * record is never deleted and stays reachable with `?archived=1` or by direct
+   * link — archiving is about what the queue shows, not about losing anything.
+   */
+  includeExported?: boolean;
   search?: string;
   sort?: RecordSort;
 }
@@ -522,6 +531,8 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     const hasRouting = tier === 'full' || tier === 'routing';
 
     let query = supabase.from('canonical_projects').select(TIER_COLUMNS[tier], { count: 'exact' });
+    // Archived unless asked for. See `includeExported`.
+    if (!q.includeExported) query = query.is('apollo_exported_at', null);
     if (q.source) query = query.eq('source_key', q.source);
     if (q.bu) query = query.eq('bu', q.bu);
     if (q.vertical) query = query.eq('vertical', q.vertical);
@@ -977,6 +988,7 @@ function applyQueueFilters<
     gte: (c: string, v: unknown) => T;
     or: (f: string) => T;
     not: (c: string, op: string, v: unknown) => T;
+    is: (c: string, v: unknown) => T;
   },
 >(query: T, f: EnrichQueueFilters): T {
   let q = query;
@@ -988,6 +1000,11 @@ function applyQueueFilters<
   // when deciding what to PRODUCE — so the tank filled with leads they could
   // never be given.
   if (f.countries?.length) q = q.in('country', f.countries);
+  // Never re-enrich a lead already handed to Apollo. This was true only by
+  // accident before — `onlyMissingContact` happened to exclude them, and that is
+  // a policy flag somebody can turn off, at which point we would have paid to
+  // enrich leads that had already left the building.
+  q = q.is('apollo_exported_at', null);
   // gte on a nullable column drops NULLs, which is the intent: a record with no
   // value has not been shown to clear the bar.
   if (f.minEstimatedValue) q = q.gte('estimated_value', f.minEstimatedValue);
