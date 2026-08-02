@@ -103,5 +103,46 @@ console.log('\nBuild remaining is not lead time');
   check('a passed completion date is too late', b.verdict === 'too_late', `got ${b.verdict}`);
 }
 
+console.log('\nThe phase overrules a date that contradicts it');
+{
+  // The reported bug, exactly: Atlantic Shores Offshore Wind North sat at
+  // Pre-Construction with a completion date five months out and was reported as
+  // "Late — only 5 months of build left". You cannot have build left before
+  // building starts. 257 records read that way.
+  const a = at({ current_phase: 'Pre-Construction', estimated_completion_date: inMonths(5) });
+  check('a completion date before work starts is a TARGET, not build left', a.verdict !== 'late', `got ${a.verdict}`);
+  check('and the summary says so', /target rather than time remaining/.test(a.summary), a.summary);
+  check('the verdict follows the phase', a.verdict === 'on_time', `got ${a.verdict}`);
+}
+{
+  // "Awarded — ground was broken 7 years ago" was real. One of the two is wrong,
+  // and the curated phase is a better witness than a date that may be a year
+  // bucket or belong to an earlier scheme.
+  const a = at({ current_phase: 'Awarded', construction_start_date: inMonths(-84) });
+  check('a stale start date does not claim work began', !/ground was broken/.test(a.summary), a.summary);
+  check('the conflict is reported rather than hidden', /contradicts/.test(a.summary), a.summary);
+  check('and it is not passed off as dated', a.dated === false);
+}
+{
+  // Once building HAS started, a past start date means what it says.
+  const a = at({ current_phase: 'Under Construction', construction_start_date: inMonths(-6) });
+  check('a started phase still reports elapsed build', /ground was broken/.test(a.summary), a.summary);
+  check('and that is late', a.verdict === 'late', `got ${a.verdict}`);
+}
+
+console.log('\nAn announcement dated in the future has not happened');
+{
+  // 652 records carry one, because sources publish a year and the adapter stores
+  // 1 January of it. Math.abs turned "five months away" into "announced five
+  // months ago" — confidently backwards.
+  const a = at({ current_phase: 'Pre-Construction', announced_date: inMonths(5) });
+  check('it is not reported as an announcement in the past', !/ago/.test(a.summary), a.summary);
+  check('it falls through to the phase', a.basis === 'phase_only', `got ${a.basis}`);
+}
+{
+  const a = at({ current_phase: 'Pre-Construction', announced_date: inMonths(-5) });
+  check('a genuine past announcement still reads as one', /ago/.test(a.summary) && a.basis === 'announced', a.summary);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

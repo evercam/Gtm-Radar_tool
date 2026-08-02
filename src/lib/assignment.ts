@@ -87,14 +87,6 @@ export interface Assignment {
   ruleName: string;
 }
 
-export interface AssignmentResult {
-  assignments: Assignment[];
-  /** Matched a rule but every candidate was at quota. */
-  atCapacity: number;
-  /** Matched no rule, or the rule's target had nobody eligible. */
-  unassigned: number;
-}
-
 export const DEFAULT_ASSIGNMENT_RULES: AssignmentRule[] = [
   {
     id: 'hot_to_sdr',
@@ -166,81 +158,21 @@ export function userCoversLead(user: AssignableUser, lead: AssignableLead): bool
   return true;
 }
 
-/**
- * Picks the user with the most remaining headroom, so load spreads evenly
- * rather than filling one person before touching the next. Ties break on the
- * larger quota, then on id for determinism.
- */
-function pickLeastLoaded(candidates: AssignableUser[]): AssignableUser | null {
-  const withCapacity = candidates.filter((u) => u.assignedToday < u.dailyQuota);
-  if (withCapacity.length === 0) return null;
-
-  return withCapacity.sort((a, b) => {
-    const headroomA = a.dailyQuota - a.assignedToday;
-    const headroomB = b.dailyQuota - b.assignedToday;
-    if (headroomB !== headroomA) return headroomB - headroomA;
-    if (b.dailyQuota !== a.dailyQuota) return b.dailyQuota - a.dailyQuota;
-    return a.id.localeCompare(b.id);
-  })[0];
-}
-
-/**
- * Assigns a batch of leads.
+/*
+ * `assignLeads` and its `pickLeastLoaded` helper lived here and were deleted.
  *
- * Highest-priority leads are placed first, so when capacity runs out it is the
- * weakest leads that go unassigned — the same principle as the enrichment
- * selection. `assignedToday` is mutated as we go, so one pass cannot hand the
- * same person more than their quota.
+ * Nothing imported them. The engine the app actually runs is `planAllocation`
+ * in lib/allocation.ts, which uses the primitives below — `matchesAssignment`
+ * and `userCoversLead` — and adds the mix/share policy and the roster fallback.
+ *
+ * They were not merely unused, they were WRONG in a way that mattered: a lead
+ * matching no rule was counted as `unassigned` and dropped, whereas
+ * planAllocation falls back to anyone on the roster who covers it. That
+ * fallback is the whole point of the current design — leads flow as soon as a
+ * person exists — so the dead function taught the opposite of the shipped
+ * behaviour to anyone reading this file first, which is the file you would read
+ * first.
  */
-export function assignLeads(
-  leads: AssignableLead[],
-  rules: AssignmentRule[],
-  users: AssignableUser[]
-): AssignmentResult {
-  const ordered = rules.filter((r) => r.enabled).sort((a, b) => a.priority - b.priority);
-  // Work on copies so the caller's objects aren't mutated.
-  const pool = users.map((u) => ({ ...u }));
-  const byId = new Map(pool.map((u) => [u.id, u]));
-
-  const assignments: Assignment[] = [];
-  let atCapacity = 0;
-  let unassigned = 0;
-
-  const queue = [...leads]
-    .filter((l) => !l.owner_user_id)
-    .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0));
-
-  for (const lead of queue) {
-    const rule = ordered.find((r) => matchesAssignment(lead, r));
-    if (!rule) {
-      unassigned += 1;
-      continue;
-    }
-
-    let target: AssignableUser | null = null;
-
-    if (rule.toUserId) {
-      const user = byId.get(rule.toUserId);
-      // A named target still has to cover the lead and have room — otherwise
-      // the rule would quietly overload one person or hand them a lead
-      // outside their scope.
-      target =
-        user && user.isActive && userCoversLead(user, lead) && user.assignedToday < user.dailyQuota ? user : null;
-    } else if (rule.toRole) {
-      target = pickLeastLoaded(pool.filter((u) => u.role === rule.toRole && userCoversLead(u, lead)));
-    }
-
-    if (!target) {
-      atCapacity += 1;
-      continue;
-    }
-
-    target.assignedToday += 1;
-    assignments.push({ leadId: lead.id, userId: target.id, ruleId: rule.id, ruleName: rule.name });
-  }
-
-  return { assignments, atCapacity, unassigned };
-}
 
 /** Validation for the admin editor. */
 export function validateAssignmentRules(

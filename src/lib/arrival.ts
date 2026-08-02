@@ -111,7 +111,7 @@ export function arrivalFor(
   config: PriorityConfig = DEFAULT_PRIORITY_CONFIG,
   now: number = Date.now()
 ): Arrival {
-  const { weight: phasePosition, label: phaseLabel } = phaseTiming(
+  const { weight: phasePosition, label: phaseLabel, started } = phaseTiming(
     record.current_phase,
     record.record_type,
     config
@@ -150,6 +150,24 @@ export function arrivalFor(
   // Strongest first. Each branch says which date it used, so a weak basis never
   // reads as a strong one.
   const toStart = months(record.construction_start_date, now);
+  // A past start date on a phase that says work has not begun is a conflict, and
+  // the phase wins. Observed: an "Awarded" project whose start date claimed
+  // ground was broken seven years ago. The date is stale or belongs to an
+  // earlier scheme; the curated phase is the better witness. Saying so beats
+  // silently believing either one.
+  if (toStart !== null && toStart < 0 && !started) {
+    return {
+      verdict: phasePosition >= 0.85 ? 'on_time' : 'early',
+      phaseLabel,
+      phasePosition,
+      leadMonths: null,
+      basis: 'phase_only',
+      summary:
+        `${phaseLabel ?? 'This phase'} — but the recorded start date is ${span(toStart)} in the past, ` +
+        'which contradicts it. Treating the phase as correct.',
+      dated: false,
+    };
+  }
   if (toStart !== null) {
     const verdict: ArrivalVerdict = toStart > 1 ? 'early' : toStart > -2 ? 'on_time' : 'late';
     const summary =
@@ -178,21 +196,49 @@ export function arrivalFor(
 
   const toCompletion = months(record.estimated_completion_date, now);
   if (toCompletion !== null) {
+    /**
+     * A completion date means "months of build remaining" ONLY once building has
+     * begun. Before that it is a target, and reading it as remaining build
+     * produced the plainest contradiction this file has had: a project at
+     * "Pre-Construction" reported as "Late — only 5 months of build left", on
+     * 257 records. You cannot have five months of build left before you start.
+     *
+     * The phase decides the verdict; the date only says what they are aiming at.
+     */
+    if (!started) {
+      return {
+        verdict: phasePosition >= 0.85 ? 'on_time' : 'early',
+        phaseLabel,
+        phasePosition,
+        leadMonths: toCompletion,
+        basis: 'completion',
+        summary:
+          (phaseLabel ? `${phaseLabel[0].toUpperCase()}${phaseLabel.slice(1)}` : 'Not started') +
+          (toCompletion > 0
+            ? `, targeting completion in ${span(toCompletion)}. Build has not begun, so this is a target rather than time remaining.`
+            : `, but the target completion date passed ${span(toCompletion)} ago — the record is out of date.`),
+        dated: true,
+      };
+    }
+
     // Build remaining, not lead time — a different question, so labelled as one.
     const verdict: ArrivalVerdict =
-      toCompletion <= 0 ? 'too_late' : toCompletion < 6 ? 'late' : phasePosition >= 0.85 ? 'on_time' : 'early';
+      toCompletion <= 0 ? 'too_late' : toCompletion < 6 ? 'late' : 'on_time';
     const summary =
       toCompletion <= 0
         ? 'Too late — the completion date has passed.'
         : toCompletion < 6
           ? `Late — only ${span(toCompletion)} of build left.`
-          : `${span(toCompletion)} of build remaining` +
-            (phaseLabel ? `, ${phaseLabel}.` : '.');
+          : `${span(toCompletion)} of build remaining` + (phaseLabel ? `, ${phaseLabel}.` : '.');
     return { verdict, phaseLabel, phasePosition, leadMonths: toCompletion, basis: 'completion', summary, dated: true };
   }
 
   const sinceAnnounced = months(record.announced_date, now);
-  if (sinceAnnounced !== null) {
+  // An announcement dated in the FUTURE has not happened. 652 records carry one,
+  // because sources publish a year and the adapter stores 1 January of it. Taking
+  // the absolute value turned "five months from now" into "announced five months
+  // ago" — confidently backwards. Fall through to the phase instead.
+  if (sinceAnnounced !== null && sinceAnnounced <= 0) {
     const age = Math.abs(sinceAnnounced);
     // Age is not lead time. It only says how long this has been public, which is
     // a staleness signal — so the phase decides the verdict and the date only

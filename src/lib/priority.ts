@@ -53,6 +53,19 @@ export interface PhaseRule {
   weight: number;
   /** Human label shown in the record's priority reasons. */
   label: string;
+  /**
+   * Has construction actually begun at this phase?
+   *
+   * Separate from `weight`, which measures how close we are to the moment
+   * Evercam is installed — "pre-construction" scores 1 because it is the ideal
+   * moment to sell, not because anyone is on site. Arrival needs the other
+   * question: a completion date means "months of build remaining" only once
+   * building has started, and before that it is a target.
+   *
+   * Absent means not started, which is the safe default: it stops a date from
+   * asserting that work is underway when nothing says it is.
+   */
+  started?: boolean;
 }
 
 export interface PriorityWeights {
@@ -123,9 +136,9 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
   { match: 'construction start', weight: 1, label: 'construction starting' },
   { match: 'contract awarded', weight: 1, label: 'contract awarded' },
   { match: 'award', weight: 0.95, label: 'awarded' },
-  { match: 'on site', weight: 0.95, label: 'on site' },
-  { match: 'under construction', weight: 0.9, label: 'under construction' },
-  { match: 'construction', weight: 0.9, label: 'in construction' },
+  { started: true, match: 'on site', weight: 0.95, label: 'on site' },
+  { started: true, match: 'under construction', weight: 0.9, label: 'under construction' },
+  { started: true, match: 'construction', weight: 0.9, label: 'in construction' },
   { match: 'operating', weight: 0.1, label: 'already operating' },
   // approaching — work it now to be there at award
   { match: 'bid results', weight: 0.85, label: 'bid results in' },
@@ -153,7 +166,7 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
   // over, so construction is essentially done and there is nothing left to put a
   // camera on. It reads late-stage-and-active, which is exactly why the 0.4
   // default flattered it.
-  { match: 'commissioning', weight: 0.15, label: 'commissioning — build finishing' },
+  { started: true, match: 'commissioning', weight: 0.15, label: 'commissioning — build finishing' },
   { match: 'in process', weight: 0.8, label: 'in process' },
   { match: 'issued', weight: 0.7, label: 'permit issued' },
   { match: 'new application', weight: 0.45, label: 'application filed' },
@@ -199,16 +212,18 @@ export function phaseTiming(
   phase: string | null | undefined,
   recordType: string | null | undefined,
   config: PriorityConfig = DEFAULT_PRIORITY_CONFIG
-): { weight: number; label: string | null } {
+): { weight: number; label: string | null; started: boolean } {
   const s = (phase ?? '').toLowerCase().trim();
   if (s) {
     for (const rule of config.phaseTiming) {
       if (rule.match && s.includes(rule.match.toLowerCase())) {
-        return { weight: clamp01(rule.weight), label: rule.label };
+        return { weight: clamp01(rule.weight), label: rule.label, started: rule.started === true };
       }
     }
   }
-  return { weight: clamp01(config.recordTypeTiming[recordType ?? ''] ?? 0.4), label: null };
+  // An unrecognised phase says nothing about whether work has begun, so the
+  // safe answer is "not started" — it stops a date claiming work is underway.
+  return { weight: clamp01(config.recordTypeTiming[recordType ?? ''] ?? 0.4), label: null, started: false };
 }
 
 function daysSince(iso: string | null | undefined, now: number): number | null {
