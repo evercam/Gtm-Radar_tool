@@ -482,7 +482,12 @@ export interface RecordsResult {
 
 const RECORD_COLUMNS_CORE =
   'id,canonical_name,source_key,record_type,bu,vertical,ref_code,contact_status,country,capacity_mw,' +
-  'estimated_value,population_percentage,account_key,created_at';
+  'estimated_value,population_percentage,account_key,created_at,' +
+  // Arrival timing is derived from these on read. Cheap to carry, and it stops
+  // the list disagreeing with the record drawer, which reads the row entire.
+  // All five are base columns, present in every migration state, so they
+  // belong in the CORE tier rather than a higher one.
+  'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
 const RECORD_COLUMNS_ROUTING = `${RECORD_COLUMNS_CORE},route,stage`;
 const RECORD_COLUMNS_FULL =
   `${RECORD_COLUMNS_ROUTING},priority_score,priority_band,priority_reasons,status,` +

@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getRecords, getRecordDetail, type RecordRow, type RecordSort } from '@/lib/queries';
+import { arrivalFor } from '@/lib/arrival';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
 import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import {
   BAND_COLORS,
+  ARRIVAL_COLORS,
+  ARRIVAL_LABELS,
   BAND_LABELS,
   BU_SHORT,
   BUSINESS_UNITS,
@@ -58,6 +61,23 @@ function qs(base: SP, patch: SP): string {
   for (const [k, v] of Object.entries({ ...base, ...patch })) if (v) p.set(k, v);
   const s = p.toString();
   return s ? `/records?${s}` : '/records';
+}
+
+/**
+ * How early we are arriving, as a chip.
+ *
+ * The tooltip carries the basis. A trailing "?" marks a verdict with no dates
+ * behind it — inferred from the phase alone — so the two are distinguishable at
+ * a glance rather than only on hover.
+ */
+function ArrivalBadge({ record }: { record: RecordRow }) {
+  const a = arrivalFor(record);
+  return (
+    <Badge className={ARRIVAL_COLORS[a.verdict]} title={a.summary}>
+      {ARRIVAL_LABELS[a.verdict]}
+      {a.dated ? '' : ' ?'}
+    </Badge>
+  );
 }
 
 export default async function RecordsPage({ searchParams }: { searchParams: Promise<SP> }) {
@@ -322,6 +342,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             <THead>
               <tr>
                 <Th>Pri</Th>
+                <Th>How early</Th>
                 <Th>Name</Th>
                 <Th>Ref</Th>
                 <Th>Source</Th>
@@ -351,6 +372,18 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
                     ) : (
                       <span className="text-subtle text-[10px]">unscored</span>
                     )}
+                  </Td>
+                  {/*
+                    How early we are arriving, next to the priority that decides
+                    whether anyone looks. A high score on a project that is
+                    already built is not a lead, and that was previously only
+                    discoverable by opening the drawer and reading the phase.
+                    The tooltip carries the basis, because a verdict inferred
+                    from the phase alone must not read like one measured against
+                    a real construction start date.
+                  */}
+                  <Td>
+                    <ArrivalBadge record={r} />
                   </Td>
                   {/*
                     Every record opens its own detail drawer. This used to link

@@ -22,6 +22,29 @@ export const BAND_COLORS: Record<string, ChipClass> = {
   P4: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300',
 };
 
+/**
+ * How early we are arriving, relative to the moment Evercam gets installed.
+ *
+ * Green for the two verdicts worth a call, red for the ones that are over.
+ * Deliberately NOT the same palette as the priority band — a P1 that is already
+ * built is not a lead, and if the two read alike that contradiction disappears.
+ */
+export const ARRIVAL_COLORS: Record<string, ChipClass> = {
+  early: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  on_time: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300',
+  late: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
+  too_late: 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
+  unknown: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400',
+};
+
+export const ARRIVAL_LABELS: Record<string, string> = {
+  early: 'early',
+  on_time: 'on time',
+  late: 'late',
+  too_late: 'too late',
+  unknown: 'no date',
+};
+
 export const BAND_LABELS: Record<string, string> = {
   P1: 'Act now',
   P2: 'Work this week',

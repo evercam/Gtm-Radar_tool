@@ -1,7 +1,9 @@
+import type React from 'react';
 import Link from 'next/link';
 import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { Badge, SectionTitle } from '@/components/ui';
 import { BU_SHORT, titleize } from '@/lib/semantics';
+import { arrivalFor, type ArrivalVerdict } from '@/lib/arrival';
 
 /**
  * The body of the record drawer — a single record's own fields.
@@ -29,7 +31,9 @@ function money(n: number | null, ccy: string | null): string | null {
   }
 }
 
-type Row = [label: string, value: string | number | null | undefined];
+// Widened to ReactNode so a fact can carry a badge. `Facts` filters on the
+// value being present, which holds for an element just as it does for a string.
+type Row = [label: string, value: React.ReactNode | string | number | null | undefined];
 
 /** Definition list that drops empty rows, so a sparse record stays readable. */
 function Facts({ rows }: { rows: Row[] }) {
@@ -44,6 +48,44 @@ function Facts({ rows }: { rows: Row[] }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+const ARRIVAL_TONE: Record<ArrivalVerdict, 'success' | 'warning' | 'danger' | 'neutral'> = {
+  early: 'success',
+  on_time: 'success',
+  late: 'warning',
+  too_late: 'danger',
+  unknown: 'neutral',
+};
+
+const ARRIVAL_LABEL: Record<ArrivalVerdict, string> = {
+  early: 'early',
+  on_time: 'on time',
+  late: 'late',
+  too_late: 'too late',
+  unknown: 'unknown',
+};
+
+/**
+ * Where this project is relative to the moment Evercam gets installed.
+ *
+ * The badge is the answer; the sentence beneath it is how we know. Those are
+ * kept together deliberately — only 11% of in-scope records publish a
+ * construction start date, so most verdicts rest on a completion date, an
+ * announcement date, or the phase alone. A rep who acts on "early" deserves to
+ * see whether that came from a real date or from an inference.
+ */
+function ArrivalLine({ record }: { record: CanonicalProjectRow }) {
+  const a = arrivalFor(record);
+  return (
+    <span className="flex flex-col gap-1">
+      <span className="flex items-center gap-2">
+        <Badge tone={ARRIVAL_TONE[a.verdict]}>{ARRIVAL_LABEL[a.verdict]}</Badge>
+        {a.dated ? null : <span className="text-subtle text-[10px]">no dates — inferred</span>}
+      </span>
+      <span className="text-muted leading-relaxed">{a.summary}</span>
+    </span>
   );
 }
 
@@ -134,6 +176,12 @@ export default function RecordDetail({ r }: { r: CanonicalProjectRow }) {
       <Section title="Scale & timing">
         <Facts
           rows={[
+            // How early we are arriving, ahead of the raw fields it is derived
+            // from — it is the question a rep actually has, and the dates below
+            // are the working. The summary always names its own basis, so a
+            // verdict inferred from the phase alone cannot be mistaken for one
+            // measured against a construction start date.
+            ['How early', <ArrivalLine key="arrival" record={r} />],
             ['Value', money(r.estimated_value, r.estimated_value_currency)],
             ['Capacity', r.capacity_mw != null ? `${Math.round(r.capacity_mw).toLocaleString()} MW` : null],
             ['Floor area', r.square_footage != null ? `${r.square_footage.toLocaleString()} sq ft` : null],
