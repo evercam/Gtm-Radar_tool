@@ -190,7 +190,33 @@ export const DEFAULT_PRIORITY_CONFIG: PriorityConfig = {
   freshnessWindowDays: 365,
   strategicIcps: ['mission_critical_owner', 'critical_infra_owner', 'tier1_gc'],
   secondaryIcps: ['tier2_gc', 'developer'],
-  coreVerticals: ['data_center', 'semiconductor', 'battery', 'nuclear', 'solar', 'wind', 'hydro', 'oil_gas'],
+  /**
+   * Verticals Evercam wins in — every sector that puts a structure on a site.
+   *
+   * The original list held eight energy and technology sectors and omitted the
+   * rest of heavy construction, including a vertical literally called
+   * `construction` (207 records, 150 of them live) and `pipeline` (918/148).
+   * Also `mining`, `coal` and `steel`, which is how a rep scoped to mining ended
+   * up with nothing: coal mines and steel plants are classified `coal` and
+   * `steel`, so his scope never saw them and none of the three earned the
+   * core-vertical top-up either.
+   *
+   * Deliberately NOT added: `procurement`, `capital_markets`, `market_intel` and
+   * `other`. Those are record-type artefacts rather than construction sectors,
+   * and a bonus every vertical receives discriminates nothing.
+   *
+   * Measured before committing: this moves 173 records from P4 to P3 and changes
+   * P1/P2 by ZERO. It is a correctness fix, not a supply fix — these records fail
+   * on timing and scale, and 3.75 points of vertical top-up cannot bridge that.
+   * Recorded here so nobody expects it to have produced leads.
+   */
+  coreVerticals: [
+    // energy and technology — the original list
+    'data_center', 'semiconductor', 'battery', 'nuclear', 'solar', 'wind', 'hydro', 'oil_gas',
+    // the rest of heavy construction, omitted until measured
+    'construction', 'pipeline', 'mining', 'coal', 'steel', 'cement', 'power', 'chemicals',
+    'bioenergy', 'pharma',
+  ],
   phaseTiming: DEFAULT_PHASE_TIMING,
   recordTypeTiming: {
     tender: 0.75,
