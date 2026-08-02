@@ -4,7 +4,7 @@ import { apolloFindContacts, apolloFindOrganization, apolloRevealContacts, isApo
 import type { EnrichInput, EnrichResult, EnrichedContact } from '@/lib/enrich/types';
 import { planEnrichmentApply, type AppliedField } from '@/lib/provenance';
 import { getEnrichmentProfile } from '@/lib/enrich/profiles';
-import { accountKey, scoreKeyAccount } from '@/lib/keyaccount';
+import { accountIdentity, scoreKeyAccount } from '@/lib/keyaccount';
 import { gleifLookup } from '@/lib/enrich/gleif';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { DEFAULT_ENRICHMENT_POLICY, type EnrichmentPolicy } from '@/lib/enrich/policy';
@@ -91,10 +91,44 @@ export async function runEnrichment(
     // public buyer vs news operator vs public company vs developer).
     const profile = getEnrichmentProfile(input);
 
-    const claudeAvailable = budget.claude && (await isClaudeConfigured());
-    const claude: ClaudeEnrichment = claudeAvailable
-      ? await enrichWithClaude(input)
-      : { account: null, contacts: [], news: [], sdr: null, reasoning: null, confidence: null };
+    const NO_CLAUDE: ClaudeEnrichment = {
+      account: null,
+      contacts: [],
+      news: [],
+      sdr: null,
+      reasoning: null,
+      confidence: null,
+    };
+
+    // Claude is OPTIONAL — that is the documented contract above, and it was not
+    // true. A throw here propagated to the outer catch and failed the whole
+    // record with zero contacts, so Apollo never ran at all. Measured: of four
+    // mining records, the two whose Claude call timed out returned nothing,
+    // while Apollo alone would have resolved and populated both.
+    //
+    // Degrading instead of failing costs the SDR brief and Claude's account
+    // findings. Apollo still resolves the domain through its own company index —
+    // the fallback that already exists below — and still finds contacts.
+    // Two separate questions, and conflating them cost this run its contacts.
+    // `claudeUsable` is "may we call Claude at all" — key present, source allows
+    // it. `claudeAvailable` is "did the big enrichment call succeed", which is
+    // what the engine flags and the SDR brief depend on. The company-alias tier
+    // needs only the first: it is one short prompt with no web search and no
+    // thinking budget, so it routinely succeeds on a record where the 16k-token
+    // research call times out — and that is exactly the record that needs it.
+    const claudeUsable = budget.claude && (await isClaudeConfigured());
+    let claudeAvailable = claudeUsable;
+    let claude: ClaudeEnrichment = NO_CLAUDE;
+    let claudeError: string | null = null;
+    if (claudeAvailable) {
+      try {
+        claude = await enrichWithClaude(input);
+      } catch (err) {
+        claudeError = err instanceof Error ? err.message : String(err);
+        console.error(`Claude enrichment failed for ${input.canonical_name}: ${claudeError}`);
+        claudeAvailable = false;
+      }
+    }
 
     // Resolving the account is the step Apollo cannot do alone: its people
     // search needs a domain. Claude normally supplies it; without Claude we ask
@@ -113,7 +147,7 @@ export async function runEnrichment(
         // Tier 3 of the resolution ladder. It only fires when the published
         // name and the rule-generated spellings both came back without a
         // domain, so a run where Apollo's index is fine costs nothing extra.
-        useClaudeAliases: claudeAvailable,
+        useClaudeAliases: claudeUsable,
         vertical: input.vertical,
       });
       if (org?.domain || org?.name) {
@@ -178,7 +212,10 @@ export async function runEnrichment(
     ];
 
     // Key-account verdict from Claude's portfolio findings (rubric in lib/keyaccount).
-    const acctKey = accountKey(account?.name || input.company_name_raw);
+    // Keyed on the resolved domain where there is one, so the subsidiaries that
+    // tier 3 now resolves land on their parent's account instead of each
+    // opening one of their own.
+    const acctKey = accountIdentity(account?.domain, account?.name || input.company_name_raw);
     const relatedProjects = account?.related_projects ?? [];
 
     // GLEIF (keyless): verified corporate hierarchy — parent + subsidiaries.
@@ -224,7 +261,9 @@ export async function runEnrichment(
     // missing before deciding who the primary contact is — otherwise the
     // choice is made from an incomplete set.
     let committee = merged;
-    let committeeNotes: string[] = [];
+    // Seeded with Claude's failure when there was one, so a record enriched by
+    // Apollo alone says why rather than looking like a normal Apollo-only run.
+    let committeeNotes: string[] = claudeError ? [`Claude · unavailable this run: ${claudeError}`] : [];
     if (budget.fillCommittee && (account?.domain || account?.name || input.company_name_raw)) {
       const filled = await fillCommittee(merged, {
         play,
@@ -260,6 +299,18 @@ export async function runEnrichment(
         limit: policy.maxEmailRevealsPerRecord,
       });
       committee = reveal.contacts;
+      // Into the notes the record carries, not just the server log. A run that
+      // finds twelve contacts and reveals none looks like a success from the
+      // outside, and the reason has to travel with the record for anyone to act
+      // on it.
+      const why = Object.entries(reveal.skipped)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${n} ${k.replace(/([A-Z])/g, ' $1').toLowerCase()}`)
+        .join(', ');
+      committeeNotes = [
+        ...committeeNotes,
+        `Reveal · ${reveal.revealed} of ${reveal.attempted} attempted${why ? ` (skipped: ${why})` : ''}.`,
+      ];
     }
 
     // Reachability first, then role.

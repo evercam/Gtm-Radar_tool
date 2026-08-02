@@ -17,6 +17,19 @@ import { readSecret } from '@/lib/crypto/store';
 
 const MODEL = process.env.ENRICH_MODEL || 'claude-opus-4-8';
 
+/**
+ * Per-request ceiling. The SDK's default is derived from `max_tokens` and lands
+ * in the tens of minutes at 16k, which is longer than the serverless function
+ * that calls this is allowed to live.
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.ENRICH_REQUEST_TIMEOUT_MS) || 150_000;
+
+/**
+ * Ceiling across the whole web-search loop, sized to fit inside the batch
+ * route's 300-second maxDuration with room for Apollo and the write-back.
+ */
+const WALL_BUDGET_MS = Number(process.env.ENRICH_WALL_BUDGET_MS) || 240_000;
+
 export interface ClaudeEnrichment {
   account: EnrichedAccount | null;
   contacts: EnrichedContact[];
@@ -134,31 +147,43 @@ export async function enrichWithClaude(input: EnrichInput): Promise<ClaudeEnrich
   // a key saved in Settings is used even when no env var exists.
   const apiKey = await readSecret('anthropic_api_key');
   if (!apiKey) throw new Error('No Anthropic API key configured. Add one in Settings.');
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: 1 });
   const profile = getEnrichmentProfile(input);
 
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: buildPrompt(input, profile) }];
+  const deadline = Date.now() + WALL_BUDGET_MS;
 
-  let response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: 'adaptive' },
-    tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6 }],
-    messages,
-  });
-
-  // Server-tool (web search) loop: resume while the turn is paused.
-  let guard = 0;
-  while (response.stop_reason === 'pause_turn' && guard < 6) {
-    guard += 1;
-    messages.push({ role: 'assistant', content: response.content });
-    response = await client.messages.create({
+  const call = () =>
+    client.messages.create({
       model: MODEL,
       max_tokens: 16000,
       thinking: { type: 'adaptive' },
       tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6 }],
       messages,
     });
+
+  let response = await call();
+
+  // Server-tool (web search) loop: resume while the turn is paused.
+  //
+  // Bounded by WALL TIME as well as by turn count. Each resume is a fresh
+  // request, so six of them against the SDK's default timeout and retries can
+  // run for over an hour — measured, not theorised: one record spent 90 minutes
+  // here. The batch route's maxDuration is 300 seconds, so in production that
+  // record does not finish slowly, it never finishes at all, and the run is
+  // killed mid-write.
+  //
+  // Stopping early costs the last search rather than the whole record: whatever
+  // Claude has established by then is parsed and returned as usual.
+  let guard = 0;
+  while (response.stop_reason === 'pause_turn' && guard < 6) {
+    if (Date.now() > deadline) {
+      console.warn(`Claude enrichment hit its ${WALL_BUDGET_MS}ms budget after ${guard} resumes; using what it has.`);
+      break;
+    }
+    guard += 1;
+    messages.push({ role: 'assistant', content: response.content });
+    response = await call();
   }
 
   const text = collectText(response.content);

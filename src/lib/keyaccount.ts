@@ -84,6 +84,43 @@ export function accountKey(name: string | null | undefined): string | null {
   return k.length ? k : null;
 }
 
+/**
+ * The account a record belongs to — the DOMAIN when enrichment resolved one,
+ * the name slug otherwise.
+ *
+ * `accountKey` alone keys on the name the source published, and sources publish
+ * whatever entity signed the paperwork. Cleveland-Cliffs arrives as eleven
+ * different companies: five spellings of the parent ("Cleveland-Cliffs Inc",
+ * "Cleveland Cliffs Inc") plus six subsidiaries (Hibbing Taconite, Tilden,
+ * United Taconite, Northshore, Minorca Mine, Empire Iron). Eleven account keys,
+ * eleven account pages, and a seller handed eleven leads that share one
+ * switchboard and the same three people.
+ *
+ * A domain does not have that problem: it is the identity Apollo itself uses,
+ * it does not vary by spelling, and enrichment now resolves one for the
+ * subsidiaries too. So once a record has a domain, that is what it groups by.
+ *
+ * The name slug stays as the fallback rather than being retired — plenty of
+ * records never resolve a domain, and no key at all means no account page.
+ * The two are safely distinguishable: a domain always contains a dot, a slug
+ * never does.
+ */
+export function accountIdentity(
+  domain: string | null | undefined,
+  name: string | null | undefined
+): string | null {
+  const d = domain?.trim().toLowerCase();
+  if (d) {
+    const clean = d
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/.*$/, '')
+      .trim();
+    if (clean.includes('.')) return clean.slice(0, 80);
+  }
+  return accountKey(name);
+}
+
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
 export function scoreKeyAccount(i: KeyAccountInputs): KeyAccountVerdict {

@@ -182,13 +182,38 @@ export async function apolloFindContacts(params: {
  * Never throws. A contact that cannot be revealed is returned unchanged, so a
  * failed reveal costs the address, not the contact.
  */
+export interface RevealOutcome {
+  contacts: EnrichedContact[];
+  revealed: number;
+  attempted: number;
+  /** Why the rest produced nothing. Counts, one bucket per reason. */
+  skipped: {
+    noKey: number;
+    alreadyHasEmail: number;
+    noEmailOnFile: number;
+    noPersonId: number;
+    /** Apollo answered 200 with `person: null`. */
+    notFound: number;
+    httpError: number;
+  };
+}
+
 export async function apolloRevealContacts(
   contacts: EnrichedContact[],
   params: { domain?: string | null; companyName?: string | null; limit?: number }
-): Promise<{ contacts: EnrichedContact[]; revealed: number; attempted: number }> {
+): Promise<RevealOutcome> {
   const apiKey = await readSecret('apollo_api_key');
   const { domain, companyName, limit = 0 } = params;
-  if (!apiKey || limit <= 0) return { contacts, revealed: 0, attempted: 0 };
+  // Every reason this can produce nothing, counted. "0 revealed" used to be one
+  // number covering four completely different situations — no key, nobody worth
+  // trying, Apollo refusing the call, Apollo having no record — and the three
+  // skips plus the `!person` branch all `continue`d without a word. Diagnosing a
+  // zero meant reproducing the whole run by hand.
+  const skipped = { noKey: 0, alreadyHasEmail: 0, noEmailOnFile: 0, noPersonId: 0, notFound: 0, httpError: 0 };
+  if (!apiKey || limit <= 0) {
+    if (!apiKey) skipped.noKey = contacts.length;
+    return { contacts, revealed: 0, attempted: 0, skipped };
+  }
 
   const out = [...contacts];
   let revealed = 0;
@@ -196,9 +221,18 @@ export async function apolloRevealContacts(
 
   for (let i = 0; i < out.length && attempted < limit; i++) {
     const c = out[i];
-    if (isRealEmail(c.email)) continue;
-    if (c.hasEmail === false) continue;
-    if (!c.apolloPersonId) continue;
+    if (isRealEmail(c.email)) {
+      skipped.alreadyHasEmail++;
+      continue;
+    }
+    if (c.hasEmail === false) {
+      skipped.noEmailOnFile++;
+      continue;
+    }
+    if (!c.apolloPersonId) {
+      skipped.noPersonId++;
+      continue;
+    }
 
     attempted += 1;
     try {
@@ -216,11 +250,19 @@ export async function apolloRevealContacts(
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
         console.error(`Apollo reveal failed: HTTP ${res.status} ${detail.slice(0, 160)}`);
+        skipped.httpError++;
         continue;
       }
 
       const { person } = (await res.json()) as { person?: ApolloPerson | null };
-      if (!person) continue;
+      if (!person) {
+        // A 200 with nothing in it. Apollo accepted the call and had no record
+        // to return — which is a different problem from a rejected call, and
+        // used to look identical to it.
+        console.warn(`Apollo reveal: 200 but no person for ${c.name ?? c.apolloPersonId}.`);
+        skipped.notFound++;
+        continue;
+      }
 
       const email = isRealEmail(person.email) ? person.email! : null;
       // The match also returns the unobfuscated name, which is worth keeping
@@ -240,10 +282,11 @@ export async function apolloRevealContacts(
       if (email) revealed += 1;
     } catch (err) {
       console.error(`Apollo reveal threw: ${err instanceof Error ? err.message : String(err)}`);
+      skipped.httpError++;
     }
   }
 
-  return { contacts: out, revealed, attempted };
+  return { contacts: out, revealed, attempted, skipped };
 }
 
 /** An organization as Apollo knows it — the account behind a record. */

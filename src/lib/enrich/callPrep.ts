@@ -140,7 +140,15 @@ export async function generateCallPrep(
   if (!input.canonical_name?.trim()) return { ...empty, message: 'A record with at least a name is required.' };
 
   try {
-    const client = new Anthropic({ apiKey });
+    // Capped for the same reason as the enrichment client: this runs inside the
+    // same 300-second function, after Claude and Apollo have already spent from
+    // it, and call prep is the least essential part of the record. It should
+    // give up rather than take the write-back down with it.
+    const client = new Anthropic({
+      apiKey,
+      timeout: Number(process.env.CALL_PREP_TIMEOUT_MS) || 45_000,
+      maxRetries: 1,
+    });
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2000,
