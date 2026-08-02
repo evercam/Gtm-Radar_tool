@@ -122,7 +122,15 @@ export interface EnrichmentPolicy {
    * part — while Claude still resolves accounts.
    */
   generateCallPrep: boolean;
-  /** Contacts pushed to Apollo per daily export run. Apollo caps a batch at 100. */
+  /**
+   * Leads pushed to Apollo per export run.
+   *
+   * This is the dial the whole pipeline is sized from: the ready buffer targets
+   * this many times `exportBufferMultiple`, so it sets how much inventory
+   * enrichment is asked to hold. Apollo's own API caps a batch at 100, which is
+   * a ceiling rather than a suggestion — a rep works a list, and ten fresh leads
+   * they can actually call beats a hundred they will not reach.
+   */
   apolloBatchSize: number;
   /**
    * Run Claude's deep account research INSIDE the enrichment batch.
@@ -141,6 +149,28 @@ export interface EnrichmentPolicy {
    * as contacts and the research prompt has been shrunk to fit.
    */
   researchInline: boolean;
+  /**
+   * How many export batches of ready leads to hold in reserve.
+   *
+   * Enrichment is not a rate, it fills a TANK. Export takes `apolloBatchSize`
+   * leads at a time, and the buffer behind it should hold that many times this
+   * multiple — 10 x 24 = 240 enriched, contactable leads. Once the tank is full
+   * enrichment STOPS, because every further record costs Apollo credits to
+   * produce inventory nobody is waiting for.
+   *
+   * 24 is not arbitrary: at ten records per hourly run, a full refill takes
+   * exactly twenty-four runs, so one day fills the week's supply.
+   */
+  exportBufferMultiple: number;
+  /**
+   * The day a refill may begin. 0 is Sunday, 6 is Saturday.
+   *
+   * Enrichment only starts a new fill on this weekday and keeps going until the
+   * tank is full, then stops until the day comes round again. That makes the
+   * spend a predictable weekly event rather than a trickle nobody is watching,
+   * and it means a week's credits are committed once, deliberately.
+   */
+  refillWeekday: number;
 }
 
 export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
@@ -172,8 +202,10 @@ export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
   maxEmailRevealsPerRecord: 3,
   onlyMissingContact: true,
   generateCallPrep: true,
-  apolloBatchSize: 100,
+  apolloBatchSize: 10,
   researchInline: false,
+  exportBufferMultiple: 24,
+  refillWeekday: 6,
 };
 
 /** Coerce a saved (possibly partial or stale) policy onto the defaults. */
@@ -233,6 +265,9 @@ export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
     generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
     apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),
     researchInline: bool(p.researchInline, d.researchInline),
+    exportBufferMultiple: num(p.exportBufferMultiple, d.exportBufferMultiple, 1, 200),
+    // Clamped to a real weekday rather than silently accepting 9 and never firing.
+    refillWeekday: num(p.refillWeekday, d.refillWeekday, 0, 6),
   };
 }
 

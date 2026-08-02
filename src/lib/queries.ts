@@ -1004,6 +1004,100 @@ function applyQueueFilters<
   return q;
 }
 
+export interface BufferState {
+  /** Enriched by us, contactable, not yet exported — the tank export draws from. */
+  ready: number;
+  /**
+   * How many of those export would actually send right now — it additionally
+   * requires an assignee and a workable status. A large gap means assignment is
+   * behind enrichment, not that there is nothing to sell.
+   */
+  exportable: number;
+  /** apolloBatchSize x exportBufferMultiple. */
+  target: number;
+  full: boolean;
+  /** Whether today is a day a refill may run. */
+  refillDay: boolean;
+  /** Set when enrichment should not run, and why — for the caller to report. */
+  reason: string | null;
+}
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * Is there room in the tank, and is today a day we fill it?
+ *
+ * Enrichment is not a rate, it fills a buffer. Export takes `apolloBatchSize`
+ * leads per run and the reserve behind it should hold that many times
+ * `exportBufferMultiple`. Once full, every further record spends Apollo credits
+ * producing inventory nobody is waiting for.
+ *
+ * "Ready" means enrichment PRODUCED it and export has not yet consumed it:
+ * enriched by us, carrying an address, not yet sent.
+ *
+ * The `enriched_at` part is load-bearing and I got it wrong first time. Counting
+ * every record with an address gave 233 of a 240 target — a nearly full tank —
+ * while export could actually send 2. The other 223 arrived from their source
+ * already carrying an email and sit at RAW, unenriched and unassignable, so they
+ * are not inventory anything can draw on. Enrichment would have switched itself
+ * off on the strength of stock that does not exist.
+ *
+ * It deliberately does NOT require an assignee, even though export does.
+ * Assignment runs once a day while enrichment runs hourly, so gating on it would
+ * hold the buffer at zero all day and let enrichment overshoot the ceiling many
+ * times over. This measures production against consumption, which is the
+ * question "should we make more" actually asks. `exportable` is reported
+ * alongside it so a gap — production outrunning assignment — is visible rather
+ * than mistaken for a full tank.
+ */
+export async function getBufferState(
+  apolloBatchSize: number,
+  exportBufferMultiple: number,
+  refillWeekday: number,
+  now: Date = new Date()
+): Promise<BufferState> {
+  const target = Math.max(1, apolloBatchSize * exportBufferMultiple);
+  const refillDay = now.getDay() === refillWeekday;
+
+  const supabase = await getReadSupabase();
+  const ready$ = supabase
+    .from('canonical_projects')
+    .select('*', { count: 'exact', head: true })
+    .not('enriched_at', 'is', null)
+    .not('contact_email', 'is', null)
+    .is('apollo_exported_at', null)
+    .eq('do_not_contact', false);
+
+  // Exactly what the export route will send, so the two numbers can be compared.
+  const exportable$ = supabase
+    .from('canonical_projects')
+    .select('*', { count: 'exact', head: true })
+    .not('contact_email', 'is', null)
+    .is('apollo_exported_at', null)
+    .eq('do_not_contact', false)
+    .not('assignee_id', 'is', null)
+    .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']);
+
+  const [{ count, error }, { count: exportableCount }] = await Promise.all([ready$, exportable$]);
+
+  // A count we could not take is not a full tank. Failing open keeps leads
+  // flowing; failing closed would stop the pipeline over a transient read.
+  if (error) {
+    console.warn(`Could not measure the ready buffer: ${error.message}`);
+    return { ready: 0, exportable: 0, target, full: false, refillDay, reason: null };
+  }
+
+  const ready = count ?? 0;
+  const full = ready >= target;
+  const reason = full
+    ? `The ready buffer holds ${ready} lead(s), at or above the target of ${target} (${apolloBatchSize} per export x ${exportBufferMultiple}). Enrichment is paused so credits are not spent on inventory nobody is waiting for.`
+    : !refillDay
+      ? `The buffer holds ${ready} of ${target}, but refills run on ${WEEKDAYS[refillWeekday]} and today is ${WEEKDAYS[now.getDay()]}. Waiting for the next refill day.`
+      : null;
+
+  return { ready, exportable: exportableCount ?? 0, target, full, refillDay, reason };
+}
+
 /**
  * The enrichment queue: records eligible under the policy, highest priority
  * first. This is the exact selection the batch endpoint processes, so the

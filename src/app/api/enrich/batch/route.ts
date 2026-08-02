@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { loadSourceBudgets, budgetFor } from '@/lib/enrich/sourceBudget';
-import { getEnrichmentQueue, getEnrichedSinceCount, type EnrichQueueRow } from '@/lib/queries';
+import { getEnrichmentQueue, getEnrichedSinceCount, getBufferState, type EnrichQueueRow } from '@/lib/queries';
 import { runEnrichment } from '@/lib/enrich/run';
 import { isClaudeConfigured } from '@/lib/enrich/claude';
 import { checkPermission } from '@/lib/auth/session';
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { bu?: string; route?: string; stage?: string; band?: string; limit?: number; dryRun?: boolean } = {};
+  let body: { bu?: string; route?: string; stage?: string; band?: string; limit?: number; dryRun?: boolean; force?: boolean } = {};
   try {
     body = await request.json();
   } catch {
@@ -107,7 +107,40 @@ export async function POST(request: NextRequest) {
   }
   const effectiveLimit = rails.reduce((n, r) => Math.min(n, r.cap - r.used), limit);
 
-  const { rows, total, unreachableSkipped } = await getEnrichmentQueue({ ...filters, limit: effectiveLimit });
+  /**
+   * The tank gate.
+   *
+   * Enrichment fills a buffer that export drains, so there are two reasons not
+   * to run even with an eligible queue: the buffer is already at target, or
+   * today is not a refill day. Both are normal outcomes, so they return `ok`
+   * with the reason rather than an error — a scheduled job that reports failure
+   * for working correctly trains everyone to ignore its output.
+   *
+   * `force` overrides, for a manual top-up outside the weekly cycle.
+   */
+  const buffer = await getBufferState(policy.apolloBatchSize, policy.exportBufferMultiple, policy.refillWeekday);
+  if (buffer.reason && !body.force) {
+    return NextResponse.json({
+      ok: true,
+      skipped: true,
+      message: buffer.reason,
+      buffer,
+      requested: 0,
+      succeeded: 0,
+      failed: 0,
+      results: [],
+    });
+  }
+
+  /**
+   * Never overfill. If the tank has room for four and the batch is ten, enrich
+   * four — otherwise a single run sails past the ceiling the ceiling exists to
+   * enforce.
+   */
+  const room = Math.max(0, buffer.target - buffer.ready);
+  const limitToRoom = Math.min(effectiveLimit, room);
+
+  const { rows, total, unreachableSkipped } = await getEnrichmentQueue({ ...filters, limit: limitToRoom });
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
@@ -117,6 +150,7 @@ export async function POST(request: NextRequest) {
       failed: 0,
       queueTotal: total,
     unreachableSkipped,
+    buffer,
       results: [],
     });
   }
