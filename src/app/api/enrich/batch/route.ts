@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { loadSourceBudgets, budgetFor } from '@/lib/enrich/sourceBudget';
-import { getEnrichmentQueue, getEnrichedSinceCount, getBufferState, type EnrichQueueRow } from '@/lib/queries';
+import { getEnrichmentQueue, getEnrichedSinceCount, getProductionState, type EnrichQueueRow } from '@/lib/queries';
 import { getDemandPlan, planDemandFill } from '@/lib/enrich/demand';
 import { runEnrichment } from '@/lib/enrich/run';
 import { isClaudeConfigured } from '@/lib/enrich/claude';
@@ -109,23 +109,23 @@ export async function POST(request: NextRequest) {
   const effectiveLimit = rails.reduce((n, r) => Math.min(n, r.cap - r.used), limit);
 
   /**
-   * The tank gate.
+   * The monthly production gate.
    *
-   * Enrichment fills a buffer that export drains, so there are two reasons not
-   * to run even with an eligible queue: the buffer is already at target, or
-   * today is not a refill day. Both are normal outcomes, so they return `ok`
-   * with the reason rather than an error — a scheduled job that reports failure
-   * for working correctly trains everyone to ignore its output.
+   * The target is a flow — enriched leads per calendar month — so the only reason
+   * not to run with an eligible queue is that the month's number is already made.
+   * That is a normal outcome, so it returns `ok` with the reason rather than an
+   * error: a scheduled job reporting failure for working correctly teaches
+   * everyone to ignore its output.
    *
-   * `force` overrides, for a manual top-up outside the weekly cycle.
+   * `force` overrides, for a deliberate top-up beyond the month's budget.
    */
-  const buffer = await getBufferState(policy.exportBufferDays, policy.refillWeekday);
+  const buffer = await getProductionState(policy.monthlyReadyTarget);
   if (buffer.reason && !body.force) {
     return NextResponse.json({
       ok: true,
       skipped: true,
       message: buffer.reason,
-      buffer,
+      production: buffer,
       requested: 0,
       succeeded: 0,
       failed: 0,
@@ -134,11 +134,10 @@ export async function POST(request: NextRequest) {
   }
 
   /**
-   * Never overfill. If the tank has room for four and the batch is ten, enrich
-   * four — otherwise a single run sails past the ceiling the ceiling exists to
-   * enforce.
+   * Never overshoot the month. With 4 left to make and a batch of 10, enrich 4 —
+   * otherwise one run sails past the ceiling the ceiling exists to enforce.
    */
-  const room = Math.max(0, buffer.target - buffer.ready);
+  const room = buffer.target > 0 ? buffer.remaining : effectiveLimit;
   const limitToRoom = Math.min(effectiveLimit, room);
 
   /**
@@ -154,7 +153,8 @@ export async function POST(request: NextRequest) {
    * queue once per person inside their own scope. Priority still decides WHICH
    * record within a person, so the bar does not drop.
    */
-  const demand = await getDemandPlan(policy.exportBufferDays);
+  // Per-person split of the month's target, weighted by each quota.
+  const demand = await getDemandPlan(policy.monthlyReadyTarget);
   const fill = await planDemandFill({ ...filters, limit: limitToRoom }, demand, limitToRoom);
   const rows = fill.rows;
   const unreachableSkipped = fill.unreachableSkipped;

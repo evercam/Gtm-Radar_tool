@@ -149,31 +149,22 @@ export interface EnrichmentPolicy {
    */
   researchInline: boolean;
   /**
-   * DAYS of exported leads to keep in reserve.
+   * Enriched leads to produce each calendar month.
    *
-   * Enrichment is not a rate, it fills a TANK — and the tank is sized by what
-   * the team consumes, not by a number typed into a policy. Each active person
-   * has a `daily_lead_quota` on the roster; the target is the sum of those
-   * quotas times this many days.
+   * A production FLOW, not a buffer depth — the distinction matters. A buffer
+   * says "hold N in stock and stop"; this says "make N a month", which is what a
+   * team consuming leads daily actually needs. At five people taking fifty a day
+   * the team draws about 250 a day, so 7,200 a month keeps supply and demand
+   * roughly level.
    *
-   * With Anas at 50 and Ronniel at 10 that is 60 a day, so 24 days is 1,440
-   * leads in reserve. Once the tank is full enrichment STOPS: every further
-   * record costs Apollo credits to produce inventory nobody is waiting for.
+   * Enrichment runs until the month's total is reached and then stops, so the
+   * Apollo spend is bounded per month by a number somebody chose rather than by
+   * how often a cron happened to fire.
    *
-   * Deriving the target from the roster means hiring somebody, changing a quota
-   * or deactivating an account moves the buffer with it. A hard-coded number
-   * would quietly under-supply the day a third person joined.
+   * The per-person SPLIT of that total comes from each assignee's
+   * `daily_lead_quota`, so who the leads are for is still decided by the roster.
    */
-  exportBufferDays: number;
-  /**
-   * The day a refill may begin. 0 is Sunday, 6 is Saturday.
-   *
-   * Enrichment only starts a new fill on this weekday and keeps going until the
-   * tank is full, then stops until the day comes round again. That makes the
-   * spend a predictable weekly event rather than a trickle nobody is watching,
-   * and it means a week's credits are committed once, deliberately.
-   */
-  refillWeekday: number;
+  monthlyReadyTarget: number;
 }
 
 export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
@@ -207,8 +198,7 @@ export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
   generateCallPrep: true,
   apolloBatchSize: 100,
   researchInline: false,
-  exportBufferDays: 24,
-  refillWeekday: 6,
+  monthlyReadyTarget: 7200,
 };
 
 /** Coerce a saved (possibly partial or stale) policy onto the defaults. */
@@ -268,9 +258,7 @@ export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
     generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
     apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),
     researchInline: bool(p.researchInline, d.researchInline),
-    exportBufferDays: num(p.exportBufferDays, d.exportBufferDays, 1, 365),
-    // Clamped to a real weekday rather than silently accepting 9 and never firing.
-    refillWeekday: num(p.refillWeekday, d.refillWeekday, 0, 6),
+    monthlyReadyTarget: num(p.monthlyReadyTarget, d.monthlyReadyTarget, 0, 1_000_000),
   };
 }
 

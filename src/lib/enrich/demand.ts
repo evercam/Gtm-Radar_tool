@@ -30,7 +30,7 @@ export interface PersonDemand {
   name: string;
   /** Their own daily_lead_quota. */
   dailyQuota: number;
-  /** dailyQuota x reserve days. */
+  /** This person's share of the month's target, weighted by their quota. */
   target: number;
   /** Ready leads whose vertical/region/BU this person can be given. */
   covered: number;
@@ -108,7 +108,7 @@ async function readyInventory(): Promise<AssignableLead[]> {
   return out;
 }
 
-export async function getDemandPlan(reserveDays: number): Promise<DemandPlan> {
+export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandPlan> {
   const empty: DemandPlan = { people: [], totalTarget: 0, totalDeficit: 0, unfillable: [] };
   if (!isSupabaseServiceConfigured()) return empty;
 
@@ -127,9 +127,14 @@ export async function getDemandPlan(reserveDays: number): Promise<DemandPlan> {
 
   const inventory = await readyInventory();
 
+  // Each person's share of the month's production, weighted by their quota. Five
+  // people on fifty a day split 7,200 evenly at 1,440 each; a sixth joining or a
+  // quota changing re-splits it without anybody editing a number.
+  const totalQuota = roster.reduce((n, u) => n + u.dailyQuota, 0);
+
   const people: PersonDemand[] = roster.map((u) => {
     const covered = inventory.filter((lead) => userCoversLead(u, lead)).length;
-    const target = u.dailyQuota * Math.max(1, reserveDays);
+    const target = totalQuota > 0 ? Math.round(monthlyReadyTarget * (u.dailyQuota / totalQuota)) : 0;
     return {
       id: u.id,
       name: u.name ?? u.id,

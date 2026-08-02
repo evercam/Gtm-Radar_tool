@@ -1011,121 +1011,114 @@ function applyQueueFilters<
   return q;
 }
 
-export interface BufferState {
-  /** Combined daily_lead_quota of the active roster — what the team consumes a day. */
-  dailyDemand: number;
-  /** Enriched by us, contactable, not yet exported — the tank export draws from. */
-  ready: number;
-  /**
-   * How many of those export would actually send right now — it additionally
-   * requires an assignee and a workable status. A large gap means assignment is
-   * behind enrichment, not that there is nothing to sell.
-   */
-  exportable: number;
-  /** dailyDemand x exportBufferDays. */
+export interface ProductionState {
+  /** Enriched so far this calendar month. */
+  produced: number;
+  /** The month's goal, from `monthlyReadyTarget`. */
   target: number;
-  /** Days of supply the tank currently holds, at the roster's consumption rate. */
+  /** produced / target, 0..1. */
+  progress: number;
+  /** Combined daily_lead_quota of the active roster — what the team draws a day. */
+  dailyDemand: number;
+  /** Enriched, contactable, not yet exported — unsold stock right now. */
+  ready: number;
+  /** How many of those export would send today: it also needs an assignee. */
+  exportable: number;
+  /** Days of cover `ready` represents at the roster's draw rate. */
   daysOfCover: number;
-  full: boolean;
-  /** Whether today is a day a refill may run. */
-  refillDay: boolean;
-  /** Set when enrichment should not run, and why — for the caller to report. */
+  /** Records still needed this month to hit target. */
+  remaining: number;
+  /** Set when enrichment should not run, and why. */
   reason: string | null;
 }
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
 /**
- * Is there room in the tank, and is today a day we fill it?
+ * Has this month's production target been met?
  *
- * Enrichment is not a rate, it fills a buffer. Export takes `apolloBatchSize`
- * leads per run and the reserve behind it should hold that many times
- * `exportBufferMultiple`. Once full, every further record spends Apollo credits
- * producing inventory nobody is waiting for.
+ * The target is a FLOW — enriched leads produced per calendar month — not a stock
+ * level. A stock rule ("hold 240 and stop") starves a team that consumes daily:
+ * it stops producing the moment the shelf looks full and never accounts for what
+ * was taken off it. Counting production per month bounds the Apollo spend by a
+ * number somebody chose, and keeps producing while the team keeps drawing.
  *
- * "Ready" means enrichment PRODUCED it and export has not yet consumed it:
- * enriched by us, carrying an address, not yet sent.
- *
- * The `enriched_at` part is load-bearing and I got it wrong first time. Counting
- * every record with an address gave 233 of a 240 target — a nearly full tank —
- * while export could actually send 2. The other 223 arrived from their source
- * already carrying an email and sit at RAW, unenriched and unassignable, so they
- * are not inventory anything can draw on. Enrichment would have switched itself
- * off on the strength of stock that does not exist.
- *
- * It deliberately does NOT require an assignee, even though export does.
- * Assignment runs once a day while enrichment runs hourly, so gating on it would
- * hold the buffer at zero all day and let enrichment overshoot the ceiling many
- * times over. This measures production against consumption, which is the
- * question "should we make more" actually asks. `exportable` is reported
- * alongside it so a gap — production outrunning assignment — is visible rather
- * than mistaken for a full tank.
+ * `ready` and `exportable` are reported alongside, because they answer a
+ * different question — how much unsold stock exists, and how much of it export
+ * could actually send today. A wide gap between them means assignment is behind,
+ * which is not a production problem and must not be mistaken for one.
  */
-export async function getBufferState(
-  exportBufferDays: number,
-  refillWeekday: number,
+export async function getProductionState(
+  monthlyReadyTarget: number,
   now: Date = new Date()
-): Promise<BufferState> {
-  const refillDay = now.getDay() === refillWeekday;
+): Promise<ProductionState> {
   const supabase = await getReadSupabase();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 
-  /**
-   * What the team consumes in a day, read from the roster rather than configured
-   * separately. Each active person exports up to their own `daily_lead_quota`,
-   * so the demand is the sum of them — and hiring somebody, changing a quota or
-   * deactivating an account moves the buffer target with it.
-   */
-  const { data: roster, error: rosterError } = await supabase
-    .from('assignees')
-    .select('daily_lead_quota')
-    .eq('is_active', true);
-  if (rosterError) console.warn(`Could not read roster quotas: ${rosterError.message}`);
+  const [{ count: produced, error: producedError }, { count: ready }, { count: exportable }, { data: roster }] =
+    await Promise.all([
+      supabase
+        .from('canonical_projects')
+        .select('*', { count: 'exact', head: true })
+        .gte('enriched_at', monthStart),
+      supabase
+        .from('canonical_projects')
+        .select('*', { count: 'exact', head: true })
+        .not('enriched_at', 'is', null)
+        .not('contact_email', 'is', null)
+        .is('apollo_exported_at', null)
+        .eq('do_not_contact', false),
+      supabase
+        .from('canonical_projects')
+        .select('*', { count: 'exact', head: true })
+        .not('contact_email', 'is', null)
+        .is('apollo_exported_at', null)
+        .eq('do_not_contact', false)
+        .not('assignee_id', 'is', null)
+        .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']),
+      supabase.from('assignees').select('daily_lead_quota').eq('is_active', true),
+    ]);
+
   const dailyDemand = (roster ?? []).reduce(
     (n, r) => n + ((r as { daily_lead_quota: number | null }).daily_lead_quota ?? 0),
     0
   );
-  // No active roster means nobody is consuming leads, so there is nothing to
-  // stock up for. Enriching into an empty team is the clearest waste there is.
-  const target = Math.max(0, dailyDemand * exportBufferDays);
-  const ready$ = supabase
-    .from('canonical_projects')
-    .select('*', { count: 'exact', head: true })
-    .not('enriched_at', 'is', null)
-    .not('contact_email', 'is', null)
-    .is('apollo_exported_at', null)
-    .eq('do_not_contact', false);
+  const readyCount = ready ?? 0;
+  const daysOfCover = dailyDemand > 0 ? Math.round((readyCount / dailyDemand) * 10) / 10 : 0;
 
-  // Exactly what the export route will send, so the two numbers can be compared.
-  const exportable$ = supabase
-    .from('canonical_projects')
-    .select('*', { count: 'exact', head: true })
-    .not('contact_email', 'is', null)
-    .is('apollo_exported_at', null)
-    .eq('do_not_contact', false)
-    .not('assignee_id', 'is', null)
-    .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']);
-
-  const [{ count, error }, { count: exportableCount }] = await Promise.all([ready$, exportable$]);
-
-  // A count we could not take is not a full tank. Failing open keeps leads
-  // flowing; failing closed would stop the pipeline over a transient read.
-  if (error) {
-    console.warn(`Could not measure the ready buffer: ${error.message}`);
-    return { dailyDemand, ready: 0, exportable: 0, target, daysOfCover: 0, full: false, refillDay, reason: null };
+  // A count we could not take is not a met target. Failing open keeps production
+  // going; failing closed would stop the month's supply over a transient read.
+  if (producedError) {
+    console.warn(`Could not measure this month's production: ${producedError.message}`);
+    return {
+      produced: 0,
+      target: monthlyReadyTarget,
+      progress: 0,
+      dailyDemand,
+      ready: readyCount,
+      exportable: exportable ?? 0,
+      daysOfCover,
+      remaining: monthlyReadyTarget,
+      reason: null,
+    };
   }
 
-  const ready = count ?? 0;
-  const daysOfCover = dailyDemand > 0 ? Math.round((ready / dailyDemand) * 10) / 10 : 0;
-  const full = target > 0 && ready >= target;
-  const reason = target === 0
-    ? 'Nobody active on the roster has a daily lead quota, so there is no demand to stock up for. Set a quota on the Team page.'
-    : full
-    ? `The buffer holds ${ready} lead(s) — ${daysOfCover} days of cover at ${dailyDemand} a day, at or above the ${exportBufferDays}-day target of ${target}. Enrichment is paused so credits are not spent on inventory nobody is waiting for.`
-    : !refillDay
-      ? `The buffer holds ${ready} of ${target} (${daysOfCover} of ${exportBufferDays} days of cover), but refills run on ${WEEKDAYS[refillWeekday]} and today is ${WEEKDAYS[now.getDay()]}. Waiting for the next refill day.`
+  const made = produced ?? 0;
+  const remaining = Math.max(0, monthlyReadyTarget - made);
+  const reason =
+    monthlyReadyTarget > 0 && remaining === 0
+      ? `This month's target of ${monthlyReadyTarget.toLocaleString()} enriched leads is met (${made.toLocaleString()} produced). Enrichment is paused until the first of next month so the Apollo spend stays inside the month's budget.`
       : null;
 
-  return { dailyDemand, ready, exportable: exportableCount ?? 0, target, daysOfCover, full, refillDay, reason };
+  return {
+    produced: made,
+    target: monthlyReadyTarget,
+    progress: monthlyReadyTarget > 0 ? Math.min(1, made / monthlyReadyTarget) : 1,
+    dailyDemand,
+    ready: readyCount,
+    exportable: exportable ?? 0,
+    daysOfCover,
+    remaining,
+    reason,
+  };
 }
 
 /**
