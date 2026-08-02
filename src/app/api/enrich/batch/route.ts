@@ -3,6 +3,7 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { loadSourceBudgets, budgetFor } from '@/lib/enrich/sourceBudget';
 import { getEnrichmentQueue, getEnrichedSinceCount, getBufferState, type EnrichQueueRow } from '@/lib/queries';
+import { getDemandPlan, planDemandFill } from '@/lib/enrich/demand';
 import { runEnrichment } from '@/lib/enrich/run';
 import { isClaudeConfigured } from '@/lib/enrich/claude';
 import { checkPermission } from '@/lib/auth/session';
@@ -140,7 +141,24 @@ export async function POST(request: NextRequest) {
   const room = Math.max(0, buffer.target - buffer.ready);
   const limitToRoom = Math.min(effectiveLimit, room);
 
-  const { rows, total, unreachableSkipped } = await getEnrichmentQueue({ ...filters, limit: limitToRoom });
+  /**
+   * Fill by DEMAND, not by score alone.
+   *
+   * Score order answers "which lead is most valuable"; it does not answer "what
+   * should we produce next", and the two diverge the moment anybody has a scope.
+   * Measured on this roster: a score-ordered batch of ten returned hydro, oil and
+   * gas, and solar — nothing at all for the rep scoped to mining, who would have
+   * watched a 1,440-lead tank fill with leads he can never be given.
+   *
+   * `planDemandFill` splits the slots by how short each person is and reads the
+   * queue once per person inside their own scope. Priority still decides WHICH
+   * record within a person, so the bar does not drop.
+   */
+  const demand = await getDemandPlan(policy.exportBufferDays);
+  const fill = await planDemandFill({ ...filters, limit: limitToRoom }, demand, limitToRoom);
+  const rows = fill.rows;
+  const unreachableSkipped = fill.unreachableSkipped;
+  const { total } = await getEnrichmentQueue({ ...filters, limit: 1 });
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
@@ -151,6 +169,7 @@ export async function POST(request: NextRequest) {
       queueTotal: total,
     unreachableSkipped,
     buffer,
+    demand: { perPerson: fill.perPerson, starved: fill.starved, totalDeficit: demand.totalDeficit },
       results: [],
     });
   }
@@ -327,6 +346,13 @@ export async function POST(request: NextRequest) {
         // queue that has run out of work. This is spend avoided, not work lost.
         (unreachableSkipped > 0
           ? ` Skipped ${unreachableSkipped} already-built or cancelled project${unreachableSkipped === 1 ? '' : 's'} — no contacts bought for work that is over.`
+          : '') +
+        // Starvation named, with the scope that could not be served. This is a
+        // sourcing problem, not a full tank, and the two must never look alike.
+        (fill.starved.length
+          ? ` Could not source for ${fill.starved
+              .map((x) => `${x.name} (${x.wanted} short; ${[x.scope.verticals.join('/'), x.scope.bu.join('/'), x.scope.regions.join('/')].filter(Boolean).join(', ') || 'no scope'})`)
+              .join('; ')}.`
           : ''),
     requested: rows.length,
     succeeded,

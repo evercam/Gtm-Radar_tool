@@ -939,6 +939,8 @@ export interface EnrichQueueFilters {
   bus?: string[];
   /** Verticals eligible (empty/absent = all). */
   verticals?: string[];
+  /** Country codes a person's region scope covers. */
+  countries?: string[];
   /** Skip records worth less than this. Unpriced records are skipped too. */
   minEstimatedValue?: number;
   /** Skip records with no company name — Apollo has nothing to resolve. */
@@ -981,6 +983,11 @@ function applyQueueFilters<
   if (f.bu) q = q.eq('bu', f.bu);
   if (f.bus?.length) q = q.in('bu', f.bus);
   if (f.verticals?.length) q = q.in('vertical', f.verticals);
+  // Region scope. The roster stores country codes in `regions`, and without this
+  // a person scoped to the USA had their scope honoured at ASSIGNMENT but ignored
+  // when deciding what to PRODUCE — so the tank filled with leads they could
+  // never be given.
+  if (f.countries?.length) q = q.in('country', f.countries);
   // gte on a nullable column drops NULLs, which is the intent: a record with no
   // value has not been shown to clear the bar.
   if (f.minEstimatedValue) q = q.gte('estimated_value', f.minEstimatedValue);
