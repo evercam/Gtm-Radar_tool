@@ -31,6 +31,41 @@ person Apollo has already been asked about is free on every subsequent record.
 That matters most where one company owns many projects — four Cleveland-Cliffs
 mining records revealed the same three people for twelve credits.
 
+## Scheduling: the hourly runs this pipeline is sized for
+
+Enrichment fills a buffer of `apolloBatchSize x exportBufferMultiple` (10 x 24 =
+240) and stops. At ten records per run that is twenty-four runs — one day of
+hourly firings — which is where the 24 comes from.
+
+**Vercel Hobby plans allow daily crons only.** An hourly entry in `vercel.json`
+is rejected at deploy time ("Hobby accounts are limited to daily cron jobs"), so
+the schedule cannot live there on the current plan. `vercel.json` therefore holds
+only the daily 06:00 chain.
+
+The buffer gate itself is plan-independent and already enforced: any caller
+hitting the endpoint gets one batch if the tank has room, and a reason if it does
+not. So the hourly cadence can come from anywhere.
+
+Two ways to get it:
+
+1. **Upgrade to Vercel Pro**, then add to `vercel.json`:
+
+   ```json
+   { "path": "/api/cron?job=enrich", "schedule": "0 * * * *" },
+   { "path": "/api/cron?job=brief",  "schedule": "30 * * * *" }
+   ```
+
+2. **Drive it externally** — GitHub Actions, cron-job.org, anything that can send
+   a header:
+
+   ```
+   curl -X POST "https://evercam-raddar.vercel.app/api/cron?job=enrich"      -H "Authorization: Bearer $CRON_SECRET"
+   ```
+
+Until one of those is in place the pipeline runs once a day, so a 240 buffer takes
+24 days to fill rather than one. Nothing is broken by that — the gate simply sees
+room every morning and enriches ten.
+
 **Validate before running.** `./scripts/test-migrations.sh` applies every
 migration to a throwaway Postgres in a Docker container, then re-applies them
 to prove idempotency. Run it after touching any migration — it catches the

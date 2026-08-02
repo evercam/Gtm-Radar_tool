@@ -8,14 +8,6 @@
     {
       "path": "/api/cron?job=daily",
       "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/cron?job=enrich",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron?job=brief",
-      "schedule": "30 * * * *"
     }
   ]
 }
