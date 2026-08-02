@@ -94,7 +94,24 @@ export interface AdapterFetchParams {
   since?: Date;
   until?: Date;
   page?: number;
+  /**
+   * Records per HTTP request — the vendor's own page size, nothing more.
+   *
+   * It used to mean both this AND the total to return, which is why every source
+   * fetched exactly 50: the route passed `pageSize: 50`, the adapter stopped
+   * paginating at 50 records and then sliced to 50. `max_records_per_run` was
+   * 500, read from the config, and never applied. Set this to whatever the vendor
+   * documents as its maximum — a request for 250 costs the same as one for 50.
+   */
   pageSize?: number;
+  /**
+   * Total records this run may return, across however many pages that takes.
+   *
+   * The run's budget, from `source_config.max_records_per_run`. Absent means
+   * "one page and stop", which keeps a caller that has not been updated behaving
+   * exactly as before rather than suddenly paginating without being asked.
+   */
+  maxRecords?: number;
   /** When true, adapters should fetch at most one small page and not paginate exhaustively. */
   dryRun?: boolean;
   /** Minimum project value in GBP. */

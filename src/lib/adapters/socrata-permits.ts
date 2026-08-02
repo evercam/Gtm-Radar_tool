@@ -203,6 +203,15 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
     async fetchRawProjects(params: AdapterFetchParams = {}): Promise<RawProjectRecord[]> {
       const baseUrl = `https://${cfg.host}/resource/${cfg.datasetId}.json`;
       const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, 100) : (params.pageSize ?? 100);
+      /**
+       * The run's budget, separate from the page size.
+       *
+       * These were one number, which capped every scheduled pull at whatever the
+       * page size was — the route passed 50, the loop stopped at 50, the result was
+       * sliced to 50, and `max_records_per_run` (500) was never applied. Absent, it
+       * still means one page, so an un-updated caller behaves exactly as before.
+       */
+      const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
 
       // Server-side SoQL date window on the publisher's issuance field.
       const whereParts: string[] = [];
@@ -211,7 +220,9 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
 
       const rows: RawProjectRecord[] = [];
       let offset = ((params.page ?? 1) - 1) * pageSize;
-      const maxPages = params.dryRun ? 1 : 10;
+      // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+      // budget cannot walk a vendor’s whole index.
+      const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
       const perPage = Math.min(pageSize, 200);
 
       // Free and self-serve, and it lifts NYC/Chicago off a shared-IP throttle
@@ -224,7 +235,7 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
       };
       if (appToken) headers['X-App-Token'] = appToken;
 
-      for (let i = 0; i < maxPages && rows.length < pageSize; i++) {
+      for (let i = 0; i < maxPages && rows.length < maxRecords; i++) {
         const url = new URL(baseUrl);
         url.searchParams.set('$limit', String(perPage));
         url.searchParams.set('$offset', String(offset));
@@ -266,7 +277,7 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
         });
       }
 
-      return filtered.slice(0, pageSize);
+      return filtered.slice(0, maxRecords);
     },
 
     normalize(raw: RawProjectRecord): CanonicalProjectInsert {

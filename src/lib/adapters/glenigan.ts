@@ -164,6 +164,15 @@ export const gleniganAdapter: SourceAdapter = {
     }
     const baseUrl = creds.baseUrl.replace(/\/$/, '');
     const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, MAX_PAGE_SIZE) : (params.pageSize ?? 100);
+    /**
+     * The run's budget, separate from the page size.
+     *
+     * These were one number, which capped every scheduled pull at whatever the
+     * page size was — the route passed 50, the loop stopped at 50, the result was
+     * sliced to 50, and `max_records_per_run` (500) was never applied. Absent, it
+     * still means one page, so an un-updated caller behaves exactly as before.
+     */
+    const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
     // Glenigan's /project/newproject feed reflects NEW/updated project events,
     // which can be sparse day-to-day — default to a much wider lookback than
     // other sources (confirmed empirically: a 24h window is frequently empty,
@@ -174,9 +183,11 @@ export const gleniganAdapter: SourceAdapter = {
 
     const results: GleniganResult[] = [];
     let page = params.page ?? 1;
-    const maxPages = params.dryRun ? 1 : 200; // safety cap against runaway pagination
+    // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+    // budget cannot walk a vendor’s whole index.
+    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2)); // safety cap against runaway pagination
 
-    for (let i = 0; i < maxPages && results.length < pageSize; i++) {
+    for (let i = 0; i < maxPages && results.length < maxRecords; i++) {
       const url = new URL(`${baseUrl}/project/newproject`);
       url.searchParams.set('key', creds.apiKey);
       url.searchParams.set('Page', String(page));
@@ -234,7 +245,7 @@ export const gleniganAdapter: SourceAdapter = {
       return true;
     });
 
-    return filtered.slice(0, pageSize) as unknown as RawProjectRecord[];
+    return filtered.slice(0, maxRecords) as unknown as RawProjectRecord[];
   },
 
   normalize(raw: RawProjectRecord): CanonicalProjectInsert {

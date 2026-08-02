@@ -97,6 +97,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
     /** Relative alternative to `since`, so a saved default cannot go stale. */
     lookbackDays?: number;
     pageSize?: number;
+    maxRecords?: number;
     minValue?: number;
     keyword?: string;
     postcodes?: string[];
@@ -145,6 +146,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       since,
       until: params.until ? new Date(params.until) : undefined,
       pageSize: params.pageSize ?? config.pageSize,
+      /**
+       * The run's budget, at last applied.
+       *
+       * `max_records_per_run` has been in `source_config` all along, read into
+       * the config object, and passed to nothing — so every source fetched one
+       * page and stopped. 500 was allowed and 50 taken, at 2-8 requests a month
+       * against sources with no cap.
+       */
+      maxRecords: params.maxRecords ?? config.maxRecordsPerRun,
       minValue: params.minValue,
       keyword: params.keyword,
       postcodes: params.postcodes,

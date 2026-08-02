@@ -115,9 +115,18 @@ export const tedAdapter: SourceAdapter = {
   },
 
   async fetchRawProjects(params: AdapterFetchParams = {}): Promise<RawProjectRecord[]> {
-    // TED caps a page at 250 (documented). Asking for 100 cost the same
-    // request for 40% of the notices.
-    const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, 50) : (params.pageSize ?? 250);
+    // TED caps a page at 250 (documented). Asking for 100 cost the same request
+    // for 40% of the notices.
+    const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, 50) : Math.min(params.pageSize ?? 250, TED_MAX_PAGE);
+    /**
+     * The run's budget, separate from the page size.
+     *
+     * These were one number, and it capped every scheduled pull at 50 notices:
+     * the route passed `pageSize: 50`, the loop stopped once 50 had accumulated,
+     * and the result was then sliced to 50. Absent, it still means one page — a
+     * caller that has not been updated behaves exactly as it did.
+     */
+    const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
     const countries = regionsToCountries(params.regions);
 
     /**
@@ -142,9 +151,21 @@ export const tedAdapter: SourceAdapter = {
 
     const notices: TedNotice[] = [];
     let page = params.page ?? 1;
-    const maxPages = params.dryRun ? 1 : 10;
+    // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+    // budget cannot walk a vendor's entire index.
+    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / pageSize) + 2));
 
-    for (let i = 0; i < maxPages && notices.length < pageSize; i++) {
+    /**
+     * Pages already seen, so an unstable pager cannot loop forever.
+     *
+     * At a depth of 50 this never mattered. Fetching hundreds, it does: TED
+     * rejects sort parameters, so if a notice is published mid-pull the window
+     * shifts and a page can repeat rows it has already served. A page that adds
+     * nothing new means we are going in circles, not that there is more to come.
+     */
+    const seen = new Set<string>();
+
+    for (let i = 0; i < maxPages && notices.length < maxRecords; i++) {
       const res = await fetchWithRetry(
         ENDPOINT,
         {
@@ -171,8 +192,28 @@ export const tedAdapter: SourceAdapter = {
       if (!Array.isArray(batch)) {
         throw new AdapterShapeError('TED response had no notices[].');
       }
-      notices.push(...batch);
-      if (params.dryRun || batch.length < Math.min(pageSize, 100)) break;
+      // Only notices we have not already got. `publication-number` is TED's own
+      // identifier and is what the adapter normalizes to `source_unique_id`, so
+      // this is the same identity the upsert uses — not a guess.
+      let added = 0;
+      for (const n of batch) {
+        const id = String(n['publication-number'] ?? '');
+        if (id && seen.has(id)) continue;
+        if (id) seen.add(id);
+        notices.push(n);
+        added += 1;
+      }
+
+      if (params.dryRun) break;
+      // A short page means the end of the result set. A full page that added
+      // nothing new means the pager is repeating itself — stop either way, and
+      // say so, because silently looping to `maxPages` would burn ten requests
+      // to collect nothing.
+      if (batch.length < Math.min(pageSize, 100)) break;
+      if (added === 0) {
+        console.warn(`TED page ${page} returned ${batch.length} notices and none were new — stopping.`);
+        break;
+      }
       page += 1;
     }
 
@@ -185,7 +226,7 @@ export const tedAdapter: SourceAdapter = {
         })
       : notices;
 
-    return filtered.slice(0, pageSize) as unknown as RawProjectRecord[];
+    return filtered.slice(0, maxRecords) as unknown as RawProjectRecord[];
   },
 
   normalize(raw: RawProjectRecord): CanonicalProjectInsert {

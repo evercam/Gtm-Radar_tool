@@ -245,6 +245,15 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
 
     async fetchRawProjects(params: AdapterFetchParams = {}): Promise<RawProjectRecord[]> {
       const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, 100) : (params.pageSize ?? 100);
+      /**
+       * The run's budget, separate from the page size.
+       *
+       * These were one number, which capped every scheduled pull at whatever the
+       * page size was — the route passed 50, the loop stopped at 50, the result was
+       * sliced to 50, and `max_records_per_run` (500) was never applied. Absent, it
+       * still means one page, so an un-updated caller behaves exactly as before.
+       */
+      const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
       const now = new Date();
       const from = params.since ?? new Date(now.getTime() - 90 * 86_400_000);
       const to = params.until ?? now;
@@ -262,9 +271,11 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       const releases: OcdsRelease[] = [];
       const stage = cfg.supportsStages ? params.stage : undefined;
       let url: string | undefined = cfg.buildUrl(cfg.fmtDate(from, 'from'), cfg.fmtDate(to, 'to'), stage);
-      const maxPages = params.dryRun ? 1 : 10;
+      // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+      // budget cannot walk a vendor’s whole index.
+      const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
-      for (let i = 0; i < maxPages && url && releases.length < pageSize; i++) {
+      for (let i = 0; i < maxPages && url && releases.length < maxRecords; i++) {
         const res = await fetchWithRetry(
           url,
           {
@@ -333,7 +344,7 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
         });
       }
 
-      return filtered.slice(0, pageSize) as unknown as RawProjectRecord[];
+      return filtered.slice(0, maxRecords) as unknown as RawProjectRecord[];
     },
 
     normalize(raw: RawProjectRecord): CanonicalProjectInsert {

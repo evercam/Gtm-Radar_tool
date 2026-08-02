@@ -63,6 +63,15 @@ export const planningIeAdapter: SourceAdapter = {
   async fetchRawProjects(params: AdapterFetchParams = {}): Promise<RawProjectRecord[]> {
     const baseUrl = params.credentials?.baseUrl?.trim() || process.env.PLANNING_IE_BASE_URL || DEFAULT_BASE_URL;
     const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, 100) : (params.pageSize ?? 100);
+    /**
+     * The run's budget, separate from the page size.
+     *
+     * These were one number, which capped every scheduled pull at whatever the
+     * page size was — the route passed 50, the loop stopped at 50, the result was
+     * sliced to 50, and `max_records_per_run` (500) was never applied. Absent, it
+     * still means one page, so an un-updated caller behaves exactly as before.
+     */
+    const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
 
     // Server-side WHERE clause (keyword + region); dates filtered client-side.
     const clauses = ['1=1'];
@@ -81,9 +90,11 @@ export const planningIeAdapter: SourceAdapter = {
 
     const results: IePlanningAttrs[] = [];
     let offset = ((params.page ?? 1) - 1) * pageSize;
-    const maxPages = params.dryRun ? 1 : 10;
+    // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+    // budget cannot walk a vendor’s whole index.
+    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
-    for (let i = 0; i < maxPages && results.length < pageSize; i++) {
+    for (let i = 0; i < maxPages && results.length < maxRecords; i++) {
       const url = new URL(baseUrl);
       url.searchParams.set('f', 'json');
       url.searchParams.set('where', where);
@@ -121,7 +132,7 @@ export const planningIeAdapter: SourceAdapter = {
       offset += page.length;
     }
 
-    return results.slice(0, pageSize) as unknown as RawProjectRecord[];
+    return results.slice(0, maxRecords) as unknown as RawProjectRecord[];
   },
 
   normalize(raw: RawProjectRecord): CanonicalProjectInsert {

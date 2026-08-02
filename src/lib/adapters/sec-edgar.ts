@@ -100,6 +100,15 @@ export const secEdgarAdapter: SourceAdapter = {
       ''
     );
     const pageSize = params.dryRun ? Math.min(params.pageSize ?? 5, PAGE) : (params.pageSize ?? PAGE);
+    /**
+     * The run's budget, separate from the page size.
+     *
+     * These were one number, which capped every scheduled pull at whatever the
+     * page size was — the route passed 50, the loop stopped at 50, the result was
+     * sliced to 50, and `max_records_per_run` (500) was never applied. Absent, it
+     * still means one page, so an un-updated caller behaves exactly as before.
+     */
+    const maxRecords = params.dryRun ? pageSize : (params.maxRecords ?? pageSize);
 
     // Build the full-text query from keyword + sector term presets.
     const terms = [params.keyword?.trim(), ...(params.sectors ?? []).map((s) => `"${s}"`)].filter(Boolean);
@@ -111,9 +120,11 @@ export const secEdgarAdapter: SourceAdapter = {
 
     const results: EdgarHit[] = [];
     let offset = ((params.page ?? 1) - 1) * PAGE;
-    const maxPages = params.dryRun ? 1 : 10;
+    // Enough pages to reach the budget, with a hard ceiling so a misconfigured
+    // budget cannot walk a vendor’s whole index.
+    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
-    for (let i = 0; i < maxPages && results.length < pageSize; i++) {
+    for (let i = 0; i < maxPages && results.length < maxRecords; i++) {
       const qp = new URLSearchParams({ q, startdt: ymd(from), enddt: ymd(to), from: String(offset) });
       if (params.forms?.length) qp.set('forms', params.forms.join(','));
 
@@ -152,7 +163,7 @@ export const secEdgarAdapter: SourceAdapter = {
       });
     }
 
-    return filtered.slice(0, pageSize) as unknown as RawProjectRecord[];
+    return filtered.slice(0, maxRecords) as unknown as RawProjectRecord[];
   },
 
   normalize(raw: RawProjectRecord): CanonicalProjectInsert {
