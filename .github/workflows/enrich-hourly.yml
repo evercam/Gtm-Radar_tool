@@ -18,9 +18,13 @@ name: Hourly enrichment
 # Move this into vercel.json if the project ever goes to Pro; delete it then, so
 # the work is not scheduled twice.
 #
-# Required repository secrets (already used by construct-connect.yml):
-#   HUB_URL     https://evercam-raddar.vercel.app  (no trailing slash)
+# Required repository secret:
 #   HUB_SECRET  the same value as CRON_SECRET in Vercel
+#
+# HUB_URL is OPTIONAL and defaults to production below. It is a public URL, not a
+# secret, and making it required meant this could fail with a message about a
+# secret that never needed to be one. Set it to point a fork at a preview
+# deployment; leave it unset otherwise.
 
 on:
   schedule:
@@ -63,21 +67,28 @@ jobs:
             echo "job=enrich" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check the secrets are present
+      - name: Resolve the target
+        id: target
         env:
           HUB_URL: ${{ secrets.HUB_URL }}
           HUB_SECRET: ${{ secrets.HUB_SECRET }}
         run: |
-          # Failing here with a clear message beats a 401 that looks like a bug in
-          # the app.
-          if [ -z "$HUB_URL" ] || [ -z "$HUB_SECRET" ]; then
-            echo "::error::HUB_URL and HUB_SECRET must both be set as repository secrets."
+          # A public URL is not a secret. Defaulting it leaves exactly one thing
+          # to configure, so the failure below can only ever mean one thing.
+          url="${HUB_URL:-https://evercam-raddar.vercel.app}"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Target: $url"
+
+          # Failing here with an actionable message beats a 401 that reads like a
+          # bug in the app.
+          if [ -z "$HUB_SECRET" ]; then
+            echo "::error::HUB_SECRET is not set. Add it under Settings -> Secrets and variables -> Actions, with the same value as CRON_SECRET in Vercel."
             exit 1
           fi
 
       - name: Run ${{ steps.pick.outputs.job }}
         env:
-          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_URL: ${{ steps.target.outputs.url }}
           HUB_SECRET: ${{ secrets.HUB_SECRET }}
           JOB: ${{ steps.pick.outputs.job }}
         run: |
