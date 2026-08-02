@@ -1,0 +1,121 @@
+name: Hourly enrichment
+
+# The throughput the pipeline is sized for.
+#
+# Measured against production: eight records in 60 seconds, so ~7.5s each. A
+# Vercel function may live 300 seconds, so a batch of 20 fits with room to spare.
+# The monthly target is 7,200, which is ~240 a day — twelve hourly runs of twenty,
+# so a day of firings covers it twice over and the gate stops the rest.
+#
+# Vercel cannot schedule that on a Hobby plan: an hourly entry in vercel.json is
+# rejected at deploy time with "Hobby accounts are limited to daily cron jobs".
+# So the schedule lives here instead. The endpoint is identical either way — it
+# is the same URL Vercel's own cron calls, guarded by the same secret — and the
+# monthly production gate decides whether each firing does any work. Once the
+# month's 7,200 are made, every remaining run returns "target met" without
+# spending a credit.
+#
+# Move this into vercel.json if the project ever goes to Pro; delete it then, so
+# the work is not scheduled twice.
+#
+# Required repository secrets (already used by construct-connect.yml):
+#   HUB_URL     https://evercam-raddar.vercel.app  (no trailing slash)
+#   HUB_SECRET  the same value as CRON_SECRET in Vercel
+
+on:
+  schedule:
+    # Every hour. GitHub runs scheduled workflows on a best-effort basis and can
+    # delay them under load, which is harmless here: the gate is a monthly total,
+    # not a per-hour quota, so a missed hour is made up by the next one.
+    - cron: '0 * * * *'
+    # Briefs half an hour later, so the records enriched on the hour have landed
+    # before anything tries to qualify them.
+    - cron: '30 * * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which step to run'
+        type: choice
+        options: [enrich, brief, daily]
+        default: enrich
+
+concurrency:
+  # One at a time. Two overlapping runs would both read the same queue and
+  # enrich the same records — paying twice for one result.
+  group: enrich-hourly
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Pick the step
+        id: pick
+        run: |
+          # On the half hour the schedule means briefs; on the hour, enrichment.
+          # A manual run says which it wants.
+          if [ -n "${{ inputs.job }}" ]; then
+            echo "job=${{ inputs.job }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 * * * *" ]; then
+            echo "job=brief" >> "$GITHUB_OUTPUT"
+          else
+            echo "job=enrich" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the secrets are present
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_SECRET: ${{ secrets.HUB_SECRET }}
+        run: |
+          # Failing here with a clear message beats a 401 that looks like a bug in
+          # the app.
+          if [ -z "$HUB_URL" ] || [ -z "$HUB_SECRET" ]; then
+            echo "::error::HUB_URL and HUB_SECRET must both be set as repository secrets."
+            exit 1
+          fi
+
+      - name: Run ${{ steps.pick.outputs.job }}
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_SECRET: ${{ secrets.HUB_SECRET }}
+          JOB: ${{ steps.pick.outputs.job }}
+        run: |
+          set -euo pipefail
+          # --max-time below the job timeout so a hung request fails the step
+          # rather than being killed without a message.
+          code=$(curl -sS -X POST "$HUB_URL/api/cron?job=$JOB" \
+            -H "Authorization: Bearer $HUB_SECRET" \
+            -H 'Content-Type: application/json' \
+            --max-time 540 \
+            -o response.json -w '%{http_code}')
+
+          echo "HTTP $code"
+          # The response carries what happened — how many were enriched, whether
+          # the monthly gate paused it, who could not be sourced for. Printed in
+          # full so the Actions log is the run history.
+          cat response.json
+          echo
+
+          if [ "$code" != "200" ]; then
+            echo "::error::$JOB returned HTTP $code"
+            exit 1
+          fi
+
+      - name: Summarise
+        if: always()
+        env:
+          JOB: ${{ steps.pick.outputs.job }}
+        run: |
+          # One line per step on the run summary, so the Actions list is readable
+          # without opening each job. jq is preinstalled on ubuntu-latest.
+          {
+            echo "### $JOB"
+            if [ -f response.json ]; then
+              jq -r '(.results // [] | map(.message) | map(select(. != null))) as $m
+                     | if ($m | length) > 0 then $m[] else (.message // "no message returned") end
+                     | "- " + .' response.json 2>/dev/null                 || echo "- could not parse the response"
+            else
+              echo "- the request did not complete"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
