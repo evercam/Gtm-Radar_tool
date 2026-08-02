@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
    *
    * `force` overrides, for a manual top-up outside the weekly cycle.
    */
-  const buffer = await getBufferState(policy.apolloBatchSize, policy.exportBufferMultiple, policy.refillWeekday);
+  const buffer = await getBufferState(policy.exportBufferDays, policy.refillWeekday);
   if (buffer.reason && !body.force) {
     return NextResponse.json({
       ok: true,

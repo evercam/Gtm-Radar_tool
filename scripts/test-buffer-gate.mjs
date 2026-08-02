@@ -36,39 +36,46 @@ const check = (n, c, d) => {
 const SATURDAY = new Date('2026-08-01T09:00:00Z');
 const MONDAY = new Date('2026-08-03T09:00:00Z');
 
-console.log('\nThe target is derived, not configured twice');
+console.log('\nThe target comes from the roster, not from a typed-in number');
 {
-  const b = await getBufferState(10, 24, 6, SATURDAY);
-  check('10 per export x 24 = 240', b.target === 240, String(b.target));
-  const c = await getBufferState(25, 4, 6, SATURDAY);
-  check('and it follows both dials', c.target === 100, String(c.target));
+  // dailyDemand is the sum of active daily_lead_quota, read live — so this
+  // asserts the RELATIONSHIP rather than a figure that moves when somebody is
+  // hired or a quota changes.
+  const b = await getBufferState(24, 6, SATURDAY);
+  check('demand is read from the active roster', b.dailyDemand > 0, String(b.dailyDemand));
+  check('target is demand x days of reserve', b.target === b.dailyDemand * 24, `${b.target} vs ${b.dailyDemand} x 24`);
+  const c = await getBufferState(4, 6, SATURDAY);
+  check('and it follows the days dial', c.target === c.dailyDemand * 4, String(c.target));
+  check('days of cover is reported', typeof b.daysOfCover === 'number', String(b.daysOfCover));
 }
 
 console.log('\nThe refill day decides whether a fill may start');
 {
-  const sat = await getBufferState(10, 24, 6, SATURDAY);
+  const sat = await getBufferState(24, 6, SATURDAY);
   check('Saturday is a refill day', sat.refillDay === true);
-  const mon = await getBufferState(10, 24, 6, MONDAY);
+  const mon = await getBufferState(24, 6, MONDAY);
   check('Monday is not', mon.refillDay === false);
   check('and Monday says why, naming both days', /Saturday/.test(mon.reason ?? '') && /Monday/.test(mon.reason ?? ''), mon.reason ?? '(no reason)');
 }
 
 console.log('\nA full tank stops the spend on any day');
 {
-  // Target of 1 — the live buffer is certainly at or above it.
-  const b = await getBufferState(1, 1, SATURDAY.getDay(), SATURDAY);
-  check('full is reported even on the refill day', b.full === true, `ready ${b.ready} target ${b.target}`);
-  check('and the reason explains the ceiling', /at or above the target/.test(b.reason ?? ''), b.reason ?? '(none)');
+  // One day of reserve — the live buffer may or may not clear it, so assert on
+  // the invariant instead of on a figure that moves with the roster.
+  const b = await getBufferState(1, SATURDAY.getDay(), SATURDAY);
+  check('full is consistent with ready vs target', b.full === (b.target > 0 && b.ready >= b.target), `ready ${b.ready} target ${b.target} full ${b.full}`);
+  if (b.full) check('and the reason explains the ceiling', /at or above/.test(b.reason ?? ''), b.reason ?? '(none)');
+  else check('otherwise the refill day decides', b.reason === null || /refill/.test(b.reason), b.reason ?? '(none)');
 }
 
 console.log('\nProduction and deliverability are reported separately');
 {
-  const b = await getBufferState(10, 24, 6, SATURDAY);
+  const b = await getBufferState(24, 6, SATURDAY);
   // `ready` counts what enrichment produced; `exportable` what export can send
   // today, which additionally needs an assignee. Conflating them is the bug this
   // pair exists to prevent: counting every record with an address gave 233 of a
   // 240 target while export could send 2.
-  check('ready counts only what enrichment produced', b.ready >= 0 && b.ready < 240, String(b.ready));
+  check('ready counts only what enrichment produced', b.ready >= 0 && b.ready < b.target, `${b.ready} of ${b.target}`);
   check('exportable is reported alongside it', typeof b.exportable === 'number', String(b.exportable));
   check('and never exceeds ready plus source-supplied stock', b.exportable >= 0);
 }
@@ -76,15 +83,11 @@ console.log('\nProduction and deliverability are reported separately');
 console.log('\nThe defaults match the operating model');
 {
   const d = DEFAULT_ENRICHMENT_POLICY;
-  check('buffer multiple is 24', d.exportBufferMultiple === 24, String(d.exportBufferMultiple));
+  check('reserve is 24 days', d.exportBufferDays === 24, String(d.exportBufferDays));
   check('refill day is Saturday', d.refillWeekday === 6, String(d.refillWeekday));
-  // At batchSize per hourly run, one day of runs should fill the tank exactly.
-  check(
-    'a day of hourly runs fills the tank',
-    d.batchSize * 24 === d.apolloBatchSize * d.exportBufferMultiple ||
-      d.batchSize * 24 >= d.apolloBatchSize * d.exportBufferMultiple,
-    `${d.batchSize} x 24 = ${d.batchSize * 24} vs target ${d.apolloBatchSize * d.exportBufferMultiple}`
-  );
+  // apolloBatchSize is a safety rail now, not the volume dial — per-person
+  // volume comes from each assignee's daily_lead_quota.
+  check('apolloBatchSize is back to the API ceiling', d.apolloBatchSize === 100, String(d.apolloBatchSize));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

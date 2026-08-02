@@ -80,7 +80,49 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, message: `${error.message}.${hint}` }, { status: 200 });
   }
 
-  const rows = (data ?? []) as Record<string, unknown>[];
+  const fetched = (data ?? []) as Record<string, unknown>[];
+
+  /**
+   * One person's day of leads, per person — not a global top-N.
+   *
+   * The query orders by priority across the whole book, so a single global limit
+   * handed the strongest leads to whoever happened to own them. With Anas on a
+   * quota of 50 and Ronniel on 10, a limit of 10 could send Anas ten leads and
+   * Ronniel none, every run, forever — and nothing in the output would say so.
+   *
+   * Each active person's `daily_lead_quota` is their own ceiling. Leads stay in
+   * priority order within a person, so trimming to quota drops their weakest,
+   * not somebody else's strongest.
+   */
+  const { data: rosterRows } = await service.from('assignees').select('id, name, daily_lead_quota').eq('is_active', true);
+  const quotaOf = new Map(
+    (rosterRows ?? []).map((r) => {
+      const row = r as { id: string; daily_lead_quota: number | null };
+      return [row.id, row.daily_lead_quota ?? 0];
+    })
+  );
+
+  const takenPerAssignee = new Map<string, number>();
+  const overQuota: string[] = [];
+  const rows = fetched.filter((r) => {
+    const owner = String(r.assignee_id ?? '');
+    // Somebody assigned but no longer on the active roster has no quota to spend.
+    // Skipping them loudly beats sending on behalf of a deactivated account.
+    const quota = quotaOf.get(owner);
+    if (quota === undefined) {
+      if (!overQuota.includes('unrostered')) overQuota.push('unrostered');
+      return false;
+    }
+    const taken = takenPerAssignee.get(owner) ?? 0;
+    if (taken >= quota) {
+      const name = String((rosterRows ?? []).find((x) => (x as { id: string }).id === owner)?.['name'] ?? owner);
+      if (!overQuota.includes(name)) overQuota.push(name);
+      return false;
+    }
+    takenPerAssignee.set(owner, taken + 1);
+    return true;
+  });
+
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
@@ -283,7 +325,17 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     ok: failed < contacts.length,
-    message: `Sent ${contacts.length} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}`,
+    message:
+      `Sent ${contacts.length} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}` +
+      // Per-person trimming, said out loud. Otherwise a run that stopped at
+      // somebody's quota looks identical to one that ran out of leads, and the
+      // difference decides whether you raise a quota or enrich more.
+      (overQuota.length
+        ? ` Held back at daily quota: ${overQuota.join(', ')}.`
+        : '') +
+      ` Per person: ${[...takenPerAssignee.entries()]
+        .map(([id, n]) => `${(rosterRows ?? []).find((x) => (x as { id: string }).id === id)?.['name'] ?? id} ${n}`)
+        .join(', ') || 'nobody'}.`,
     requested: contacts.length,
     created,
     existing,

@@ -1005,6 +1005,8 @@ function applyQueueFilters<
 }
 
 export interface BufferState {
+  /** Combined daily_lead_quota of the active roster — what the team consumes a day. */
+  dailyDemand: number;
   /** Enriched by us, contactable, not yet exported — the tank export draws from. */
   ready: number;
   /**
@@ -1013,8 +1015,10 @@ export interface BufferState {
    * behind enrichment, not that there is nothing to sell.
    */
   exportable: number;
-  /** apolloBatchSize x exportBufferMultiple. */
+  /** dailyDemand x exportBufferDays. */
   target: number;
+  /** Days of supply the tank currently holds, at the roster's consumption rate. */
+  daysOfCover: number;
   full: boolean;
   /** Whether today is a day a refill may run. */
   refillDay: boolean;
@@ -1051,15 +1055,31 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
  * than mistaken for a full tank.
  */
 export async function getBufferState(
-  apolloBatchSize: number,
-  exportBufferMultiple: number,
+  exportBufferDays: number,
   refillWeekday: number,
   now: Date = new Date()
 ): Promise<BufferState> {
-  const target = Math.max(1, apolloBatchSize * exportBufferMultiple);
   const refillDay = now.getDay() === refillWeekday;
-
   const supabase = await getReadSupabase();
+
+  /**
+   * What the team consumes in a day, read from the roster rather than configured
+   * separately. Each active person exports up to their own `daily_lead_quota`,
+   * so the demand is the sum of them — and hiring somebody, changing a quota or
+   * deactivating an account moves the buffer target with it.
+   */
+  const { data: roster, error: rosterError } = await supabase
+    .from('assignees')
+    .select('daily_lead_quota')
+    .eq('is_active', true);
+  if (rosterError) console.warn(`Could not read roster quotas: ${rosterError.message}`);
+  const dailyDemand = (roster ?? []).reduce(
+    (n, r) => n + ((r as { daily_lead_quota: number | null }).daily_lead_quota ?? 0),
+    0
+  );
+  // No active roster means nobody is consuming leads, so there is nothing to
+  // stock up for. Enriching into an empty team is the clearest waste there is.
+  const target = Math.max(0, dailyDemand * exportBufferDays);
   const ready$ = supabase
     .from('canonical_projects')
     .select('*', { count: 'exact', head: true })
@@ -1084,18 +1104,21 @@ export async function getBufferState(
   // flowing; failing closed would stop the pipeline over a transient read.
   if (error) {
     console.warn(`Could not measure the ready buffer: ${error.message}`);
-    return { ready: 0, exportable: 0, target, full: false, refillDay, reason: null };
+    return { dailyDemand, ready: 0, exportable: 0, target, daysOfCover: 0, full: false, refillDay, reason: null };
   }
 
   const ready = count ?? 0;
-  const full = ready >= target;
-  const reason = full
-    ? `The ready buffer holds ${ready} lead(s), at or above the target of ${target} (${apolloBatchSize} per export x ${exportBufferMultiple}). Enrichment is paused so credits are not spent on inventory nobody is waiting for.`
+  const daysOfCover = dailyDemand > 0 ? Math.round((ready / dailyDemand) * 10) / 10 : 0;
+  const full = target > 0 && ready >= target;
+  const reason = target === 0
+    ? 'Nobody active on the roster has a daily lead quota, so there is no demand to stock up for. Set a quota on the Team page.'
+    : full
+    ? `The buffer holds ${ready} lead(s) — ${daysOfCover} days of cover at ${dailyDemand} a day, at or above the ${exportBufferDays}-day target of ${target}. Enrichment is paused so credits are not spent on inventory nobody is waiting for.`
     : !refillDay
-      ? `The buffer holds ${ready} of ${target}, but refills run on ${WEEKDAYS[refillWeekday]} and today is ${WEEKDAYS[now.getDay()]}. Waiting for the next refill day.`
+      ? `The buffer holds ${ready} of ${target} (${daysOfCover} of ${exportBufferDays} days of cover), but refills run on ${WEEKDAYS[refillWeekday]} and today is ${WEEKDAYS[now.getDay()]}. Waiting for the next refill day.`
       : null;
 
-  return { ready, exportable: exportableCount ?? 0, target, full, refillDay, reason };
+  return { dailyDemand, ready, exportable: exportableCount ?? 0, target, daysOfCover, full, refillDay, reason };
 }
 
 /**

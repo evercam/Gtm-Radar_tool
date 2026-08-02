@@ -123,13 +123,12 @@ export interface EnrichmentPolicy {
    */
   generateCallPrep: boolean;
   /**
-   * Leads pushed to Apollo per export run.
+   * Ceiling on one export run — a safety rail, not the volume dial.
    *
-   * This is the dial the whole pipeline is sized from: the ready buffer targets
-   * this many times `exportBufferMultiple`, so it sets how much inventory
-   * enrichment is asked to hold. Apollo's own API caps a batch at 100, which is
-   * a ceiling rather than a suggestion — a rep works a list, and ten fresh leads
-   * they can actually call beats a hundred they will not reach.
+   * How many leads each person receives comes from their own
+   * `daily_lead_quota` on the roster, so this only stops a single run from
+   * sending an unbounded number if a quota is misconfigured. Apollo's own API
+   * caps a batch at 100 regardless.
    */
   apolloBatchSize: number;
   /**
@@ -150,18 +149,22 @@ export interface EnrichmentPolicy {
    */
   researchInline: boolean;
   /**
-   * How many export batches of ready leads to hold in reserve.
+   * DAYS of exported leads to keep in reserve.
    *
-   * Enrichment is not a rate, it fills a TANK. Export takes `apolloBatchSize`
-   * leads at a time, and the buffer behind it should hold that many times this
-   * multiple — 10 x 24 = 240 enriched, contactable leads. Once the tank is full
-   * enrichment STOPS, because every further record costs Apollo credits to
-   * produce inventory nobody is waiting for.
+   * Enrichment is not a rate, it fills a TANK — and the tank is sized by what
+   * the team consumes, not by a number typed into a policy. Each active person
+   * has a `daily_lead_quota` on the roster; the target is the sum of those
+   * quotas times this many days.
    *
-   * 24 is not arbitrary: at ten records per hourly run, a full refill takes
-   * exactly twenty-four runs, so one day fills the week's supply.
+   * With Anas at 50 and Ronniel at 10 that is 60 a day, so 24 days is 1,440
+   * leads in reserve. Once the tank is full enrichment STOPS: every further
+   * record costs Apollo credits to produce inventory nobody is waiting for.
+   *
+   * Deriving the target from the roster means hiring somebody, changing a quota
+   * or deactivating an account moves the buffer with it. A hard-coded number
+   * would quietly under-supply the day a third person joined.
    */
-  exportBufferMultiple: number;
+  exportBufferDays: number;
   /**
    * The day a refill may begin. 0 is Sunday, 6 is Saturday.
    *
@@ -202,9 +205,9 @@ export const DEFAULT_ENRICHMENT_POLICY: EnrichmentPolicy = {
   maxEmailRevealsPerRecord: 3,
   onlyMissingContact: true,
   generateCallPrep: true,
-  apolloBatchSize: 10,
+  apolloBatchSize: 100,
   researchInline: false,
-  exportBufferMultiple: 24,
+  exportBufferDays: 24,
   refillWeekday: 6,
 };
 
@@ -265,7 +268,7 @@ export function mergeEnrichmentPolicy(input: unknown): EnrichmentPolicy {
     generateCallPrep: bool(p.generateCallPrep, d.generateCallPrep),
     apolloBatchSize: num(p.apolloBatchSize, d.apolloBatchSize, 1, 1000),
     researchInline: bool(p.researchInline, d.researchInline),
-    exportBufferMultiple: num(p.exportBufferMultiple, d.exportBufferMultiple, 1, 200),
+    exportBufferDays: num(p.exportBufferDays, d.exportBufferDays, 1, 365),
     // Clamped to a real weekday rather than silently accepting 9 and never firing.
     refillWeekday: num(p.refillWeekday, d.refillWeekday, 0, 6),
   };
