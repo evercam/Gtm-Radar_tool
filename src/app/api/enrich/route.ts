@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { EnrichInput, EnrichResult } from '@/lib/enrich/types';
 import { runEnrichment } from '@/lib/enrich/run';
 import { getEnrichmentPolicy } from '@/lib/policies';
+import { checkPermission } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 // Enrichment can take a while (web search + a second API call) — allow headroom.
@@ -20,6 +21,12 @@ export const maxDuration = 120;
  * enrichment policy — see /settings.
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // Every other enrichment route gates on this; this one did not, so a single
+  // record could be enriched — spending Apollo credits and writing back to
+  // canonical_projects — by anyone who could reach the URL.
+  const auth = await checkPermission('enrichment.run');
+  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
+
   let input: EnrichInput;
   try {
     input = (await request.json()) as EnrichInput;

@@ -640,9 +640,40 @@ export async function runEnrichment(
       ? { ...account, parent_account: parentAccount, related_entities: relatedEntities }
       : null;
 
+    // A run that finds nothing has to SAY SO.
+    //
+    // `ok: true` with an empty account, no contacts and no message rendered as a
+    // blank panel — indistinguishable from a broken button, and reported as one.
+    // The run had genuinely succeeded: Apollo's index holds no company under
+    // that name, and with the Claude engine off there is no third tier to ask
+    // for another spelling. Both are ordinary outcomes and neither was said out
+    // loud.
+    //
+    // Absence of a result is a result. It tells someone whether to fix the
+    // record, turn an engine on, or leave it alone.
+    let outcome: string | undefined;
+    if (!account?.name && !account?.domain) {
+      outcome =
+        `No company matched "${input.company_name_raw ?? input.canonical_name}" in Apollo's index` +
+        (claudeUsable
+          ? '. The name as published and the shortened forms were all tried.'
+          : ', and the Claude engine is off, so alternative spellings and parent companies were not tried. Turning it on in Settings adds that step.');
+    } else if (!account.domain) {
+      // The common shape for asset-owning entities: Apollo has a stub under the
+      // published name with no website, and the real company is the parent.
+      outcome =
+        `Found "${account.name}" but no website, and contact search needs a domain.` +
+        (claudeUsable ? '' : ' The Claude engine is off, so the parent company was not looked for.');
+    } else if (committee.length === 0) {
+      outcome = `Resolved ${account.domain}, but Apollo lists nobody there matching the target roles.`;
+    } else if (!committee.some((c) => c.email)) {
+      outcome = `${committee.length} contact(s) at ${account.domain}, none with a released address yet.`;
+    }
+
     return {
       ok: true,
       account: mergedAccount,
+      message: outcome,
       // The filled committee, not the first pass — otherwise every contact
       // the gap-fill found goes unreported.
       contacts: committee,
