@@ -36,6 +36,14 @@ export interface PersonDemand {
   covered: number;
   /** target - covered, floored at zero. What to produce for them. */
   deficit: number;
+  /**
+   * Days this person could keep working from what is already in stock for them.
+   *
+   * `covered / dailyQuota` — the number a manager actually wants, because "7
+   * leads" means nothing without knowing they burn 10 a day. Zero when they have
+   * no quota, since an unlimited runway is not a meaningful figure.
+   */
+  daysOfCover: number;
   /** The scope itself, so a caller can explain a deficit it cannot fill. */
   scope: { bu: string[]; verticals: string[]; regions: string[] };
 }
@@ -142,6 +150,7 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
       target,
       covered,
       deficit: Math.max(0, target - covered),
+      daysOfCover: u.dailyQuota > 0 ? Math.round((covered / u.dailyQuota) * 10) / 10 : 0,
       scope: { bu: u.bu, verticals: u.verticals, regions: u.regions },
     };
   });

@@ -1,10 +1,13 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getPipelineRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns } from '@/lib/queries';
+import { getPipelineRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
+import { getDemandPlan } from '@/lib/enrich/demand';
+import { getEnrichmentPolicy } from '@/lib/policies';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
 import { getKpiSummary } from '@/lib/kpi';
 import KpiSummaryCards from '@/components/KpiSummaryCards';
+import SupplyStatus from '@/components/SupplyStatus';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
@@ -68,6 +71,27 @@ export default async function DashboardPage({
     );
   }
 
+  /**
+   * Supply, loaded separately and allowed to fail.
+   *
+   * It reads the roster and a month of enrichment history, neither of which the
+   * rest of the dashboard needs. A panel that cannot load should leave the page
+   * standing rather than take it down — the numbers above are still true.
+   */
+  let supply: { production: Awaited<ReturnType<typeof getProductionState>>; plan: Awaited<ReturnType<typeof getDemandPlan>> } | null = null;
+  if (seesTeam) {
+    try {
+      const { config } = await getEnrichmentPolicy();
+      const [production, plan] = await Promise.all([
+        getProductionState(config.monthlyReadyTarget),
+        getDemandPlan(config.monthlyReadyTarget),
+      ]);
+      supply = { production, plan };
+    } catch (err) {
+      console.warn(`Supply panel unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const { scored, routed, total: totalRecords, byBand, byLane, routedHoursAgo, routingMissing } = disposition;
   const { byTier, untiered } = disposition;
   const tiered = totalRecords - untiered;
@@ -96,6 +120,15 @@ export default async function DashboardPage({
           priority and routed into a lane.
         </p>
       </div>
+
+      {/* Are we making the month, and does everyone have work? Above performance
+          because an empty pipeline explains a bad week better than the week's
+          numbers do. */}
+      {supply ? (
+        <div className="mb-10">
+          <SupplyStatus production={supply.production} plan={supply.plan} />
+        </div>
+      ) : null}
 
       {/* Performance — moved here from the Control Center so the people whose
           numbers these are can actually see them. */}
