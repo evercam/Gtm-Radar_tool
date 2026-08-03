@@ -1,4 +1,5 @@
-import { Card, CardBody, CardHeader, Badge } from '@/components/ui';
+import { Badge, Table, TableShell, THead, TBody, Th, Td } from '@/components/ui';
+import { API_LIMITS } from '@/lib/sources/apiLimits';
 
 /**
  * How to read a source's API limits, and what to do with them.
@@ -18,68 +19,6 @@ import { Card, CardBody, CardHeader, Badge } from '@/components/ui';
 function Term({ children }: { children: React.ReactNode }) {
   return <span className="text-foreground font-semibold">{children}</span>;
 }
-
-/** What we know about one vendor's API, and how confident we are. */
-interface SourceLimit {
-  name: string;
-  /** Records one request may return. */
-  perRequest: string;
-  /** How you walk to the next page. */
-  paging: string;
-  /** Hard ceilings beyond the page — total window, date span, rate. */
-  ceiling: string;
-  verified: boolean;
-  doc?: string;
-}
-
-const LIMITS: SourceLimit[] = [
-  {
-    name: 'SAM.gov',
-    perRequest: '1,000',
-    paging: 'offset, from 0',
-    ceiling: 'date range max ONE YEAR; postedFrom and postedTo both mandatory',
-    verified: true,
-    doc: 'https://open.gsa.gov/api/get-opportunities-public-api/',
-  },
-  {
-    name: 'Socrata (NYC + Chicago permits)',
-    perRequest: '50,000',
-    paging: '$offset with $limit',
-    ceiling: 'an app token raises throttling to 1,000 requests an hour; without one it is much lower',
-    verified: true,
-    doc: 'https://dev.socrata.com/docs/app-tokens.html',
-  },
-  {
-    name: 'SEC EDGAR full-text search',
-    perRequest: '100 — fixed, no size parameter is honoured',
-    paging: 'from, stepping by 100',
-    ceiling:
-      'TOTAL result window 10,000, so from cannot exceed 9,900 — past that it answers HTTP 200 with an error body. 10 requests a second. A User-Agent identifying the caller is required.',
-    verified: true,
-    doc: 'https://www.sec.gov/edgar/search/efts-faq.html',
-  },
-  {
-    name: 'OCDS feeds (Find a Tender, Contracts Finder)',
-    perRequest: 'publisher’s choice — the standard sets none',
-    paging: 'follow links.next; cursor or since preferred over offset',
-    ceiling:
-      'the standard warns that with offset paging "a given page won’t return the same results over time" — which is why it prefers a cursor. Contracts Finder documents no numeric limits at all.',
-    verified: true,
-    doc: 'https://standard.open-contracting.org/latest/en/guidance/build/hosting/',
-  },
-  {
-    name: 'TED (EU tenders)',
-    perRequest: '250',
-    paging: 'page number',
-    ceiling:
-      'rejects sort parameters, and returns OLDEST FIRST inside whatever window it is given — so an unbounded query answers from 2016, not from today',
-    verified: false,
-  },
-  { name: 'USAspending', perRequest: '100 (assumed)', paging: 'page number', ceiling: 'not checked', verified: false },
-  { name: 'World Bank', perRequest: '20 (assumed)', paging: 'offset', ceiling: 'not checked — 20 looks low enough to be a mistake', verified: false },
-  { name: 'Planning.ie (ArcGIS)', perRequest: '200 (assumed)', paging: 'resultOffset', ceiling: 'ArcGIS services publish their own maxRecordCount — worth reading', verified: false },
-  { name: 'Glenigan', perRequest: '50 (assumed)', paging: 'page number', ceiling: 'commercial — check the contract, not the docs', verified: false },
-];
 
 export default function SourceLimits() {
   return (
@@ -118,29 +57,58 @@ export default function SourceLimits() {
         not the same thing as what the vendor permits — an assumed limit is a guess with a number on it.
       </p>
 
-      <div className="mt-3 space-y-3">
-        {LIMITS.map((l) => (
-          <Card key={l.name}>
-            <CardHeader
-              title={l.name}
-              subtitle={`${l.perRequest} per request · ${l.paging}`}
-              action={l.verified ? <Badge tone="success">documented</Badge> : <Badge tone="warning">assumed</Badge>}
-            />
-            <CardBody>
-              <p className="text-body text-xs leading-relaxed">{l.ceiling}</p>
-              {l.doc ? (
-                <a
-                  href={l.doc}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-brand mt-2 inline-block text-[11px] underline underline-offset-2"
-                >
-                  vendor documentation →
-                </a>
-              ) : null}
-            </CardBody>
-          </Card>
-        ))}
+      <div className="mt-3">
+        <TableShell>
+          <Table>
+          <THead>
+            <tr>
+              <Th>Source</Th>
+              <Th align="right">Per request</Th>
+              <Th align="right">We ask</Th>
+              <Th>Paging</Th>
+              <Th align="right">Total cap</Th>
+              <Th>Confidence</Th>
+            </tr>
+          </THead>
+          <TBody>
+            {API_LIMITS.map((l) => (
+              <tr key={l.label}>
+                <Td className="text-foreground font-medium">
+                  {l.label}
+                  <div className="text-body mt-0.5 max-w-md text-[11px] leading-relaxed font-normal">{l.note}</div>
+                  {l.doc ? (
+                    <a
+                      href={l.doc}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-brand mt-1 inline-block text-[10px] underline underline-offset-2"
+                    >
+                      documentation →
+                    </a>
+                  ) : null}
+                </Td>
+                <Td align="right" className="text-foreground tabular-nums">
+                  {l.maxPerRequest.toLocaleString()}
+                </Td>
+                <Td align="right" className="text-muted tabular-nums">
+                  {l.recommendedPageSize.toLocaleString()}
+                </Td>
+                <Td className="text-muted text-[11px]">{l.paging}</Td>
+                <Td align="right" className="tabular-nums">
+                  {l.maxTotalResults ? (
+                    <span className="text-warning">{l.maxTotalResults.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-subtle">none</span>
+                  )}
+                </Td>
+                <Td>
+                  <Badge tone={l.verified ? 'success' : 'warning'}>{l.verified ? 'documented' : 'assumed'}</Badge>
+                </Td>
+              </tr>
+            ))}
+          </TBody>
+          </Table>
+        </TableShell>
       </div>
 
       <h3 className="text-foreground mt-8 text-[13px] font-bold uppercase tracking-wide">

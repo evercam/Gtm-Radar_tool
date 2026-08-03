@@ -4,6 +4,7 @@ import { AdapterAuthError, AdapterNetworkError, AdapterShapeError } from '@/lib/
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { sourceProvenance } from '@/lib/provenance';
 import { dedupeBySourceUniqueId } from '@/lib/dedupeRecords';
+import { clampRunBudget } from '@/lib/sources/apiLimits';
 import { getSourceConfig, canRun, recordRunOutcome } from '@/lib/sources/config';
 import { startRun, finishRun } from '@/lib/sources/runs';
 import { checkPermission } from '@/lib/auth/session';
@@ -154,7 +155,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
        * page and stopped. 500 was allowed and 50 taken, at 2-8 requests a month
        * against sources with no cap.
        */
-      maxRecords: params.maxRecords ?? config.maxRecordsPerRun,
+      maxRecords: clampRunBudget(source, params.maxRecords ?? config.maxRecordsPerRun),
       minValue: params.minValue,
       keyword: params.keyword,
       postcodes: params.postcodes,

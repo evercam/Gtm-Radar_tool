@@ -12,8 +12,16 @@ import SourceSearch from '@/components/SourceSearch';
 import SchedulePicker from '@/components/control/SchedulePicker';
 import CollectorButton from '@/components/control/CollectorButton';
 import { buildCron, describeCron, parseCron, untilNextRun, type ScheduleParts } from '@/lib/cron';
+import { apiLimitFor, pageSizeOptions } from '@/lib/sources/apiLimits';
 
-/** Records per API call. Publishers cap this — 100 is the common ceiling. */
+/**
+ * Fallback page sizes, for a source with no recorded API limit.
+ *
+ * Where a limit IS recorded, `pageSizeOptions` is used instead so the list stops
+ * at what the vendor accepts — and includes values the old fixed ladder did not.
+ * Socrata permits fifty thousand a request and this list stopped at two hundred,
+ * which is how every permit pull ended up taking a fraction of one page.
+ */
 const PAGE_SIZES = [10, 25, 50, 100, 200];
 /** Records a single scheduled run may take. */
 const RUN_LIMITS = [50, 100, 250, 500, 1000, 2500, 5000, 10000];
@@ -108,6 +116,11 @@ export default function SourceHubRow({
     monthlyRequestCap: config.monthlyRequestCap,
     dedupeStrategy: config.dedupeStrategy,
   });
+  // What the vendor allows, hidden until asked for. Shown beside the controls it
+  // constrains rather than in documentation somewhere else, because the moment
+  // somebody needs it is the moment they are choosing a page size.
+  const [showLimits, setShowLimits] = useState(false);
+  const apiLimit = apiLimitFor(config.slug);
   const [when, setWhen] = useState<ScheduleParts>(() => parseCron(config.scheduleCron));
   const [enrich, setEnrich] = useState({
     enrichClaude: config.enrichClaude,
@@ -319,13 +332,22 @@ export default function SourceHubRow({
                 onChange={(e) => setSchedule((s) => ({ ...s, pageSize: Number(e.target.value) }))}
                 className={`${controlClass} w-24`}
               >
-                {options(PAGE_SIZES, schedule.pageSize).map((n) => (
+                {options(pageSizeOptions(config.slug).length ? pageSizeOptions(config.slug) : PAGE_SIZES, schedule.pageSize).map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>
                 ))}
               </select>
             </label>
+            {apiLimit ? (
+              <button
+                type="button"
+                onClick={() => setShowLimits((v) => !v)}
+                className="text-brand self-end text-[11px] underline underline-offset-2"
+              >
+                {showLimits ? 'hide API limits' : 'what does this source allow?'}
+              </button>
+            ) : null}
             <label className="block">
               <Label hint="stops a runaway pull">Max per run</Label>
               <select
@@ -379,6 +401,51 @@ export default function SourceHubRow({
               Save schedule
             </Button>
           </div>
+          {showLimits && apiLimit ? (
+            <div className="border-border-base bg-surface-raised mt-3 rounded-lg border px-3 py-2.5 text-[11px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-foreground font-semibold">{apiLimit.label}</span>
+                <Badge tone={apiLimit.verified ? 'success' : 'warning'}>
+                  {apiLimit.verified ? 'documented' : 'assumed'}
+                </Badge>
+              </div>
+              <dl className="text-muted mt-2 grid grid-cols-[8.5rem_1fr] gap-x-3 gap-y-1">
+                <dt>Most per request</dt>
+                <dd className="text-foreground">{apiLimit.maxPerRequest.toLocaleString()}</dd>
+                <dt>We recommend</dt>
+                <dd className="text-foreground">{apiLimit.recommendedPageSize.toLocaleString()} a request</dd>
+                <dt>Paging</dt>
+                <dd className="text-foreground">{apiLimit.paging}</dd>
+                {apiLimit.maxTotalResults ? (
+                  <>
+                    <dt>Total results cap</dt>
+                    <dd className="text-warning">
+                      {apiLimit.maxTotalResults.toLocaleString()} — no page size gets past it
+                    </dd>
+                  </>
+                ) : null}
+                {apiLimit.maxDateSpanDays ? (
+                  <>
+                    <dt>Longest date span</dt>
+                    <dd className="text-foreground">{apiLimit.maxDateSpanDays} days a query</dd>
+                  </>
+                ) : null}
+                {apiLimit.requestsPerMinute ? (
+                  <>
+                    <dt>Stay under</dt>
+                    <dd className="text-foreground">{apiLimit.requestsPerMinute} requests a minute</dd>
+                  </>
+                ) : null}
+              </dl>
+              <p className="text-body mt-2 leading-relaxed">{apiLimit.note}</p>
+              {apiLimit.doc ? (
+                <a href={apiLimit.doc} target="_blank" rel="noreferrer" className="text-brand mt-1.5 inline-block underline underline-offset-2">
+                  vendor documentation →
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+
 
           {config.monthlyRequestCap !== null ? (
             <p className="text-subtle mt-3 text-[10px]">
