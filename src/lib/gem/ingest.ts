@@ -3,11 +3,10 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { GEM_SOURCE_KEY, normalizeGemFile, parseGemFile, trackerFromFilename, trackerLabel } from '@/lib/gem/normalize';
 import type { CanonicalProjectInsert } from '@/lib/adapters/types';
 import { sourceProvenance } from '@/lib/provenance';
-import { dedupeBySourceUniqueId } from '@/lib/dedupeRecords';
+import { upsertSourceRecords } from '@/lib/sources/upsertRecords';
 import { recordRunOutcome } from '@/lib/sources/config';
 import { startRun, finishRun } from '@/lib/sources/runs';
 
-const UPSERT_CHUNK = 500;
 
 /**
  * GEM's slug, which is what `source_config` and `ingestion_runs` are keyed on.
@@ -102,7 +101,7 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
       if (sample.length < 5) sample.push(...records.slice(0, 5 - sample.length));
 
       if (supabase && records.length > 0) {
-        const { inserted, updated, collapsed } = await upsertRecords(supabase, records);
+        const { inserted, updated, collapsed } = await upsertSourceRecords(supabase, GEM_SOURCE_KEY, records);
         result.inserted = inserted;
         result.updated = updated;
         result.collapsed = collapsed;
@@ -170,76 +169,4 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
     files: results,
     sample,
   };
-}
-
-/**
- * How many ids to put in one existence probe.
- *
- * The probe is a GET, so the ids travel in the URL — 500 of them overran what
- * PostgREST would accept and the request failed. The error was discarded, the
- * result read as "none of these exist", and every row was counted as new: a
- * re-ingest of 2,009 unchanged records reported 2,000 inserted. The upserted
- * data was always correct; only the numbers shown to the user were wrong, which
- * is the kind of bug that survives for a long time.
- */
-const PROBE_CHUNK = 100;
-
-/**
- * Which of these `source_unique_id`s already exist for GEM.
- *
- * Throws rather than degrading to an empty set. A silent failure here does not
- * corrupt anything, it just reports a full re-ingest as thousands of new leads —
- * and that number is what someone judges an ingestion run by.
- */
-async function findExisting(
-  supabase: ReturnType<typeof getServiceSupabase>,
-  ids: string[]
-): Promise<Set<string>> {
-  const found = new Set<string>();
-
-  for (let i = 0; i < ids.length; i += PROBE_CHUNK) {
-    const { data, error } = await supabase
-      .from('canonical_projects')
-      .select('source_unique_id')
-      .eq('source_key', GEM_SOURCE_KEY)
-      .in('source_unique_id', ids.slice(i, i + PROBE_CHUNK));
-
-    if (error) throw new Error(`Could not check existing records: ${error.message}`);
-    for (const r of (data ?? []) as { source_unique_id: string }[]) found.add(r.source_unique_id);
-  }
-
-  return found;
-}
-
-/**
- * Chunked upsert with inserted-vs-updated accounting, keyed on the
- * canonical_projects (source_key, source_unique_id) unique constraint.
- */
-async function upsertRecords(
-  supabase: ReturnType<typeof getServiceSupabase>,
-  input: CanonicalProjectInsert[]
-): Promise<{ inserted: number; updated: number; collapsed: number }> {
-  let inserted = 0;
-  let updated = 0;
-
-  const { unique: records, collapsed } = dedupeBySourceUniqueId(input);
-
-  for (let i = 0; i < records.length; i += UPSERT_CHUNK) {
-    const chunk = records.slice(i, i + UPSERT_CHUNK);
-    const existingIds = await findExisting(
-      supabase,
-      chunk.map((r) => r.source_unique_id)
-    );
-
-    const chunkInserted = chunk.filter((r) => !existingIds.has(r.source_unique_id)).length;
-    inserted += chunkInserted;
-    updated += chunk.length - chunkInserted;
-
-    const { error } = await supabase
-      .from('canonical_projects')
-      .upsert(chunk, { onConflict: 'source_key,source_unique_id' });
-    if (error) throw new Error(`Supabase upsert failed: ${error.message}`);
-  }
-
-  return { inserted, updated, collapsed };
 }

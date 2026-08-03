@@ -3,7 +3,7 @@ import { getLiveAdapter } from '@/lib/adapters';
 import { AdapterAuthError, AdapterNetworkError, AdapterShapeError } from '@/lib/adapters/types';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { sourceProvenance } from '@/lib/provenance';
-import { dedupeBySourceUniqueId } from '@/lib/dedupeRecords';
+import { upsertSourceRecords } from '@/lib/sources/upsertRecords';
 import { clampRunBudget } from '@/lib/sources/apiLimits';
 import { getSourceConfig, canRun, recordRunOutcome } from '@/lib/sources/config';
 import { startRun, finishRun } from '@/lib/sources/runs';
@@ -165,7 +165,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       stage: params.stage,
     });
 
-    let normalized = raw
+    const normalized = raw
       .map((r) => {
         try {
           return adapter.normalize(r);
@@ -185,30 +185,18 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       // One duplicated (source_key, source_unique_id) pair inside a batch makes
       // Postgres reject the ENTIRE upsert — Find a Tender returned the same
       // notice twice and lost its whole scheduled run to it.
-      const { unique: deduped, collapsed } = dedupeBySourceUniqueId(normalized);
-      if (collapsed > 0) failed += collapsed;
-      normalized = deduped;
-
-      // Check which (source_key, source_unique_id) pairs already exist so we
-      // can report inserted vs. updated counts around the single upsert call.
-      const ids = normalized.map((n) => n.source_unique_id);
-      const { data: existing } = await supabase
-        .from('canonical_projects')
-        .select('source_unique_id')
-        .eq('source_key', sourceKey)
-        .in('source_unique_id', ids);
-
-      const existingIds = new Set((existing ?? []).map((r: { source_unique_id: string }) => r.source_unique_id));
-      inserted = normalized.filter((n) => !existingIds.has(n.source_unique_id)).length;
-      updated = normalized.length - inserted;
-
-      const { error: upsertError } = await supabase
-        .from('canonical_projects')
-        .upsert(normalized, { onConflict: 'source_key,source_unique_id' });
-
-      if (upsertError) {
-        throw new Error(`Supabase upsert failed: ${upsertError.message}`);
-      }
+      /**
+       * One shared writer, chunked on both the write and the existence probe.
+       *
+       * This block used to do it inline and unchunked, which was survivable at
+       * fifty records a run and broke four sources the first morning after the
+       * fetch depth went up — all four on "canceling statement due to statement
+       * timeout". Every fix it needed already existed in the GEM path.
+       */
+      const outcome = await upsertSourceRecords(supabase, sourceKey, normalized);
+      if (outcome.collapsed > 0) failed += outcome.collapsed;
+      inserted = outcome.inserted;
+      updated = outcome.updated;
     }
 
     // Health used to be written to `source_registry`, which was retired with
