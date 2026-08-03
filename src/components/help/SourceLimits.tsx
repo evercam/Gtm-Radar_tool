@@ -1,5 +1,5 @@
 import { Badge, Table, TableShell, THead, TBody, Th, Td } from '@/components/ui';
-import { API_LIMITS } from '@/lib/sources/apiLimits';
+import { API_LIMITS, type ApiLimit } from '@/lib/sources/apiLimits';
 
 /**
  * How to read a source's API limits, and what to do with them.
@@ -15,6 +15,15 @@ import { API_LIMITS } from '@/lib/sources/apiLimits';
  * limit is a guess wearing a number's clothes, and acting on one is how you get
  * throttled or silently truncated.
  */
+
+/** Deepest first — the order somebody should read them in when chasing volume. */
+const STRATEGY_ORDER: Record<ApiLimit['strategy'], number> = {
+  deep: 0,
+  cursor: 1,
+  windowed: 2,
+  capped: 3,
+  contract: 4,
+};
 
 function Term({ children }: { children: React.ReactNode }) {
   return <span className="text-foreground font-semibold">{children}</span>;
@@ -51,6 +60,28 @@ export default function SourceLimits() {
         ))}
       </div>
 
+      <h3 className="text-foreground mt-8 text-[13px] font-bold uppercase tracking-wide">
+        Four kinds of source, and each wants handling differently
+      </h3>
+      <div className="mt-3 space-y-2">
+        {(
+          [
+            ['deep', 'Page as far as you like', 'The whole index is reachable. The only cost is requests, so the lever is page size — ask for their maximum and walk it. These are where volume comes from.'],
+            ['cursor', 'Follow their next-link', 'Depth is the publisher’s decision, not ours. Do not construct offsets; take the link they give you, or a record published mid-pull shifts every page after it.'],
+            ['windowed', 'Cut the query into periods', 'The query itself may not span more than a fixed stretch of time. Ask for a decade and it is rejected outright — so ask year by year and stitch.'],
+            ['capped', 'A hard ceiling on what exists', 'The trap. Paging past it does not error politely; it can answer HTTP 200 with an error inside the body, which reads as success. The only way through is a narrower query, never more pages.'],
+            ['contract', 'The limit is billing', 'Commercial feeds. Exceeding the allowance is an invoice rather than an HTTP status, so treat the contract as the documentation.'],
+          ] as const
+        ).map(([key, title, body]) => (
+          <div key={key} className="border-border-base bg-surface-raised rounded-lg border px-4 py-2.5">
+            <p className="text-foreground text-[13px] font-semibold">
+              <span className="text-brand font-mono text-[11px]">{key}</span> — {title}
+            </p>
+            <p className="text-body mt-0.5 text-xs leading-relaxed">{body}</p>
+          </div>
+        ))}
+      </div>
+
       <h3 className="text-foreground mt-8 text-[13px] font-bold uppercase tracking-wide">What each source allows</h3>
       <p className="text-subtle mt-1 text-xs">
         Read from the vendor’s own documentation where marked. The rest are what our adapter currently assumes, which is
@@ -62,6 +93,7 @@ export default function SourceLimits() {
           <Table>
           <THead>
             <tr>
+              <Th>Kind</Th>
               <Th>Source</Th>
               <Th align="right">Per request</Th>
               <Th align="right">We ask</Th>
@@ -71,10 +103,18 @@ export default function SourceLimits() {
             </tr>
           </THead>
           <TBody>
-            {API_LIMITS.map((l) => (
+            {[...API_LIMITS]
+              .sort((a, b) => STRATEGY_ORDER[a.strategy] - STRATEGY_ORDER[b.strategy] || b.maxPerRequest - a.maxPerRequest)
+              .map((l) => (
               <tr key={l.label}>
+                <Td className="text-brand font-mono text-[10px]">{l.strategy}</Td>
                 <Td className="text-foreground font-medium">
                   {l.label}
+                  {l.totalAvailable ? (
+                    <span className="text-subtle ml-1 text-[10px] font-normal">
+                      holds ~{l.totalAvailable.toLocaleString()}
+                    </span>
+                  ) : null}
                   <div className="text-body mt-0.5 max-w-md text-[11px] leading-relaxed font-normal">{l.note}</div>
                   {l.doc ? (
                     <a

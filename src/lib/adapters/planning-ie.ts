@@ -101,7 +101,9 @@ export const planningIeAdapter: SourceAdapter = {
       url.searchParams.set('outFields', '*');
       url.searchParams.set('returnGeometry', 'false');
       url.searchParams.set('orderByFields', 'ReceivedDate DESC');
-      url.searchParams.set('resultRecordCount', String(Math.min(pageSize, 200)));
+      // The ArcGIS layer declares maxRecordCount 2000 in its own metadata. 200 was a
+      // guess, and this service holds over half a million applications.
+      url.searchParams.set('resultRecordCount', String(Math.min(pageSize, 2_000)));
       url.searchParams.set('resultOffset', String(offset));
 
       const res = await fetchWithRetry(
@@ -128,7 +130,7 @@ export const planningIeAdapter: SourceAdapter = {
         const t = typeof a.ReceivedDate === 'number' ? a.ReceivedDate : NaN;
         if (Number.isNaN(t) || (t >= sinceT && t <= untilT)) results.push(a);
       }
-      if (params.dryRun || page.length < Math.min(pageSize, 200)) break;
+      if (params.dryRun || page.length < Math.min(pageSize, 2_000)) break;
       offset += page.length;
     }
 

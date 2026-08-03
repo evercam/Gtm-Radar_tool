@@ -109,7 +109,9 @@ export const worldBankAdapter: SourceAdapter = {
     // Fetch full 100-row pages and keep paginating until enough survive the
     // client-side value filter (fetching only `pageSize` rows then filtering
     // can zero out a small page).
-    const rowsPerPage = params.dryRun ? Math.min(pageSize, 20) : 100;
+     // Probed: the `rows` parameter clamps at 1,000 and silently returns a thousand
+     // when asked for more. Twenty was our own number, a fiftieth of what is offered.
+    const rowsPerPage = params.dryRun ? Math.min(pageSize, 1_000) : 100;
     const passesValue = (p: WbProject) => {
       if (!params.minValue) return true;
       const amt = Number(p.totalamt ?? '0');
