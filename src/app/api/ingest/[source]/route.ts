@@ -10,6 +10,17 @@ import { startRun, finishRun } from '@/lib/sources/runs';
 import { checkPermission } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
+/**
+ * A deep pull needs room, and this route had no explicit budget at all — it ran on
+ * whatever the platform default happened to be. Measured on NYC permits: fetching
+ * 10,000 records takes 5 seconds and writing them takes 81, so the write dominates
+ * and the ceiling has to accommodate it.
+ *
+ * The cron waits on every due source in parallel, so what matters is the SLOWEST
+ * single source rather than the total. 300 leaves roughly three times the headroom
+ * a 10,000-record run needs.
+ */
+export const maxDuration = 300;
 
 // Maps the URL slug (barbour-abi, glenigan) to the source_registry.source_key
 // (barbour_abi, glenigan) used everywhere else in the schema.

@@ -153,7 +153,7 @@ export const tedAdapter: SourceAdapter = {
     let page = params.page ?? 1;
     // Enough pages to reach the budget, with a hard ceiling so a misconfigured
     // budget cannot walk a vendor's entire index.
-    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / pageSize) + 2));
+    const maxPages = params.dryRun ? 1 : Math.min(200, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
     /**
      * Pages already seen, so an unstable pager cannot loop forever.

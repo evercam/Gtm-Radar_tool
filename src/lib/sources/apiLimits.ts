@@ -50,6 +50,23 @@ export interface ApiLimit {
   strategy: 'deep' | 'capped' | 'windowed' | 'cursor' | 'contract';
   /** Records the whole source holds, where it publishes a count. */
   totalAvailable?: number;
+  /**
+   * Records one run should take — measured, not aspirational.
+   *
+   * The vendor's ceiling is rarely the binding one. Fetching 50,000 NYC permits
+   * takes 20 seconds; WRITING them takes about twelve milliseconds each, so the
+   * same run needs ten minutes to store what it took twenty seconds to collect.
+   * Against a 300-second function that puts the real ceiling near ten thousand:
+   *
+   *    5,000  ->  34s   (fetch 3s, write 30s)
+   *   10,000  ->  87s   (fetch 5s, write 81s)
+   *   20,000  -> 248s   (fetch 9s, write 239s)  too close to the limit
+   *
+   * So "ask for the maximum" means the largest run that COMPLETES, not the largest
+   * the vendor permits. Sources with less depth get a smaller number because there
+   * is nothing more to have.
+   */
+  recommendedRunBudget: number;
   verified: boolean;
   /** Required when verified is true. */
   doc?: string;
@@ -70,6 +87,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: 16,
+    recommendedRunBudget: 10_000,
     strategy: 'deep',
     verified: true,
     doc: 'https://dev.socrata.com/docs/app-tokens.html',
@@ -84,6 +102,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: 365,
     requestsPerMinute: null,
+    recommendedRunBudget: 10_000,
     strategy: 'windowed',
     verified: true,
     doc: 'https://open.gsa.gov/api/get-opportunities-public-api/',
@@ -100,6 +119,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: 10_000,
     maxDateSpanDays: null,
     requestsPerMinute: 600,
+    recommendedRunBudget: 10_000,
     strategy: 'capped',
     verified: true,
     doc: 'https://www.sec.gov/edgar/search/efts-faq.html',
@@ -114,6 +134,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 5_000,
     strategy: 'cursor',
     verified: true,
     doc: 'https://standard.open-contracting.org/latest/en/guidance/build/hosting/',
@@ -128,6 +149,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 5_000,
     strategy: 'deep',
     verified: false,
     note: 'Rejects sort parameters, and returns oldest-first inside whatever window it is given — so an unbounded query answers from 2016 rather than from today. Our adapter therefore always sends a date window.',
@@ -143,6 +165,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: 10_000,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 10_000,
     strategy: 'capped',
     verified: true,
     doc: 'https://api.usaspending.gov/docs/',
@@ -159,6 +182,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 10_000,
     strategy: 'deep',
     totalAvailable: 28_066,
     verified: true,
@@ -176,6 +200,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 10_000,
     strategy: 'deep',
     totalAvailable: 500_736,
     verified: true,
@@ -191,6 +216,7 @@ export const API_LIMITS: ApiLimit[] = [
     maxTotalResults: null,
     maxDateSpanDays: null,
     requestsPerMinute: null,
+    recommendedRunBudget: 2_000,
     strategy: 'contract',
     verified: false,
     note: 'Commercial — the limits are in the contract rather than public documentation, and exceeding them is a billing conversation rather than an HTTP error.',

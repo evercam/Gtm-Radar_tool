@@ -127,7 +127,7 @@ export const samGovAdapter: SourceAdapter = {
     let offset = ((params.page ?? 1) - 1) * pageSize;
     // Enough pages to reach the budget, with a hard ceiling so a misconfigured
     // budget cannot walk a vendor’s whole index.
-    const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
+    const maxPages = params.dryRun ? 1 : Math.min(200, Math.max(1, Math.ceil(maxRecords / Math.max(1, Math.min(pageSize, 1000))) + 2));
 
     for (let i = 0; i < maxPages && results.length < maxRecords; i++) {
       const qp = new URLSearchParams({

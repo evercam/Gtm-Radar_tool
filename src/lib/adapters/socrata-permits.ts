@@ -222,7 +222,7 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
       let offset = ((params.page ?? 1) - 1) * pageSize;
       // Enough pages to reach the budget, with a hard ceiling so a misconfigured
       // budget cannot walk a vendor’s whole index.
-      const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
+      const maxPages = params.dryRun ? 1 : Math.min(200, Math.max(1, Math.ceil(maxRecords / Math.max(1, Math.min(pageSize, 5_000))) + 2));
       // Socrata's documented maximum is 50,000 a request; 200 was our own guess and
       // it capped every permit pull at a fraction of one page. Held at 5,000 rather
       // than their ceiling because the response has to be parsed inside a

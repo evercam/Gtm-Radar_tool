@@ -43,7 +43,10 @@ for (const r of rows ?? []) {
   const currentPage = r.page_size ?? 0;
   const currentBudget = r.max_records_per_run ?? 0;
   const nextPage = Math.max(currentPage, limit.recommendedPageSize);
-  const nextBudget = clampRunBudget(r.slug, currentBudget);
+  // Raise the run budget to what a run can actually complete, then clamp it to any
+  // total-result ceiling the vendor imposes. Both directions matter: too low leaves
+  // data behind, too high either times out or reads error bodies as success.
+  const nextBudget = clampRunBudget(r.slug, Math.max(currentBudget, limit.recommendedRunBudget));
 
   if (nextPage !== currentPage || nextBudget !== currentBudget) {
     changes.push({ slug: r.slug, currentPage, nextPage, currentBudget, nextBudget, verified: limit.verified });
