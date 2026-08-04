@@ -5,6 +5,7 @@ import { getDemandPlan } from '@/lib/enrich/demand';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
+import { Suspense } from 'react';
 import { getKpiSummary } from '@/lib/kpi';
 import KpiSummaryCards from '@/components/KpiSummaryCards';
 import HandoverByPerson from '@/components/HandoverByPerson';
@@ -14,7 +15,7 @@ import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
 import RecordLink from '@/components/RecordLink';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
-import { Card, CardHeader, CardBody, Badge, EmptyState, ProgressBar } from '@/components/ui';
+import { Card, CardHeader, CardBody, Badge, EmptyState, ProgressBar, Skeleton } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,75 @@ const LANE_TEXT: Record<string, string> = {
   partner: 'text-violet-700 dark:text-violet-300',
   none: 'text-muted',
 };
+
+
+/**
+ * The fallback every streamed panel shares.
+ *
+ * Roughly panel-shaped rather than an exact copy of any one of them: a fallback
+ * that matched a specific table would be wrong for the others, and the point is
+ * that the page stops being blank, not that it lies convincingly.
+ */
+function PanelSkeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <Card>
+      <CardBody>
+        <Skeleton className="h-4 w-44" />
+        <div className="mt-4 space-y-2.5">
+          {Array.from({ length: rows }, (_, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <Skeleton className="h-3 w-32 shrink-0" />
+              <Skeleton className="h-3 flex-1" />
+              <Skeleton className="h-3 w-12 shrink-0" />
+            </div>
+          ))}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+/**
+ * Performance figures. Awaits its own data so the page does not.
+ *
+ * `tableMissing` is handled here rather than by the caller: deciding whether to
+ * render this at all used to require the data, which is exactly the dependency
+ * that made it blocking.
+ */
+async function KpiSection({
+  days,
+  seesTeam,
+  role,
+  userId,
+}: {
+  days: number;
+  seesTeam: boolean;
+  role: string;
+  userId: string;
+}) {
+  const kpi = await getKpiSummary({ days, ownerId: seesTeam ? undefined : userId });
+  if (kpi.tableMissing) return null;
+  return (
+    <KpiSummaryCards
+      kpi={kpi}
+      days={days}
+      scope={seesTeam ? 'team' : 'you'}
+      canExport={can(role as never, 'leads.export') || seesTeam}
+      canSeeExportHistory={can(role as never, 'leads.export')}
+    />
+  );
+}
+
+/**
+ * Who received what.
+ *
+ * No try/catch: `getHandoverByPerson` already reports its own failures as
+ * `tableMissing` rather than throwing, so catching here caught nothing and
+ * tripped react-hooks/error-boundaries for the privilege.
+ */
+async function HandoverSection() {
+  return <HandoverByPerson breakdown={await getHandoverByPerson()} />;
+}
 
 export default async function DashboardPage({
   searchParams,
@@ -55,14 +125,13 @@ export default async function DashboardPage({
     );
   }
 
-  let rollup, topLeads, disposition, migrated, kpi;
+  let rollup, topLeads, disposition, migrated;
   try {
-    [rollup, topLeads, disposition, migrated, kpi] = await Promise.all([
+    [rollup, topLeads, disposition, migrated] = await Promise.all([
       getPipelineRollup(),
       getTopPriorityLeads(8),
       getDispositionRollup(),
       hasPriorityColumns(),
-      getKpiSummary({ days, ownerId: seesTeam ? undefined : user.id }),
     ]);
   } catch (err) {
     return (
@@ -84,15 +153,6 @@ export default async function DashboardPage({
    * as supply below: it pages the whole assigned book and the rest of the page
    * does not need it.
    */
-  let handover: Awaited<ReturnType<typeof getHandoverByPerson>> | null = null;
-  if (seesTeam) {
-    try {
-      handover = await getHandoverByPerson();
-    } catch {
-      // The numbers above are still true without it.
-    }
-  }
-
   let supply: { production: Awaited<ReturnType<typeof getProductionState>>; plan: Awaited<ReturnType<typeof getDemandPlan>> } | null = null;
   if (seesTeam) {
     try {
@@ -145,9 +205,15 @@ export default async function DashboardPage({
         </div>
       ) : null}
 
-      {/* Performance — moved here from the Control Center so the people whose
-          numbers these are can actually see them. */}
-      {can(user.role, 'kpi.view') && !kpi.tableMissing ? (
+      {/*
+        Performance, streamed rather than awaited.
+
+        getKpiSummary pages the whole window — 18.8 seconds measured — and the
+        Dashboard used to block on it, so nothing at all appeared until it
+        finished. Behind its own boundary the rest of the page paints immediately
+        and this fills in when it is ready.
+      */}
+      {can(user.role, 'kpi.view') ? (
         <div className="mb-10">
           <div className="mb-3 flex items-center justify-end gap-1.5">
             {KPI_WINDOWS.map((w) => (
@@ -164,13 +230,9 @@ export default async function DashboardPage({
               </Link>
             ))}
           </div>
-          <KpiSummaryCards
-            kpi={kpi}
-            days={days}
-            scope={seesTeam ? 'team' : 'you'}
-            canExport={can(user.role, 'leads.export') || seesTeam}
-            canSeeExportHistory={can(user.role, 'leads.export')}
-          />
+          <Suspense fallback={<PanelSkeleton rows={6} />}>
+            <KpiSection days={days} seesTeam={seesTeam} role={user.role} userId={user.id} />
+          </Suspense>
         </div>
       ) : null}
 
@@ -179,9 +241,11 @@ export default async function DashboardPage({
         the question this answers: who got the work, and what is stuck behind it.
         Team-only — it names every person, so it is not a seller's view.
       */}
-      {handover ? (
+      {seesTeam ? (
         <div className="mb-10">
-          <HandoverByPerson breakdown={handover} />
+          <Suspense fallback={<PanelSkeleton rows={5} />}>
+            <HandoverSection />
+          </Suspense>
         </div>
       ) : null}
 

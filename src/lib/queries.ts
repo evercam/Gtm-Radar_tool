@@ -5,6 +5,11 @@ import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRec
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
 import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
 import { arrivalFor } from '@/lib/arrival';
+import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
+import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
+
+/** A–E, taken from the tier ranges so the two cannot drift apart. */
+const COMPLETENESS_TIERS = COMPLETENESS_TIER_RANGES.map((r) => r.code);
 
 // ============================================================================
 // canonical_projects
@@ -831,74 +836,112 @@ export interface DispositionRollup {
  * dashboard shows staleness honestly when the rules have moved on since the
  * last materialize.
  */
+/**
+ * Counted in the database, not in Node.
+ *
+ * This used to page every row of `canonical_projects` — 55 round trips and 54,346
+ * rows over the wire — to produce about thirty numbers. It took 12 seconds, and
+ * the Dashboard blocked on it, which is most of why navigating to `/` felt broken.
+ *
+ * Every figure here is a COUNT over a bounded, already-declared vocabulary
+ * (PRIORITY_BANDS, ROUTES, STAGES, the completeness tiers A–E), so each one is a
+ * `head: true` count that transfers no rows at all. Run concurrently, the whole
+ * rollup costs about as much as a single page used to.
+ *
+ * The vocabularies are imported rather than retyped. A hardcoded list that drifts
+ * from the real one would silently report zero for a band nobody noticed was
+ * missing, which is worse than being slow.
+ */
 export async function getDispositionRollup(): Promise<DispositionRollup> {
   const supabase = await getReadSupabase();
-  const bands = new Map<string, number>();
-  const lanes = new Map<string, number>();
-  let total = 0;
-  let scored = 0;
-  let routed = 0;
-  let lastRoutedAt: string | null = null;
+
+  /**
+   * One `count` with no rows returned. `null` means the query failed, which is
+   * how a missing routing column is detected rather than assumed.
+   *
+   * Filters are described as data rather than as a builder callback: threading
+   * the PostgREST builder through a generic made the compiler give up with
+   * "type instantiation is excessively deep", and the casts needed to silence
+   * that were worse than the problem.
+   */
+  type CountFilter = { column: string; op: 'eq' } & { value: string } | { column: string; op: 'notNull' };
+  const countWhere = async (filters: CountFilter[] = []): Promise<number | null> => {
+    let q = supabase.from('canonical_projects').select('id', { count: 'exact', head: true });
+    for (const f of filters) {
+      q = f.op === 'eq' ? q.eq(f.column, f.value) : q.not(f.column, 'is', null);
+    }
+    const { count, error } = await q;
+    if (error) return null;
+    return count ?? 0;
+  };
+
+  // Routing columns arrived in a later migration than the priority ones, so the
+  // dashboard degrades to bands-only rather than showing nothing.
   let routingMissing = false;
 
-  // The routing columns arrived in a later migration than the priority ones,
-  // so degrade to bands-only rather than showing an empty dashboard.
-  const tiers = new Map<string, number>();
-  let untiered = 0;
-  let columns = 'priority_band, route, stage, routed_at, source_completeness_tier';
-  for (let from = 0; from < 1_000_000; from += 1000) {
-    // Ordered, because an unordered `.range()` walk repeats and skips rows —
-    // here it would miscount the band and routing totals on the dashboard.
-    const { data, error } = await supabase
-      .from('canonical_projects')
-      .select(columns)
-      .order('id', { ascending: true })
-      .range(from, from + 999);
-    if (error) {
-      if (columns !== 'priority_band, source_completeness_tier' && /does not exist|schema cache|column/i.test(error.message)) {
-        routingMissing = true;
-        columns = 'priority_band, source_completeness_tier';
-        from -= 1000;
-        continue;
-      }
-      break;
-    }
-    for (const r of (data ?? []) as unknown as {
-      priority_band: string | null;
-      route?: string | null;
-      stage?: string | null;
-      routed_at?: string | null;
-      source_completeness_tier: string | null;
-    }[]) {
-      total += 1;
-      if (r.priority_band) {
-        scored += 1;
-        bands.set(r.priority_band, (bands.get(r.priority_band) ?? 0) + 1);
-      }
-      if (r.route) {
-        routed += 1;
-        const key = `${r.route}/${r.stage ?? '—'}`;
-        lanes.set(key, (lanes.get(key) ?? 0) + 1);
-      }
-      if (r.routed_at && (!lastRoutedAt || r.routed_at > lastRoutedAt)) lastRoutedAt = r.routed_at;
-      const tier = r.source_completeness_tier;
-      if (tier) tiers.set(tier, (tiers.get(tier) ?? 0) + 1);
-      else untiered += 1;
-    }
-    if (!data || data.length < 1000) break;
-  }
+  const [total, scored, routed] = await Promise.all([
+    countWhere(),
+    countWhere([{ column: 'priority_band', op: 'notNull' }]),
+    countWhere([{ column: 'route', op: 'notNull' }]),
+  ]);
+  if (routed === null) routingMissing = true;
+
+  const [bandCounts, laneCounts, tierCounts, lastRouted] = await Promise.all([
+    Promise.all(
+      PRIORITY_BANDS.map(async (band) => ({
+        band,
+        count: (await countWhere([{ column: 'priority_band', op: 'eq', value: band }])) ?? 0,
+      }))
+    ),
+    routingMissing
+      ? Promise.resolve([])
+      : Promise.all(
+          ROUTES.flatMap((route) =>
+            STAGES.map(async (stage) => ({
+              route,
+              stage,
+              count:
+                (await countWhere([
+                  { column: 'route', op: 'eq', value: route },
+                  { column: 'stage', op: 'eq', value: stage },
+                ])) ?? 0,
+            }))
+          )
+        ),
+    Promise.all(
+      COMPLETENESS_TIERS.map(async (tier) => ({
+        tier,
+        count: (await countWhere([{ column: 'source_completeness_tier', op: 'eq', value: tier }])) ?? 0,
+      }))
+    ),
+    // The most recent routing stamp, as one ordered row rather than a scan for a max.
+    (async () => {
+      const { data, error } = await supabase
+        .from('canonical_projects')
+        .select('routed_at')
+        .not('routed_at', 'is', null)
+        .order('routed_at', { ascending: false })
+        .limit(1);
+      if (error) return null;
+      return ((data ?? [])[0] as { routed_at?: string } | undefined)?.routed_at ?? null;
+    })(),
+  ]);
+
+  const tiered = tierCounts.reduce((sum, t) => sum + t.count, 0);
 
   return {
-    total,
-    scored,
-    routed,
-    byBand: ['P1', 'P2', 'P3', 'P4'].map((band) => ({ band, count: bands.get(band) ?? 0 })),
-    byLane: Array.from(lanes.entries())
-      .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
-      .sort((a, b) => b.count - a.count),
-    routedHoursAgo: lastRoutedAt ? Math.round((Date.now() - new Date(lastRoutedAt).getTime()) / 3_600_000) : null,
-    byTier: ['A', 'B', 'C', 'D', 'E'].map((tier) => ({ tier, count: tiers.get(tier) ?? 0 })),
-    untiered,
+    total: total ?? 0,
+    scored: scored ?? 0,
+    routed: routed ?? 0,
+    byBand: bandCounts,
+    // Empty lanes are dropped, matching the previous behaviour of only reporting
+    // combinations that actually occur.
+    byLane: laneCounts.filter((l) => l.count > 0).sort((a, b) => b.count - a.count),
+    routedHoursAgo: lastRouted ? Math.round((Date.now() - new Date(lastRouted).getTime()) / 3_600_000) : null,
+    byTier: tierCounts,
+    // Derived rather than counted: anything with no tier is the remainder, which
+    // also means an unrecognised tier value cannot go missing from the total.
+    untiered: Math.max(0, (total ?? 0) - tiered),
     routingMissing,
   };
 }
