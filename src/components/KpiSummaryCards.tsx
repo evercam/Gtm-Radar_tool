@@ -23,11 +23,18 @@ export default function KpiSummaryCards({
   days,
   scope,
   canExport,
+  canSeeExportHistory,
 }: {
   kpi: KpiSummary;
   days: number;
   scope: 'you' | 'team';
   canExport: boolean;
+  /**
+   * Whether to offer the export-history link. Deliberately separate from
+   * `canExport`, which is widened by team visibility — /control/exports gates on
+   * leads.export alone.
+   */
+  canSeeExportHistory: boolean;
 }) {
   // Every stage is measured against the top of the funnel, so the bars shrink
   // down the path instead of each being scaled to whichever stage is busiest.
@@ -69,7 +76,30 @@ export default function KpiSummaryCards({
           <Stat
             label="Handover rate"
             value={`${handoverRate}%`}
-            note={`${kpi.export.exported.toLocaleString()} of ${kpi.conversion.assigned.toLocaleString()} assigned sent`}
+            note={
+              <>
+                {kpi.export.exported.toLocaleString()} of {kpi.conversion.assigned.toLocaleString()} assigned sent
+                {/*
+                  The number is one click from the runs that produced it. Apollo
+                  raises no notification when contacts are created, so "did the
+                  handover actually happen, and when" has exactly one answer in
+                  this app and it was reachable only from a tab inside
+                  Operations.
+
+                  Gated on its own permission rather than `canExport`, which is
+                  widened by `seesTeam` — a manager without leads.export would
+                  have been offered a link that redirects them to sign-in.
+                */}
+                {canSeeExportHistory ? (
+                  <>
+                    {' · '}
+                    <Link href="/control/exports" className="text-brand underline">
+                      history
+                    </Link>
+                  </>
+                ) : null}
+              </>
+            }
           />
           <Stat
             label="Past SLA"

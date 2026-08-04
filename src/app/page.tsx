@@ -154,6 +154,7 @@ export default async function DashboardPage({
             days={days}
             scope={seesTeam ? 'team' : 'you'}
             canExport={can(user.role, 'leads.export') || seesTeam}
+            canSeeExportHistory={can(user.role, 'leads.export')}
           />
         </div>
       ) : null}
