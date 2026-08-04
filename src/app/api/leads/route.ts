@@ -115,6 +115,24 @@ export async function POST(request: NextRequest) {
       // so owner_user_id is null for their leads too.
       .is('assignee_id', null)
       .in('status', ['ENRICHED', 'PREPARED'])
+      /*
+        A lead nobody can be reached on is not distributable.
+
+        Every authored rule carries `requiresContact: true`, but
+        ROSTER_FALLBACK_RULE has empty conditions and therefore no contact
+        requirement — and the fallback is what places almost everything. Measured
+        on the live book: 184 of 185 assignments came from the fallback, and 60 of
+        those leads have no email and no phone anywhere on them. They sat in
+        somebody's name doing nothing, and the export then reported them as
+        "nothing eligible".
+
+        Filtered on the real columns rather than on `contact_status`, which
+        disagrees with them in both directions here — 10 rows read `has_contact`
+        with no channel at all, and 5 read `needs_enrichment` while carrying one.
+        `additional_contacts` counts, because the committee is where the people
+        usually are.
+      */
+      .or('contact_email.not.is.null,contact_phone.not.is.null,additional_contacts.neq.[]')
       .order('priority_score', { ascending: false, nullsFirst: false })
       .limit(1000);
 
