@@ -78,6 +78,73 @@ export const STATUS_COLORS: Record<LeadStatus, string> = {
 export const TERMINAL_STATUSES: LeadStatus[] = ['CONVERTED', 'LOST'];
 
 /**
+ * The journey, as this tool can actually observe it.
+ *
+ * Deliberately not the same list as `LEAD_STATUSES`, for two reasons.
+ *
+ * CONTACTED and CONVERTED are not observable here. Nothing in the app ever
+ * transitions a lead into them — the seller works in Apollo, so the call and
+ * the deal happen somewhere this database never hears about. Reporting them as
+ * journey stages meant two rows pinned at 0 forever, which reads as "nobody
+ * has contacted anyone" when the truth is "we cannot see it from here".
+ *
+ * EXPORTED is observable and was missing. The handover to Apollo is where a
+ * lead's life in this tool ends: `apollo_exported_at` archives it out of the
+ * queue, off the stock count, and out of enrichment for good. That is the real
+ * last stage, and it was the one stage the funnel did not show.
+ *
+ * The two lists stay separate on purpose: `status` drives the queue and the DB
+ * check constraint, this drives reporting. Retiring CONTACTED and CONVERTED
+ * from the vocabulary itself would need a migration and would throw away the
+ * column any future CRM write-back would land in.
+ */
+export const JOURNEY_STAGES = [
+  'RAW',
+  'PENDING_ENRICHMENT',
+  'ENRICHING',
+  'ENRICHED',
+  'PREPARED',
+  'ASSIGNED',
+  'EXPORTED',
+] as const;
+
+export type JourneyStage = (typeof JOURNEY_STAGES)[number];
+
+export const JOURNEY_STAGE_LABELS: Record<JourneyStage | 'LOST', string> = {
+  ...STATUS_LABELS,
+  EXPORTED: 'Exported',
+};
+
+export const JOURNEY_STAGE_DESCRIPTIONS: Record<JourneyStage | 'LOST', string> = {
+  ...STATUS_DESCRIPTIONS,
+  EXPORTED: 'Sent to Apollo and archived — the seller works it there',
+};
+
+export const JOURNEY_STAGE_COLORS: Record<JourneyStage | 'LOST', string> = {
+  ...STATUS_COLORS,
+  EXPORTED: STATUS_COLORS.CONVERTED,
+};
+
+/**
+ * Where a status sits on the journey.
+ *
+ * CONTACTED and CONVERTED fold back to ASSIGNED: all three mean the same
+ * observable thing here — a seller holds this lead. A record only advances past
+ * ASSIGNED by actually being exported, which is a timestamp, not a status.
+ */
+export const STATUS_JOURNEY_STAGE: Record<LeadStatus, JourneyStage | 'LOST'> = {
+  RAW: 'RAW',
+  PENDING_ENRICHMENT: 'PENDING_ENRICHMENT',
+  ENRICHING: 'ENRICHING',
+  ENRICHED: 'ENRICHED',
+  PREPARED: 'PREPARED',
+  ASSIGNED: 'ASSIGNED',
+  CONTACTED: 'ASSIGNED',
+  CONVERTED: 'ASSIGNED',
+  LOST: 'LOST',
+};
+
+/**
  * Allowed transitions. The pipeline is mostly linear, but a record can be lost
  * from any working stage, re-queued after a failed enrichment, and re-enriched
  * once stale — so this is a graph, not a straight line.

@@ -69,6 +69,12 @@ export async function POST(request: NextRequest) {
         )
         .in('status', ['RAW'])
         .or(`snoozed_until.is.null,snoozed_until.lte.${today}`)
+        // Ordered, because an unordered `.range()` walk repeats and skips rows.
+        // This is the worst place in the app to do that: a skipped record is a
+        // lead the prioritisation rules never got to consider, and a repeated
+        // one is a duplicate candidate. On 44,191 records the same pattern in
+        // the KPI reader missed 28% of the table.
+        .order('id', { ascending: true })
         .range(from, from + 999);
 
       if (error) {

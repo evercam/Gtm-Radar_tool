@@ -38,6 +38,23 @@ function money(n: number | null): string {
   return `$${n}`;
 }
 
+/**
+ * Compact enough for a table cell: "3 Aug" this year, "3 Aug 25" otherwise.
+ *
+ * The year is dropped only when it is the current one, so a handover from last
+ * season can never be misread as a recent one.
+ */
+function exportDate(v: string): string {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return v;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: '2-digit' }),
+  });
+}
+
 /** How urgent the deadline is — breached, due soon, or comfortable. */
 function slaTone(dueAt: string, breached: boolean | null): 'danger' | 'warning' | 'success' {
   if (breached) return 'danger';
@@ -112,10 +129,16 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   const mine = sp.mine ?? (canSeeAll ? '0' : '1');
   const ownerId = mine === '1' ? user.id : undefined;
   const unassigned = sp.owner === 'none';
+  const sort = (['priority', 'newest', 'value', 'exported'].includes(sp.sort ?? '')
+    ? sp.sort
+    : 'priority') as RecordSort;
   // Exported leads are archived out of the working list. `archived=1` brings
   // them back for anyone auditing what was sent.
-  const includeExported = sp.archived === '1';
-  const sort = (['priority', 'newest', 'value'].includes(sp.sort ?? '') ? sp.sort : 'priority') as RecordSort;
+  //
+  // Sorting by export date implies it: the archived rows are the only ones with
+  // an export date at all, so filtering them out would sort an empty column and
+  // return the working list in an order nobody asked for.
+  const includeExported = sp.archived === '1' || sort === 'exported';
 
   let rows: RecordRow[] = [];
   let total = 0;
@@ -169,6 +192,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     owner_group: ownerGroup,
     sort,
     q: search,
+    // Carried, so clicking any filter while auditing archived leads does not
+    // silently drop them back out of the list.
+    archived: sp.archived,
   };
 
   // `record` is deliberately absent from `base`, so the drawer's close link is
@@ -307,8 +333,13 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             </Chip>
           ))}
           <span className="text-subtle ml-3 text-xs font-medium">Sort</span>
-          {(['priority', 'newest', 'value'] as const).map((s) => (
-            <Chip key={s} href={qs(base, { sort: s, page: undefined })} active={sort === s}>
+          {(['priority', 'newest', 'value', 'exported'] as const).map((s) => (
+            <Chip
+              key={s}
+              href={qs(base, { sort: s, page: undefined })}
+              active={sort === s}
+              title={s === 'exported' ? 'Most recently handed over to Apollo — includes archived leads' : undefined}
+            >
               {s}
             </Chip>
           ))}
@@ -423,8 +454,32 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
                   <Td align="right" className="text-muted">
                     {r.population_percentage != null ? `${Math.round(r.population_percentage)}%` : '—'}
                   </Td>
+                  {/*
+                    Export outranks status. An archived lead still reads ASSIGNED
+                    in the status column, so showing the status here would put a
+                    lead that has left the building in the same cell state as one
+                    a seller is expected to work. The date comes with the badge
+                    because "when was this handed over" is the question anyone
+                    looking at an archived row is actually asking — and `sort=exported`
+                    orders by the same value they are reading.
+                  */}
                   <Td>
-                    {r.status ? (
+                    {r.apollo_exported_at ? (
+                      <Badge
+                        tone="success"
+                        title={`Archived — sent to Apollo on ${new Date(r.apollo_exported_at).toLocaleString('en-GB')}${
+                          r.apollo_export_status ? ` · ${r.apollo_export_status}` : ''
+                        }${r.status ? ` · lifecycle ${STATUS_LABELS[r.status as LeadStatus] ?? r.status}` : ''}`}
+                      >
+                        exported {exportDate(r.apollo_exported_at)}
+                      </Badge>
+                    ) : r.apollo_export_status === 'failed' ? (
+                      // Not archived: a failed send stays in the queue, and the
+                      // row must not look handed over.
+                      <Badge tone="danger" title="The send to Apollo failed — still queued for the next run">
+                        export failed
+                      </Badge>
+                    ) : r.status ? (
                       <Badge className={STATUS_COLORS[r.status as LeadStatus] ?? ''}>
                         {STATUS_LABELS[r.status as LeadStatus] ?? r.status}
                       </Badge>

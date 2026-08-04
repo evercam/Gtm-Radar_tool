@@ -546,10 +546,35 @@ export async function runEnrichment(
           // being set inline where a bad jump would go unnoticed.
           if (persisted) {
             if (validation.satisfied) {
-              await transitionLead(input.id, 'ENRICHED', {
-                actor: 'enrichment',
-                reason: account?.name ? `Resolved ${account.name}` : 'Enrichment completed',
-              });
+              /**
+               * Walk the record to ENRICHED, one legal step at a time.
+               *
+               * The graph is RAW -> PENDING_ENRICHMENT -> ENRICHING -> ENRICHED, and
+               * this jumped straight to ENRICHED. `canTransition` refused it,
+               * `transitionLead` returned `{ ok: false }`, and nothing here read the
+               * return value — so the status never moved on ANY record ever enriched.
+               * 367 records carried `enriched_at` while the lifecycle showed zero
+               * enriched, and the dashboard was telling the truth about the column
+               * and the opposite of the truth about the work.
+               *
+               * ENRICHING is not a formality either: it marks the record in flight,
+               * which is what stops two workers claiming it.
+               */
+              const step = async (to: 'PENDING_ENRICHMENT' | 'ENRICHING' | 'ENRICHED') => {
+                const res = await transitionLead(input.id!, to, {
+                  actor: 'enrichment',
+                  reason: account?.name ? `Resolved ${account.name}` : 'Enrichment completed',
+                });
+                // Reported, not swallowed. A refused transition is exactly the bug
+                // this replaces, and it must never be quiet again.
+                if (!res.ok) console.warn(`Lifecycle move to ${to} refused for ${input.id}: ${res.message}`);
+                return res.ok;
+              };
+              // From RAW the first legal step is PENDING_ENRICHMENT. Already past it
+              // and the call is refused harmlessly, which the walk tolerates.
+              await step('PENDING_ENRICHMENT');
+              await step('ENRICHING');
+              await step('ENRICHED');
 
               // The brief is what a seller actually reads before dialling, so
               // it is generated as soon as the record becomes workable. It is
@@ -577,10 +602,15 @@ export async function runEnrichment(
                     })
                     .eq('id', input.id);
                   if (!prepError) {
-                    await transitionLead(input.id, 'PREPARED', {
+                    const prepMove = await transitionLead(input.id, 'PREPARED', {
                       actor: 'call_prep',
                       reason: 'Call brief generated',
                     });
+                    // Same reporting as the walk above: a refused move here means a
+                    // brief exists that the lifecycle does not know about.
+                    if (!prepMove.ok) {
+                      console.warn(`Lifecycle move to PREPARED refused for ${input.id}: ${prepMove.message}`);
+                    }
                   }
                 }
               }

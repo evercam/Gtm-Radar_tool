@@ -410,6 +410,12 @@ export default async function HelpPage() {
           A <Term>failed</Term> send is not archived. It stays in the queue for the next run and the record shows why it
           failed, so a bad address is fixed rather than silently dropped.
         </p>
+        <p className="text-body text-sm">
+          A contact whose job title the persona guide does not recognise is <Term>flagged</Term>, not withheld. The guide
+          describes who is usually worth calling; it does not know every title in the industry, and dropping a contact we
+          have already paid to reveal left reps looking at a lead with nobody on it. The contact travels with a warning on
+          its <em>Qualify Contact</em> field, and you decide.
+        </p>
       </Step>
 
       <HowItRuns />

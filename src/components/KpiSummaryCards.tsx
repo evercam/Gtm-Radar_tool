@@ -1,6 +1,10 @@
 import Link from 'next/link';
 import type { KpiSummary } from '@/lib/kpi';
-import { STATUS_COLORS, STATUS_LABELS, type LeadStatus } from '@/lib/lifecycle';
+import {
+  JOURNEY_STAGE_COLORS,
+  JOURNEY_STAGE_LABELS,
+  type JourneyStage,
+} from '@/lib/lifecycle';
 import { STATUS_COLORS_SAFE } from '@/lib/semantics';
 import { Card, CardHeader, CardBody, Badge, Stat, ProgressBar } from '@/components/ui';
 
@@ -25,9 +29,16 @@ export default function KpiSummaryCards({
   scope: 'you' | 'team';
   canExport: boolean;
 }) {
-  const maxFunnel = Math.max(1, ...kpi.funnel.map((f) => f.count));
-  // The dead ends carry no information in a compact view.
-  const funnel = kpi.funnel.filter((f) => f.status !== 'LOST' || f.count > 0);
+  // Every stage is measured against the top of the funnel, so the bars shrink
+  // down the path instead of each being scaled to whichever stage is busiest.
+  const funnel = kpi.funnel.filter((f) => f.status !== 'LOST');
+  const entered = Math.max(1, funnel[0]?.reached ?? 0);
+  const lost = kpi.funnel.find((f) => f.status === 'LOST');
+
+  const handoverRate =
+    kpi.conversion.assigned > 0
+      ? Math.round((kpi.export.exported / kpi.conversion.assigned) * 1000) / 10
+      : 0;
 
   return (
     <Card>
@@ -49,10 +60,16 @@ export default function KpiSummaryCards({
             value={`${kpi.enrichment.successRate}%`}
             note={`${kpi.enrichment.succeeded.toLocaleString()} of ${kpi.enrichment.attempted.toLocaleString()}`}
           />
+          {/*
+            Handover, not contact. The call happens in Apollo, so a contact rate
+            measured from this database reads 0% no matter how much outreach the
+            team does. What this tool can honestly claim is how much of the
+            assigned work it actually got shipped.
+          */}
           <Stat
-            label="Contact rate"
-            value={`${kpi.conversion.contactRate}%`}
-            note={`${kpi.conversion.contacted.toLocaleString()} of ${kpi.conversion.assigned.toLocaleString()} assigned`}
+            label="Handover rate"
+            value={`${handoverRate}%`}
+            note={`${kpi.export.exported.toLocaleString()} of ${kpi.conversion.assigned.toLocaleString()} assigned sent`}
           />
           <Stat
             label="Past SLA"
@@ -68,19 +85,39 @@ export default function KpiSummaryCards({
         </div>
 
         <div className="space-y-1.5">
+          <div className="text-subtle flex items-baseline justify-between text-[10px] uppercase tracking-wide">
+            <span>Lead journey</span>
+            <span className="normal-case">reached · here now</span>
+          </div>
+
           {funnel.map((f) => (
             <div key={f.status} className="flex items-center gap-3">
               <span className="w-32 shrink-0">
-                <Badge className={STATUS_COLORS[f.status as LeadStatus] ?? STATUS_COLORS_SAFE}>
-                  {STATUS_LABELS[f.status as LeadStatus] ?? f.status}
+                <Badge className={JOURNEY_STAGE_COLORS[f.status as JourneyStage] ?? STATUS_COLORS_SAFE}>
+                  {JOURNEY_STAGE_LABELS[f.status as JourneyStage] ?? f.status}
                 </Badge>
               </span>
-              <ProgressBar value={f.count} max={maxFunnel} tone="neutral" className="flex-1" />
-              <span className="text-muted w-16 shrink-0 text-right text-[11px] tabular-nums">
-                {f.count.toLocaleString()}
+              <ProgressBar value={f.reached} max={entered} tone="neutral" className="flex-1" />
+              <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
+                <span className="text-foreground">{f.reached.toLocaleString()}</span>
+                {/* Occupancy is the actionable half: what is sitting here now. */}
+                <span className="text-subtle"> · {f.count.toLocaleString()}</span>
               </span>
             </div>
           ))}
+
+          {lost && lost.count > 0 ? (
+            <div className="flex items-center gap-3 pt-1">
+              <span className="w-32 shrink-0">
+                <Badge className={JOURNEY_STAGE_COLORS.LOST}>{JOURNEY_STAGE_LABELS.LOST}</Badge>
+              </span>
+              {/* Off the path, so it gets no bar to compare against the stages. */}
+              <span className="text-subtle flex-1 text-[10px]">left the funnel</span>
+              <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
+                <span className="text-muted">{lost.count.toLocaleString()}</span>
+              </span>
+            </div>
+          ) : null}
         </div>
 
         {scope === 'team' && kpi.byOwner.length > 0 ? (

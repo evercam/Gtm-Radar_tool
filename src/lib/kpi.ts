@@ -1,5 +1,11 @@
 import 'server-only';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
+import {
+  isLeadStatus,
+  JOURNEY_STAGES,
+  STATUS_JOURNEY_STAGE,
+  type JourneyStage,
+} from '@/lib/lifecycle';
 
 /**
  * KPI aggregation.
@@ -28,7 +34,10 @@ export interface KpiWindow {
 
 export interface FunnelStage {
   status: string;
+  /** Records sitting at this status right now. */
   count: number;
+  /** Records that have ever reached this stage — the funnel number. */
+  reached: number;
 }
 
 export interface KpiSummary {
@@ -101,7 +110,64 @@ function median(values: number[]): number | null {
 const COLUMNS =
   'id, status, bu, source_key, owner_user_id, contact_status, contact_email, enriched_at, ' +
   'last_enrichment_attempt, sla_due_at, sla_breached, owner_assigned_at, first_contact_at, ' +
-  'apollo_exported_at, apollo_export_status, email_verified, created_at';
+  'apollo_exported_at, apollo_export_status, email_verified, created_at, ' +
+  'queued_at, enrichment_started_at, prepared_at, call_prep_generated_at, contacted_at, ' +
+  'converted_at, lost_at';
+
+const stageIndex = (stage: JourneyStage): number => JOURNEY_STAGES.indexOf(stage);
+
+/**
+ * Where a record stands right now, or 'LOST'.
+ *
+ * The export check comes first because it outranks `status`: an exported lead
+ * still reads ASSIGNED in the status column, but it has been handed over and
+ * archived, so counting it as work sitting in somebody's queue overstates the
+ * live pipeline by exactly the number of leads already shipped.
+ */
+function currentStage(r: Record<string, unknown>, status: string): JourneyStage | 'LOST' {
+  if (r.apollo_exported_at) return 'EXPORTED';
+  return isLeadStatus(status) ? STATUS_JOURNEY_STAGE[status] : 'RAW';
+}
+
+/**
+ * How far a record has ever got, as a `JOURNEY_STAGES` index.
+ *
+ * Its position now is not the answer, for two reasons. A record moves forward,
+ * so an ASSIGNED lead has certainly been enriched even though nothing currently
+ * sits at ENRICHED — reading occupancy as a funnel produced the nonsense of
+ * "Enriched 0" above "Assigned 3". And a record can leave the path entirely: a
+ * LOST lead has no position on it at all, yet the stages it passed through
+ * before dying are exactly what a funnel is measuring.
+ *
+ * So take the furthest of two kinds of evidence: where the record stands, and
+ * every transition timestamp it carries. The timestamps are the only witness
+ * for a record since lost, or re-queued after a failed enrichment pass.
+ */
+function furthestStage(r: Record<string, unknown>, position: JourneyStage | 'LOST'): number {
+  const stamped = (...columns: string[]) => columns.some((c) => Boolean(r[c]));
+
+  // Everything in the table was ingested, so RAW is always reached.
+  let reached = 0;
+  const at = (stage: JourneyStage, evidence: boolean) => {
+    if (evidence) reached = Math.max(reached, stageIndex(stage));
+  };
+
+  // LOST is off the path, so it contributes nothing here and leans entirely on
+  // the timestamps below to say how far the record had got before it died.
+  if (position !== 'LOST') at(position, true);
+
+  at('PENDING_ENRICHMENT', stamped('queued_at'));
+  // `last_enrichment_attempt` counts: a worker held the record to attempt it.
+  at('ENRICHING', stamped('enrichment_started_at', 'last_enrichment_attempt'));
+  at('ENRICHED', stamped('enriched_at'));
+  at('PREPARED', stamped('prepared_at', 'call_prep_generated_at'));
+  // assignmentStore can set an owner without a status transition, so the
+  // column itself is evidence — not just the stamp.
+  at('ASSIGNED', stamped('owner_assigned_at', 'owner_user_id', 'contacted_at', 'first_contact_at', 'converted_at'));
+  at('EXPORTED', stamped('apollo_exported_at'));
+
+  return reached;
+}
 
 export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiSummary> {
   if (!isSupabaseServiceConfigured()) return EMPTY;
@@ -115,7 +181,13 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
     for (let from = 0; from < 100_000; from += 1000) {
       let q = service.from('canonical_projects').select(COLUMNS).gte('created_at', since);
       if (window.ownerId) q = q.eq('owner_user_id', window.ownerId);
-      const { data, error } = await q.range(from, from + 999);
+      // ORDER BY is load-bearing. Each `.range()` is a separate query, and
+      // without a total order Postgres may return rows in a different order
+      // each time, so the same row lands in two pages while another lands in
+      // none. Measured on 44,191 records: 12,535 missed and 12,535 counted
+      // twice — every KPI on the dashboard was a random 72% sample, which is
+      // why the funnel could report 0 exports while two leads were exported.
+      const { data, error } = await q.order('id', { ascending: true }).range(from, from + 999);
 
       if (error) {
         return { ...EMPTY, tableMissing: /does not exist|schema cache/i.test(error.message) };
@@ -125,7 +197,10 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
       if (page.length < 1000) break;
     }
 
+    /** Where records stand now — one bucket per journey stage, plus LOST. */
     const funnelCounts = new Map<string, number>();
+    /** One slot per stage; a record increments every stage it ever reached. */
+    const reachedCounts = new Array<number>(JOURNEY_STAGES.length).fill(0);
     const buMap = new Map<string, { total: number; enriched: number; assigned: number; converted: number }>();
     const ownerMap = new Map<string, { total: number; contacted: number; converted: number; breached: number }>();
     const sourceMap = new Map<string, { total: number; enriched: number; converted: number }>();
@@ -148,7 +223,13 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
 
     for (const r of rows) {
       const status = (r.status as string) ?? 'RAW';
-      funnelCounts.set(status, (funnelCounts.get(status) ?? 0) + 1);
+
+      const position = currentStage(r, status);
+      funnelCounts.set(position, (funnelCounts.get(position) ?? 0) + 1);
+
+      // Cumulative: reaching ASSIGNED means having reached everything before it.
+      const furthest = furthestStage(r, position);
+      for (let i = 0; i <= furthest; i += 1) reachedCounts[i] += 1;
 
       const bu = (r.bu as string) ?? 'unknown';
       const source = (r.source_key as string) ?? 'unknown';
@@ -207,21 +288,20 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
       }
     }
 
-    const ORDER = [
-      'RAW',
-      'PENDING_ENRICHMENT',
-      'ENRICHING',
-      'ENRICHED',
-      'PREPARED',
-      'ASSIGNED',
-      'CONTACTED',
-      'CONVERTED',
-      'LOST',
+    // LOST is off the path, so it has no cumulative figure of its own — the
+    // stages it passed through are already counted in `reached` above it.
+    const funnel: FunnelStage[] = [
+      ...JOURNEY_STAGES.map((status, i) => ({
+        status,
+        count: funnelCounts.get(status) ?? 0,
+        reached: reachedCounts[i],
+      })),
+      { status: 'LOST', count: funnelCounts.get('LOST') ?? 0, reached: funnelCounts.get('LOST') ?? 0 },
     ];
 
     return {
       total: rows.length,
-      funnel: ORDER.map((status) => ({ status, count: funnelCounts.get(status) ?? 0 })),
+      funnel,
       enrichment: {
         attempted,
         succeeded: enrichSucceeded,
@@ -268,7 +348,9 @@ export function kpiToCsv(summary: KpiSummary): string {
     lines.push(`${section},"${String(key).replace(/"/g, '""')}",${value}`);
 
   push('overview', 'total_records', summary.total);
-  for (const f of summary.funnel) push('funnel', f.status, f.count);
+  // Both figures, because "funnel,ASSIGNED,3" alone never said which it meant.
+  for (const f of summary.funnel) push('funnel_reached', f.status, f.reached);
+  for (const f of summary.funnel) push('funnel_current', f.status, f.count);
 
   push('enrichment', 'attempted', summary.enrichment.attempted);
   push('enrichment', 'succeeded', summary.enrichment.succeeded);
