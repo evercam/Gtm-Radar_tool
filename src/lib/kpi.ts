@@ -108,7 +108,11 @@ function median(values: number[]): number | null {
 }
 
 const COLUMNS =
-  'id, status, bu, source_key, owner_user_id, contact_status, contact_email, enriched_at, ' +
+  // `assignee_id` as well as `owner_user_id`: the assignment pass always writes
+  // the roster id and writes the app-account id only when that roster member
+  // happens to have an account. Counting ownership by the account column alone
+  // made 3 of 4 assigned leads invisible here — see `isAssigned` below.
+  'id, status, bu, source_key, owner_user_id, assignee_id, contact_status, contact_email, enriched_at, ' +
   'last_enrichment_attempt, sla_due_at, sla_breached, owner_assigned_at, first_contact_at, ' +
   'apollo_exported_at, apollo_export_status, email_verified, created_at, ' +
   'queued_at, enrichment_started_at, prepared_at, call_prep_generated_at, contacted_at, ' +
@@ -233,7 +237,23 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
 
       const bu = (r.bu as string) ?? 'unknown';
       const source = (r.source_key as string) ?? 'unknown';
+      // Two different questions, and conflating them broke the handover rate.
+      //
+      // `owner` is an APP ACCOUNT, used only for the per-owner breakdown, which
+      // has to resolve to a user profile to show a name.
+      //
+      // `isAssigned` is whether anybody is working the lead at all. The
+      // assignment pass writes `assignee_id` for every assignment and
+      // `owner_user_id` only when that roster member also has an app account —
+      // so counting by the account column reported 1 assigned lead out of 4, and
+      // the handover rate came out as 2 exported / 1 assigned = 200%.
+      //
+      // The export itself requires `assignee_id`, so counting it this way also
+      // makes the exported set a genuine subset of the assigned set, which is
+      // what keeps the rate at or below 100% by construction rather than by
+      // clamping it afterwards.
       const owner = r.owner_user_id as string | null;
+      const isAssigned = Boolean(r.assignee_id ?? r.owner_user_id);
       const isEnriched = Boolean(r.enriched_at);
       const isConverted = status === 'CONVERTED';
 
@@ -256,19 +276,19 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
         if (Number.isFinite(hrs) && hrs >= 0) hoursToContact.push(hrs);
       }
 
-      if (owner) assigned += 1;
+      if (isAssigned) assigned += 1;
       if (r.first_contact_at || status === 'CONTACTED') contacted += 1;
       if (isConverted) converted += 1;
       if (status === 'LOST') lost += 1;
 
-      if (owner && r.email_verified) exportEligible += 1;
+      if (isAssigned && r.email_verified) exportEligible += 1;
       if (r.apollo_exported_at) exported += 1;
       if (r.apollo_export_status === 'failed') exportFailed += 1;
 
       const b = buMap.get(bu) ?? { total: 0, enriched: 0, assigned: 0, converted: 0 };
       b.total += 1;
       if (isEnriched) b.enriched += 1;
-      if (owner) b.assigned += 1;
+      if (isAssigned) b.assigned += 1;
       if (isConverted) b.converted += 1;
       buMap.set(bu, b);
 
