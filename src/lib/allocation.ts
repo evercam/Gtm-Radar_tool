@@ -226,9 +226,9 @@ export function planAllocation(
   let unassigned = 0;
   let heldForMix = 0;
 
-  const give = (lead: AssignableLead): 'assigned' | 'no-owner' => {
-    const rule = ordered.find((r) => matchesAssignment(lead, r))!;
-    const target = rule.toUserId
+  /** The recipient a single rule resolves to for this lead, or null. */
+  const targetFor = (rule: AssignmentRule, lead: AssignableLead): AssignableUser | null =>
+    rule.toUserId
       ? (() => {
           const u = byId.get(rule.toUserId!);
           return u && u.isActive && userCoversLead(u, lead) && u.assignedToday < u.dailyQuota ? u : null;
@@ -247,7 +247,36 @@ export function planAllocation(
             lead
           );
 
-    if (!target) return 'no-owner';
+  const give = (lead: AssignableLead): 'assigned' | 'no-owner' => {
+    /*
+      EVERY matching rule is tried, in order — not just the first.
+
+      Taking only the first match meant a rule whose named recipient could not
+      take the lead dropped it, instead of letting a later rule or the roster
+      fallback place it. Held against the live config that was not a corner case:
+      the top rule targets one BDR whose vertical scope excludes `construction`,
+      which is 30,477 of 54,346 records, so every act-now construction lead
+      matched that rule, failed its recipient check, and ended up with no owner at
+      all — while the fallback would have placed it immediately.
+
+      The precedence a rule list is supposed to express is "prefer this
+      recipient", not "and if they cannot, nobody". An authored rule still wins
+      whenever it CAN be satisfied, because the loop stops at the first rule that
+      actually resolves.
+    */
+    let rule: AssignmentRule | null = null;
+    let target: AssignableUser | null = null;
+    for (const candidate of ordered) {
+      if (!matchesAssignment(lead, candidate)) continue;
+      const resolved = targetFor(candidate, lead);
+      if (resolved) {
+        rule = candidate;
+        target = resolved;
+        break;
+      }
+    }
+
+    if (!target || !rule) return 'no-owner';
     target.assignedToday += 1;
     const b = bucketOf(lead, policy.dimension);
     taken.set(b, (taken.get(b) ?? 0) + 1);
