@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
-import { configForBu, type ScoringPolicySet } from '@/lib/policies';
+import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
 import { arrivalFor } from '@/lib/arrival';
 
 // ============================================================================
@@ -1375,5 +1375,129 @@ export async function getExportRuns(limit = 50): Promise<{ rows: ExportRunRow[];
     return { rows, tableMissing: false };
   } catch {
     return { rows: [], tableMissing: true };
+  }
+}
+
+// ============================================================================
+// Handover by person
+// ============================================================================
+
+export interface HandoverRow {
+  assigneeId: string;
+  name: string;
+  isActive: boolean;
+  dailyQuota: number;
+  /** Leads already sent to Apollo. */
+  received: number;
+  /** Leads that would go on the next run — every gate already satisfied. */
+  ready: number;
+  /** Assigned, but with no address to send. Enrichment's queue, not the export's. */
+  waitingOnContact: number;
+  /** Has an address, but the policy demands a verified one and it is not. */
+  blockedUnverified: number;
+  /** Assigned and flagged do-not-contact. */
+  doNotContact: number;
+}
+
+export interface HandoverBreakdown {
+  rows: HandoverRow[];
+  /** Assigned to somebody no longer on the roster — nobody is working these. */
+  unrostered: number;
+  /** True when the policy requires a verified address, which changes `ready`. */
+  requireVerified: boolean;
+  tableMissing: boolean;
+}
+
+/**
+ * Who received leads, against what is ready to go to them.
+ *
+ * The dashboard could say how many leads were handed over but not to whom, and
+ * not what was waiting — so "the export sent nothing" and "there was nothing to
+ * send" looked identical, which is the question actually asked after a run.
+ *
+ * The gates mirror `/api/export/apollo` exactly, including reading
+ * `requireChannel` from the policy. A readiness figure computed from different
+ * rules than the export uses is worse than none: it would promise leads that the
+ * next run then declines to send.
+ */
+/** PostgREST refuses to return more than this many rows in one response. */
+const HANDOVER_PAGE = 1000;
+
+export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
+  const empty: HandoverBreakdown = { rows: [], unrostered: 0, requireVerified: false, tableMissing: false };
+  try {
+    const service = getServiceSupabase();
+    const { config: policy } = await getEnrichmentPolicy();
+    const requireVerified = policy.requireChannel;
+
+    const { data: rosterRows, error: rosterError } = await service
+      .from('assignees')
+      .select('id, name, is_active, daily_lead_quota');
+    if (rosterError) {
+      return { ...empty, tableMissing: /does not exist|schema cache|relation/i.test(rosterError.message) };
+    }
+    const roster = (rosterRows ?? []) as { id: string; name: string; is_active: boolean; daily_lead_quota: number | null }[];
+
+    // Paged, because PostgREST caps a response at 1000 rows and a silent
+    // truncation here would under-report somebody's book as complete.
+    const leads: Record<string, unknown>[] = [];
+    for (let page = 0; page < 200; page += 1) {
+      const { data, error } = await service
+        .from('canonical_projects')
+        .select('assignee_id, apollo_exported_at, contact_email, email_verified, do_not_contact, status')
+        .not('assignee_id', 'is', null)
+        // Total order, so each range is a stable slice rather than an arbitrary one.
+        .order('id', { ascending: true })
+        .range(page * HANDOVER_PAGE, (page + 1) * HANDOVER_PAGE - 1);
+      if (error) return { ...empty, tableMissing: /does not exist|schema cache/i.test(error.message) };
+      if (!data?.length) break;
+      leads.push(...(data as Record<string, unknown>[]));
+      if (data.length < HANDOVER_PAGE) break;
+    }
+
+    const EXPORTABLE = new Set(['ASSIGNED', 'CONTACTED', 'PREPARED']);
+    const byId = new Map<string, HandoverRow>();
+    for (const r of roster) {
+      byId.set(r.id, {
+        assigneeId: r.id,
+        name: r.name,
+        isActive: r.is_active,
+        dailyQuota: r.daily_lead_quota ?? 0,
+        received: 0,
+        ready: 0,
+        waitingOnContact: 0,
+        blockedUnverified: 0,
+        doNotContact: 0,
+      });
+    }
+
+    let unrostered = 0;
+    for (const l of leads) {
+      const row = byId.get(l.assignee_id as string);
+      if (!row) {
+        unrostered += 1;
+        continue;
+      }
+      if (l.apollo_exported_at) {
+        row.received += 1;
+        continue;
+      }
+      // Order matters: each lead is counted under its FIRST blocking reason, so
+      // the columns sum to the book rather than double-counting it.
+      if (l.do_not_contact) row.doNotContact += 1;
+      else if (!l.contact_email) row.waitingOnContact += 1;
+      else if (!EXPORTABLE.has(String(l.status))) row.waitingOnContact += 1;
+      else if (requireVerified && l.email_verified !== true) row.blockedUnverified += 1;
+      else row.ready += 1;
+    }
+
+    const rows = [...byId.values()]
+      // Anyone who has never held a lead and cannot receive one is noise.
+      .filter((r) => r.isActive || r.received > 0 || r.ready > 0 || r.waitingOnContact > 0)
+      .sort((a, b) => b.received + b.ready - (a.received + a.ready) || a.name.localeCompare(b.name));
+
+    return { rows, unrostered, requireVerified, tableMissing: false };
+  } catch {
+    return { ...empty, tableMissing: true };
   }
 }

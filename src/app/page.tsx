@@ -1,12 +1,13 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getPipelineRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
+import { getHandoverByPerson, getPipelineRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
 import { getDemandPlan } from '@/lib/enrich/demand';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
 import { getKpiSummary } from '@/lib/kpi';
 import KpiSummaryCards from '@/components/KpiSummaryCards';
+import HandoverByPerson from '@/components/HandoverByPerson';
 import SupplyStatus from '@/components/SupplyStatus';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
@@ -78,6 +79,20 @@ export default async function DashboardPage({
    * rest of the dashboard needs. A panel that cannot load should leave the page
    * standing rather than take it down — the numbers above are still true.
    */
+  /**
+   * Who received what, loaded separately and allowed to fail for the same reason
+   * as supply below: it pages the whole assigned book and the rest of the page
+   * does not need it.
+   */
+  let handover: Awaited<ReturnType<typeof getHandoverByPerson>> | null = null;
+  if (seesTeam) {
+    try {
+      handover = await getHandoverByPerson();
+    } catch {
+      // The numbers above are still true without it.
+    }
+  }
+
   let supply: { production: Awaited<ReturnType<typeof getProductionState>>; plan: Awaited<ReturnType<typeof getDemandPlan>> } | null = null;
   if (seesTeam) {
     try {
@@ -156,6 +171,17 @@ export default async function DashboardPage({
             canExport={can(user.role, 'leads.export') || seesTeam}
             canSeeExportHistory={can(user.role, 'leads.export')}
           />
+        </div>
+      ) : null}
+
+      {/*
+        Directly under the handover rate, because that percentage is what raises
+        the question this answers: who got the work, and what is stuck behind it.
+        Team-only — it names every person, so it is not a seller's view.
+      */}
+      {handover ? (
+        <div className="mb-10">
+          <HandoverByPerson breakdown={handover} />
         </div>
       ) : null}
 
