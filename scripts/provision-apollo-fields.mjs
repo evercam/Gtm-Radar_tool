@@ -32,6 +32,23 @@ if (!key) {
 }
 const h = { 'Content-Type': 'application/json', Accept: 'application/json', 'x-api-key': key };
 
+/**
+ * Fields whose length cap is too small for the data, and what it should be.
+ *
+ * `Job Title` was created with a 30-character ceiling. 511 of 11,730 titles on
+ * file (4.4%) are longer, so the export truncated them — and before that, one
+ * character over returned HTTP 422 and failed the whole batch of 100.
+ *
+ * Raising a cap is non-destructive: every value that fitted before still fits.
+ * The cap is only ever RAISED here, never lowered, because lowering one is how
+ * you invalidate data somebody else's workflow depends on.
+ *
+ * 500 rather than 20,000: the longest title on file is 206 characters, and a
+ * "string" field is a single-line input in Apollo's UI. This is headroom, not a
+ * licence to put prose in it.
+ */
+const RAISE_CAPS = [{ name: 'Job Title', min: 500 }];
+
 const WRITABLE = new Set(['string', 'textarea', 'text']);
 const existing = await loadCustomFields(true);
 if (existing.length === 0) {
@@ -65,6 +82,26 @@ for (const r of report) {
   console.log(`  ${mark} ${r.source.padEnd(18)} -> "${r.apolloName}"  (${r.detail})`);
 }
 
+/**
+ * Caps that are too low for the data.
+ *
+ * Kept separate from the missing-field list because it is a different kind of
+ * change: this edits a field the workspace already has, so it is reported on its
+ * own and only ever widens the ceiling.
+ */
+const tooTight = [];
+for (const want of RAISE_CAPS) {
+  const f = existing.find((x) => x.name === want.name && x.modality === 'contact');
+  if (!f) continue;
+  if (f.maxLength != null && f.maxLength < want.min) {
+    tooTight.push({ field: f, min: want.min });
+  }
+}
+if (tooTight.length) {
+  console.log(`\n${tooTight.length} cap(s) too low for the data:`);
+  for (const t of tooTight) console.log(`  "${t.field.name}" allows ${t.field.maxLength}, needs ${t.min}`);
+}
+
 const missing = report.filter((r) => r.state === 'missing');
 const wrong = report.filter((r) => r.state === 'wrong-place');
 
@@ -75,15 +112,49 @@ if (wrong.length) {
   console.log('Re-point them in Settings → Apollo export fields, or switch them off.');
 }
 
-if (missing.length === 0) {
-  console.log('\nNothing to create.');
+if (missing.length === 0 && tooTight.length === 0) {
+  console.log('\nNothing to create or widen.');
   process.exit(0);
 }
 
 if (!apply) {
-  console.log(`\n${missing.length} field(s) would be created. Re-run with APPLY=1 to do it.`);
+  const bits = [];
+  if (missing.length) bits.push(`${missing.length} field(s) would be created`);
+  if (tooTight.length) bits.push(`${tooTight.length} cap(s) would be raised`);
+  console.log(`\n${bits.join(', ')}. Re-run with APPLY=1 to do it.`);
   process.exit(0);
 }
+
+/*
+  Widen first. Raising the ceiling is what stops the export truncating, and it
+  needs no mapping change afterwards: mapCustomFields reads the live
+  text_field_max_length, so the next export simply stops cutting.
+*/
+for (const t of tooTight) {
+  // `name` is required on this PUT. Without it Apollo answers "undefined method
+  // 'strip' for nil", which reads like a server fault rather than a missing
+  // parameter and cost a while to work out.
+  const res = await fetch(`${BASE}/api/v1/typed_custom_fields/${t.field.id}`, {
+    method: 'PUT',
+    headers: h,
+    body: JSON.stringify({ name: t.field.name, type: t.field.type, text_field_max_length: t.min }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    console.log(`  FAILED to widen "${t.field.name}" -> HTTP ${res.status} ${body.slice(0, 160)}`);
+    continue;
+  }
+  let now = null;
+  try {
+    now = (JSON.parse(body).typed_custom_field ?? JSON.parse(body)).text_field_max_length ?? null;
+  } catch {
+    // Applied either way; only the echo is unavailable.
+  }
+  console.log(`  widened "${t.field.name}" ${t.field.maxLength} -> ${now ?? t.min}`);
+}
+
+if (missing.length === 0) process.exit(0);
 
 console.log(`\nCreating ${missing.length} field(s):`);
 let made = 0;

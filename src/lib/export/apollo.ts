@@ -76,6 +76,18 @@ interface ApolloContact {
   name?: string | null;
 }
 
+/**
+ * Apollo's ceiling on the NATIVE contact title, established by bisection: 100
+ * characters store fine, 101 stores null. It is not documented and not reported
+ * in any metadata, unlike the custom fields' `text_field_max_length`.
+ */
+export const NATIVE_TITLE_MAX = 100;
+
+/** Shortens to fit, marking that it was shortened. */
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
 /** Splits a name into the two fields Apollo wants. */
 function splitName(contact: ExportContact): { first: string | null; last: string | null } {
   if (contact.firstName || contact.lastName) return { first: contact.firstName, last: contact.lastName };
@@ -88,22 +100,27 @@ function splitName(contact: ExportContact): { first: string | null; last: string
 /**
  * The create payload.
  *
- * `owner_id` and `label_names` are deliberately NOT here. Both are accepted by
- * `bulk_create` and both are ignored: contacts came back owned by the API key's
- * user rather than the BDR, `label_ids` came back empty, and the per-BDR list was
- * never created. They are applied afterwards by `applyOwnerAndList`, which is a
- * separate call that actually takes effect.
+ * `owner_id`, `label_names` and `direct_phone` are deliberately NOT here. All
+ * three are accepted by `bulk_create` and all three are ignored: contacts came
+ * back owned by the API key's user rather than the BDR, `label_ids` came back
+ * empty, the per-BDR list was never created, and the phone never appeared. They
+ * are applied afterwards by `applyContactDetail`, a separate call that does take
+ * effect.
  */
-function toApolloPayload(c: ExportContact): Record<string, unknown> {
+export function toApolloPayload(c: ExportContact): Record<string, unknown> {
   const { first, last } = splitName(c);
   return {
     first_name: first,
     last_name: last,
     email: c.email,
-    title: c.title,
+    // Apollo's native title caps at 100 characters and DROPS the value entirely
+    // past it rather than clipping — a 206-character title arrived as null, so
+    // the contact had no title at all. Clipping here trades a shortened title
+    // for no title. The untruncated version still travels in the custom Job
+    // Title field and in the record brief.
+    title: c.title ? clip(c.title, NATIVE_TITLE_MAX) : c.title,
     organization_name: c.organizationName,
     website_url: c.website,
-    ...(c.phone ? { direct_phone: c.phone } : {}),
     ...(c.linkedinUrl ? { linkedin_url: c.linkedinUrl } : {}),
     // An explicit account id beats the name-and-website guess Apollo would
     // otherwise make.
@@ -163,24 +180,46 @@ export async function ensureLabelId(name: string, apiKey: string): Promise<strin
 }
 
 /**
- * Puts the BDR's name and their list on a contact that already exists.
+ * Puts the owner, the list and the phone on a contact that already exists.
  *
- * A second call per contact is the cost of these landing at all. It is
- * best-effort by design: the contact is already in Apollo, so a failure here
- * means an unowned or unfiled contact, not a lost one — and the count comes back
- * so the caller can say so rather than imply success.
+ * A second call per contact is the cost of any of these landing at all. All three
+ * are silently discarded by `bulk_create` and all three work here.
+ *
+ * The phone is the least obvious of them. `direct_phone` is write-only: Apollo
+ * accepts it and files the number into the `phone_numbers[]` array, and reading
+ * `direct_phone` back always returns null — which is why this looked for a long
+ * time like the phone was not being stored at all. It was not being stored,
+ * because `bulk_create` ignores the field; but the place to verify it is
+ * `phone_numbers`, not `direct_phone`.
+ *
+ * `direct_phone` rather than `phone_numbers: [...]` deliberately: assigning the
+ * array REPLACES it, which would delete the organisation number Apollo enriched
+ * on its own. Appending keeps both.
+ *
+ * Best-effort by design: the contact is already in Apollo, so a failure here
+ * means an unowned, unfiled or phoneless contact, not a lost one — and the count
+ * comes back so the caller can say so rather than imply success.
  */
-async function applyOwnerAndList(
+/**
+ * What the follow-up write carries. Separated from the call so the decision of
+ * which field belongs in which request is testable without a network or a key —
+ * that split is the whole fix, and it is not visible from either call alone.
+ */
+export function buildDetailPatch(contact: ExportContact, labelId: string | null): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (contact.ownerId) patch.owner_id = contact.ownerId;
+  if (contact.phone) patch.direct_phone = contact.phone;
+  if (labelId) patch.label_ids = [labelId];
+  return patch;
+}
+
+async function applyContactDetail(
   contact: ExportContact,
   apolloContactId: string,
   apiKey: string
 ): Promise<{ ok: boolean; error?: string }> {
-  const patch: Record<string, unknown> = {};
-  if (contact.ownerId) patch.owner_id = contact.ownerId;
-  if (contact.label) {
-    const labelId = await ensureLabelId(contact.label, apiKey);
-    if (labelId) patch.label_ids = [labelId];
-  }
+  const labelId = contact.label ? await ensureLabelId(contact.label, apiKey) : null;
+  const patch = buildDetailPatch(contact, labelId);
   if (Object.keys(patch).length === 0) return { ok: true };
 
   try {
@@ -283,7 +322,7 @@ export async function exportBatch(
     let enrichFailed = 0;
     for (const [i, r] of results.entries()) {
       if (r.outcome === 'failed' || !r.apolloContactId) continue;
-      const applied = await applyOwnerAndList(contacts[i], r.apolloContactId, apiKey);
+      const applied = await applyContactDetail(contacts[i], r.apolloContactId, apiKey);
       if (applied.ok) enriched += 1;
       else {
         enrichFailed += 1;
