@@ -189,18 +189,90 @@ export async function POST(request: NextRequest) {
   });
 
   if (rows.length === 0) {
-    // Says whose list was empty. Without the name, a targeted run that found
-    // nothing is indistinguishable from the whole book being exhausted.
+    /**
+     * Say WHICH reason applied, not which reasons exist.
+     *
+     * This used to list every gate — owner, email, do-not-contact, already sent —
+     * and leave the reader to work out which one had bitten. Asked of a real
+     * roster it took a database session to answer: 22 of that person's 29 leads
+     * were already in Apollo and the other 7 had no contact at all, so the export
+     * was behaving perfectly and the message could not say so.
+     *
+     * Counted, not enumerated: this runs when there is nothing to send, so a
+     * handful of head-only counts costs nothing and turns an ambiguous sentence
+     * into a diagnosis.
+     */
     const scope = assigneeFilter ? ` for ${assigneeFilter.name}` : '';
+
+    /**
+     * Filters as data, not as a builder callback.
+     *
+     * Threading the PostgREST builder through a generic helper makes the compiler
+     * give up with "type instantiation is excessively deep", and the casts needed
+     * to silence that are worse than the duplication they save.
+     */
+    type Cond =
+      | { column: string; op: 'eq' | 'neq'; value: string | boolean }
+      | { column: string; op: 'isNull' | 'notNull' };
+    const countOf = async (conds: Cond[]): Promise<number> => {
+      let q = service.from('canonical_projects').select('id', { count: 'exact', head: true });
+      // Every count is over ASSIGNED leads, optionally narrowed to one person, so
+      // the denominator matches the run the caller actually asked for.
+      q = q.not('assignee_id', 'is', null);
+      if (assigneeFilter) q = q.eq('assignee_id', assigneeFilter.id);
+      for (const c of conds) {
+        if (c.op === 'eq') q = q.eq(c.column, c.value);
+        else if (c.op === 'neq') q = q.neq(c.column, c.value);
+        else if (c.op === 'isNull') q = q.is(c.column, null);
+        else q = q.not(c.column, 'is', null);
+      }
+      const { count } = await q;
+      return count ?? 0;
+    };
+
+    const UNSENT: Cond = { column: 'apollo_exported_at', op: 'isNull' };
+    const [assigned, alreadySent, noEmail, blocked, unverified] = await Promise.all([
+      countOf([]),
+      countOf([{ column: 'apollo_exported_at', op: 'notNull' }]),
+      countOf([UNSENT, { column: 'contact_email', op: 'isNull' }]),
+      countOf([UNSENT, { column: 'do_not_contact', op: 'eq', value: true }]),
+      requireVerified
+        ? countOf([UNSENT, { column: 'contact_email', op: 'notNull' }, { column: 'email_verified', op: 'neq', value: true }])
+        : Promise.resolve(0),
+    ]);
+
+    const because: string[] = [];
+    if (alreadySent) because.push(`${alreadySent} already sent to Apollo`);
+    if (noEmail) because.push(`${noEmail} with no email address`);
+    if (unverified) because.push(`${unverified} whose email is not verified`);
+    if (blocked) because.push(`${blocked} flagged do-not-contact`);
+    // Named, because "held back at quota" is the one reason that fixes itself
+    // tomorrow and the one reason nothing else on the page surfaces.
+    if (overQuota.length) because.push(`held back at daily quota: ${overQuota.join(', ')}`);
+
+    const diagnosis =
+      assigned === 0
+        ? ' Nobody is assigned any leads at all — run assignment first.'
+        : because.length
+          ? ` Of ${assigned} assigned: ${because.join(', ')}.`
+          : '';
+
     return NextResponse.json({
       ok: true,
-      message: requireVerified
-        ? `Nothing eligible${scope} — leads need an owner, a VERIFIED email, no do-not-contact flag, and must not have been sent already. Turn off "Require a validated phone or email" in Settings to export unverified addresses.`
-        : `Nothing eligible${scope} — leads need an owner, an email address, no do-not-contact flag, and must not have been sent already.`,
+      message:
+        `Nothing eligible${scope}.${diagnosis}` +
+        (unverified && requireVerified
+          ? ' Turn off "Require a validated phone or email" in Settings to send unverified addresses.'
+          : '') +
+        (noEmail && !unverified && !alreadySent
+          ? ' The export cannot invent an address — those need enrichment to find a contact.'
+          : ''),
       requested: 0,
       created: 0,
       existing: 0,
       failed: 0,
+      // The same breakdown as data, so a caller does not have to parse prose.
+      blockedBy: { assigned, alreadySent, noEmail, unverified, doNotContact: blocked, atQuota: overQuota },
     });
   }
 
