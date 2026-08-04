@@ -146,8 +146,15 @@ export async function POST(request: NextRequest) {
       Which channel a given lead actually needs depends on its lane, and that is
       decided per row below. This only narrows to rows that have SOMETHING to
       reach a person by.
+
+      `additional_contacts` counts as something. Testing only the primary columns
+      excluded any lead whose committee is populated but whose primary contact is
+      empty, and the committee is where the people usually are: Brasfield & Gorrie
+      carries THIRTEEN named contacts with real addresses and a null primary, so
+      the export never fetched it at all. That is the single genuinely-contactable
+      lead in the current book, and it was invisible.
     */
-    .or('contact_email.not.is.null,contact_phone.not.is.null')
+    .or('contact_email.not.is.null,contact_phone.not.is.null,additional_contacts.neq.[]')
     .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED'])
     .order('priority_score', { ascending: false, nullsFirst: false })
     .limit(limit);
