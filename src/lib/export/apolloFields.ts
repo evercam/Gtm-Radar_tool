@@ -108,6 +108,20 @@ export const FIELD_MAP: { source: string; apolloName: string; describe: string }
   { source: 'qualify_contact', apolloName: 'Qualify Contact', describe: 'Why this person, and the opening hook' },
   { source: 'project_signal', apolloName: 'evercam_us_project_signal', describe: 'The signal that surfaced this record' },
   { source: 'contact_title', apolloName: 'Job Title', describe: 'Title as published' },
+  /**
+   * The whole record, rendered.
+   *
+   * The seven fields above are a summary; this is everything the tool holds —
+   * description, priority and why, location, timing, scale, the full committee,
+   * and the link back to the source. All of it was already in the database and
+   * none of it reached a rep, who had to come back to the tool for any question
+   * the summary did not answer.
+   *
+   * Its target does not exist in the workspace by default: this is a new field,
+   * and the export reports it as unmatched until somebody creates it and points
+   * this at it — which is exactly what the Settings mapping is for.
+   */
+  { source: 'record_brief', apolloName: 'Evercam Project Brief', describe: 'Everything the tool holds, as a briefing' },
 ];
 
 export interface MappedFields {

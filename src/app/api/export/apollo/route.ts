@@ -3,6 +3,7 @@ import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/
 import { checkPermission } from '@/lib/auth/session';
 import { getEnrichmentPolicy, getExportFieldPolicy } from '@/lib/policies';
 import { resolveFieldMap } from '@/lib/export/fieldPolicy';
+import { renderRecordBrief } from '@/lib/export/recordBrief';
 import { getRoster } from '@/lib/assignmentStore';
 import { findApolloUserId } from '@/lib/export/apolloUsers';
 import { mapCustomFields, projectSummary, qualifyAccount, qualifyContact } from '@/lib/export/apolloFields';
@@ -123,7 +124,11 @@ export async function POST(request: NextRequest) {
   let query = service
     .from('canonical_projects')
     .select(
-      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key'
+      // One literal, not a concatenation: PostgREST select strings are parsed as
+      // literal types, so building this from pieces collapses the row type to
+      // GenericStringError. Every column the brief renders is here — selecting
+      // only the summary ones made the brief omit whole sections silently.
+      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key, ref_code, description, building_type, project_url, estimated_value_currency, square_footage, number_of_floors, capacity_mw, technology_type, address_line1, city, state_province, is_remote_location, is_access_constrained, announced_date, construction_start_date, estimated_completion_date, bid_date, evercam_timing, priority_band, priority_reasons, committee_coverage, vertical, enriched_at'
     )
     .is('apollo_exported_at', null)
     // Ownership is assignee_id now — owner_user_id is null for everyone on the
@@ -330,6 +335,9 @@ export async function POST(request: NextRequest) {
           .join('\n'),
         project_signal: r.source_key as string,
         contact_title: person.title ?? (r.contact_title as string),
+        // The whole record. Rendered per person so the committee list can mark
+        // which member this contact is.
+        record_brief: renderRecordBrief(r as never, person.email),
       }, fieldMap);
 
       // Field-level problems are per-contact but almost always systemic, so they
