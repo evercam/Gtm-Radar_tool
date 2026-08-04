@@ -9,6 +9,11 @@
 import { getServiceSupabase } from '@/lib/supabase/server';
 import { DEFAULT_PRIORITY_CONFIG, mergePriorityConfig, type PriorityConfig } from '@/lib/priority';
 import { DEFAULT_ENRICHMENT_POLICY, mergeEnrichmentPolicy, type EnrichmentPolicy } from '@/lib/enrich/policy';
+import {
+  DEFAULT_EXPORT_FIELD_POLICY,
+  mergeExportFieldPolicy,
+  type ExportFieldPolicy,
+} from '@/lib/export/fieldPolicy';
 import { BUSINESS_UNITS } from '@/lib/semantics';
 
 /**
@@ -62,6 +67,17 @@ export function getScoringPolicy(): Promise<LoadedPolicy<PriorityConfig>> {
 /** Admin-parameterized enrichment policy (engines, batch caps, eligibility). */
 export function getEnrichmentPolicy(): Promise<LoadedPolicy<EnrichmentPolicy>> {
   return loadPolicy('enrichment_policy', mergeEnrichmentPolicy, DEFAULT_ENRICHMENT_POLICY);
+}
+
+/**
+ * Which Apollo custom field each exported field is written into.
+ *
+ * Configurable because two of the built-in defaults target account-level fields
+ * that a contact write silently discards, and only the workspace owner can say
+ * where that content should go instead.
+ */
+export function getExportFieldPolicy(): Promise<LoadedPolicy<ExportFieldPolicy>> {
+  return loadPolicy('export_field_policy', mergeExportFieldPolicy, DEFAULT_EXPORT_FIELD_POLICY);
 }
 
 /** A scoring config per business unit, plus the global default they inherit. */

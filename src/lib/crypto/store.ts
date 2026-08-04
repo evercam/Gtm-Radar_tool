@@ -81,6 +81,13 @@ export const APP_SECRETS = {
     envVar: 'GITHUB_TOKEN',
     required: false,
   },
+  cliq_webhook_url: {
+    label: 'Zoho Cliq bot — export notices',
+    description:
+      'Posts who got how many leads when an export finishes. Apollo never notifies on contact creation, so without this a run that sent nothing looks identical to one nobody triggered. Paste the bot’s Incoming Webhook URL including its zapikey; leave empty to send nothing.',
+    envVar: 'CLIQ_WEBHOOK_URL',
+    required: false,
+  },
   session_signing_key: {
     label: 'Session signing key',
     description:

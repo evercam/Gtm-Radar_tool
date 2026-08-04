@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { checkPermission } from '@/lib/auth/session';
-import { getEnrichmentPolicy } from '@/lib/policies';
+import { getEnrichmentPolicy, getExportFieldPolicy } from '@/lib/policies';
+import { resolveFieldMap } from '@/lib/export/fieldPolicy';
 import { getRoster } from '@/lib/assignmentStore';
 import { findApolloUserId } from '@/lib/export/apolloUsers';
 import { mapCustomFields, projectSummary, qualifyAccount, qualifyContact } from '@/lib/export/apolloFields';
-import { isQualifiedTitle } from '@/lib/personas';
+import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
+import { notifyExportFinished } from '@/lib/notify/cliq';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -34,7 +36,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, message: 'Supabase service key not configured.' }, { status: 200 });
   }
 
-  let body: { dryRun?: boolean; limit?: number; bu?: string; label?: string; trigger?: 'manual' | 'cron' } = {};
+  let body: {
+    dryRun?: boolean;
+    limit?: number;
+    bu?: string;
+    label?: string;
+    trigger?: 'manual' | 'cron';
+    /**
+     * Export one person's leads only — a roster id, or their name.
+     *
+     * A name is accepted because that is how anyone asks for this ("export
+     * Ronniel's leads"), and the roster is five people, not five thousand. It
+     * must resolve to exactly one active member: see the refusals below.
+     */
+    assignee?: string;
+  } = {};
   try {
     body = await request.json();
   } catch {
@@ -42,6 +58,10 @@ export async function POST(request: NextRequest) {
   }
 
   const { config: policy } = await getEnrichmentPolicy();
+  // Read once for the whole run, not once per contact: it is one document, and
+  // `mapCustomFields` is called for every member of every committee.
+  const { config: fieldPolicy } = await getExportFieldPolicy();
+  const fieldMap = resolveFieldMap(fieldPolicy);
   const service = getServiceSupabase();
   const startedAtMs = Date.now();
   const limit = Math.max(1, Math.min(1000, body.limit ?? policy.apolloBatchSize ?? APOLLO_BATCH_LIMIT));
@@ -54,6 +74,51 @@ export async function POST(request: NextRequest) {
   // `email_validation_source` records how it was checked, so the receiving end
   // can tell a confirmed address from an unconfirmed one.
   const requireVerified = policy.requireChannel;
+
+  /**
+   * The roster, read before the query rather than after it, because it now has
+   * two jobs: spending each person's daily quota, and resolving `body.assignee`
+   * into the id the query filters on.
+   */
+  const { data: rosterRows } = await service.from('assignees').select('id, name, email, daily_lead_quota').eq('is_active', true);
+  const activeRoster = (rosterRows ?? []) as { id: string; name: string; email: string; daily_lead_quota: number | null }[];
+
+  /**
+   * Resolve one person, or refuse.
+   *
+   * The refusal matters more than the match. If an unrecognised name fell
+   * through to an unfiltered query, "export to Ronniel" would send everybody's
+   * leads to Apollo and archive them — irreversible from here, and reported as a
+   * success. So an `assignee` that does not resolve to exactly one active member
+   * stops the run and names the alternatives.
+   */
+  let assigneeFilter: { id: string; name: string } | null = null;
+  if (body.assignee?.trim()) {
+    const needle = body.assignee.trim().toLowerCase();
+    const matches = activeRoster.filter(
+      (a) =>
+        a.id === body.assignee ||
+        a.email?.toLowerCase() === needle ||
+        a.name?.toLowerCase() === needle ||
+        a.name?.toLowerCase().includes(needle)
+    );
+
+    if (matches.length === 0) {
+      return NextResponse.json({
+        ok: false,
+        message:
+          `No active roster member matches "${body.assignee}". ` +
+          `Active: ${activeRoster.map((a) => a.name).join(', ') || 'nobody'}.`,
+      });
+    }
+    if (matches.length > 1) {
+      return NextResponse.json({
+        ok: false,
+        message: `"${body.assignee}" matches ${matches.length} people: ${matches.map((a) => a.name).join(', ')}. Use a full name or the roster id.`,
+      });
+    }
+    assigneeFilter = { id: matches[0].id, name: matches[0].name };
+  }
 
   let query = service
     .from('canonical_projects')
@@ -73,6 +138,7 @@ export async function POST(request: NextRequest) {
 
   if (requireVerified) query = query.eq('email_verified', true);
   if (body.bu) query = query.eq('bu', body.bu);
+  if (assigneeFilter) query = query.eq('assignee_id', assigneeFilter.id);
 
   const { data, error } = await query;
   if (error) {
@@ -94,13 +160,7 @@ export async function POST(request: NextRequest) {
    * priority order within a person, so trimming to quota drops their weakest,
    * not somebody else's strongest.
    */
-  const { data: rosterRows } = await service.from('assignees').select('id, name, daily_lead_quota').eq('is_active', true);
-  const quotaOf = new Map(
-    (rosterRows ?? []).map((r) => {
-      const row = r as { id: string; daily_lead_quota: number | null };
-      return [row.id, row.daily_lead_quota ?? 0];
-    })
-  );
+  const quotaOf = new Map(activeRoster.map((r) => [r.id, r.daily_lead_quota ?? 0]));
 
   const takenPerAssignee = new Map<string, number>();
   const overQuota: string[] = [];
@@ -115,7 +175,7 @@ export async function POST(request: NextRequest) {
     }
     const taken = takenPerAssignee.get(owner) ?? 0;
     if (taken >= quota) {
-      const name = String((rosterRows ?? []).find((x) => (x as { id: string }).id === owner)?.['name'] ?? owner);
+      const name = activeRoster.find((x) => x.id === owner)?.name ?? owner;
       if (!overQuota.includes(name)) overQuota.push(name);
       return false;
     }
@@ -124,11 +184,14 @@ export async function POST(request: NextRequest) {
   });
 
   if (rows.length === 0) {
+    // Says whose list was empty. Without the name, a targeted run that found
+    // nothing is indistinguishable from the whole book being exhausted.
+    const scope = assigneeFilter ? ` for ${assigneeFilter.name}` : '';
     return NextResponse.json({
       ok: true,
       message: requireVerified
-        ? 'Nothing eligible — leads need an owner, a VERIFIED email, no do-not-contact flag, and must not have been sent already. Turn off "Require a validated phone or email" in Settings to export unverified addresses.'
-        : 'Nothing eligible — leads need an owner, an email address, no do-not-contact flag, and must not have been sent already.',
+        ? `Nothing eligible${scope} — leads need an owner, a VERIFIED email, no do-not-contact flag, and must not have been sent already. Turn off "Require a validated phone or email" in Settings to export unverified addresses.`
+        : `Nothing eligible${scope} — leads need an owner, an email address, no do-not-contact flag, and must not have been sent already.`,
       requested: 0,
       created: 0,
       existing: 0,
@@ -158,21 +221,39 @@ export async function POST(request: NextRequest) {
   }
 
   const contacts: ExportContact[] = [];
-  /** Titles too junior or unrelated to belong on a BDR list. */
-  const skipped: { name: string; title: string | null; reason: string }[] = [];
+  /**
+   * Contacts whose title does not match the buying-role guide.
+   *
+   * These used to be dropped, which is the wrong trade for a contact we have
+   * already paid Apollo to reveal. The persona guide is a description of who is
+   * usually worth calling, not a fact about who can be called — and it does not
+   * know every title in the industry. Held against a real list it removed the
+   * ONLY contact on two of Ronniel's leads, on the strength of "Section Manager"
+   * not being one of the four manager phrases it happens to enumerate. A rep
+   * looking at that lead saw nothing at all, and nothing said why.
+   *
+   * So an unrecognised title is now a flag, not a gate: the contact travels, and
+   * it travels marked — the same trade already made for unverified emails a few
+   * lines above. The rep decides; the tool tells them what it thinks.
+   */
+  const unqualified: { name: string; title: string | null; reason: string }[] = [];
+
+  /**
+   * What happened to the custom fields, gathered across the whole batch.
+   *
+   * Apollo accepts a field it will not store and answers 200, so the only signal
+   * that `Qualify Account` never arrives is this report. Deduplicated by name
+   * because these are properties of the workspace, not of one contact.
+   */
+  const fieldIssues = {
+    unmatched: new Set<string>(),
+    duplicated: new Set<string>(),
+    unsupported: new Map<string, string>(),
+    truncated: new Map<string, { name: string; from: number; to: number }>(),
+  };
 
   for (const r of rows) {
     const owner = r.assignee_id ? byAssignee.get(r.assignee_id as string) : undefined;
-
-    const custom = await mapCustomFields({
-      canonical_name: r.canonical_name as string,
-      project_summary: projectSummary(r as never),
-      call_prep_summary: r.call_prep_summary as string,
-      qualify_account: qualifyAccount(r as never),
-      qualify_contact: qualifyContact(r as never),
-      project_signal: r.source_key as string,
-      contact_title: r.contact_title as string,
-    });
 
     const shared = {
       leadId: r.id as string,
@@ -183,7 +264,6 @@ export async function POST(request: NextRequest) {
       ownerId: owner ? (apolloUserByRoster.get(owner.id) ?? null) : null,
       // One Apollo list per BDR — the "sheet per BDR" the handoff asks for.
       label: body.label ?? (owner ? `LDR — ${owner.name}` : null),
-      customFields: custom.values,
       firstName: null,
       lastName: null,
     };
@@ -208,13 +288,65 @@ export async function POST(request: NextRequest) {
     ];
 
     for (const person of committee) {
+      // A nameless or address-less contact is still dropped: there is nothing to
+      // send, and no note can substitute for an email. Only the TITLE judgement
+      // became advisory.
       if (!person?.name || !person.email) continue;
-      if (!isQualifiedTitle(person.title)) {
-        skipped.push({ name: person.name, title: person.title ?? null, reason: 'title not qualified' });
-        continue;
+
+      const role = classifyTitle(person.title);
+      if (!role) {
+        unqualified.push({ name: person.name, title: person.title ?? null, reason: 'title not in the persona guide' });
       }
+
+      /**
+       * The custom fields, per person rather than per record.
+       *
+       * Two of them genuinely differ by person — the title, and the buying-role
+       * verdict written into `Qualify Contact` — so building them once per record
+       * put the primary contact's title on every member of the committee. The
+       * field definitions are cached for the process, so this costs no extra
+       * Apollo calls.
+       */
+      // This person's own buying role, not the record's. `contact_role` describes
+      // the primary contact, so passing it through put "Buying role: economic" on
+      // every committee member regardless of their title.
+      const isPrimary = person.email === r.contact_email;
+      const personRole = role ?? (isPrimary ? ((r.contact_role as string) ?? null) : null);
+
+      const custom = await mapCustomFields({
+        canonical_name: r.canonical_name as string,
+        project_summary: projectSummary(r as never),
+        call_prep_summary: r.call_prep_summary as string,
+        qualify_account: qualifyAccount(r as never),
+        // The verdict reaches the rep where they already look for "why this
+        // person". A flag nobody sees is the same as no flag.
+        qualify_contact: [
+          qualifyContact(r as never, personRole),
+          role
+            ? null
+            : `⚠ Title not recognised by the persona guide${person.title ? ` ("${person.title}")` : ' (no title on file)'} — confirm the role before calling.`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        project_signal: r.source_key as string,
+        contact_title: person.title ?? (r.contact_title as string),
+      }, fieldMap);
+
+      // Field-level problems are per-contact but almost always systemic, so they
+      // are collected once and reported rather than discarded. Silently dropping
+      // these is how `Qualify Account` was "sent" on every run and never landed.
+      for (const name of custom.unmatched) fieldIssues.unmatched.add(name);
+      for (const name of custom.duplicated) fieldIssues.duplicated.add(name);
+      for (const u of custom.unsupported) fieldIssues.unsupported.set(u.name, u.modality);
+      for (const t of custom.truncated) {
+        const prev = fieldIssues.truncated.get(t.name);
+        // Keep the worst offender, so the report shows the real overshoot.
+        if (!prev || t.from > prev.from) fieldIssues.truncated.set(t.name, t);
+      }
+
       contacts.push({
         ...shared,
+        customFields: custom.values,
         name: person.name,
         title: person.title ?? null,
         email: person.email,
@@ -224,13 +356,52 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  /**
+   * Flagged titles, stated in the message.
+   *
+   * Deliberately worded as "flagged", never "skipped" — the counts now mean
+   * opposite things, and reading one as the other would have someone chasing
+   * contacts that were in fact sent.
+   */
+  const flagCaveat = unqualified.length
+    ? ` ${unqualified.length} title${unqualified.length === 1 ? '' : 's'} flagged for review, not held back.`
+    : '';
+
+  /**
+   * The custom-field report, in the response body.
+   *
+   * Stated in the message too, because a field that cannot land changes what a
+   * rep sees on the contact, and nobody reads a key they were not told about.
+   */
+  const fieldReport = {
+    unmatched: [...fieldIssues.unmatched],
+    duplicated: [...fieldIssues.duplicated],
+    unsupported: [...fieldIssues.unsupported.entries()].map(([name, modality]) => ({ name, modality })),
+    truncated: [...fieldIssues.truncated.values()],
+  };
+  const fieldCaveat =
+    (fieldReport.unsupported.length
+      ? ` ${fieldReport.unsupported.length} field${fieldReport.unsupported.length === 1 ? '' : 's'} cannot be written on a contact (${fieldReport.unsupported
+          .map((u) => `${u.name} is ${u.modality}-level`)
+          .join('; ')}).`
+      : '') +
+    (fieldReport.truncated.length
+      ? ` Truncated to Apollo's limit: ${fieldReport.truncated.map((t) => `${t.name} ${t.from}→${t.to}`).join(', ')}.`
+      : '') +
+    (fieldReport.unmatched.length ? ` Not found in Apollo: ${fieldReport.unmatched.join(', ')}.` : '');
+
   if (body.dryRun) {
     return NextResponse.json({
       ok: true,
       dryRun: true,
-      message: `${contacts.length} contact${contacts.length === 1 ? '' : 's'} would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}`,
+      message:
+        `${contacts.length} contact${contacts.length === 1 ? '' : 's'}` +
+        (assigneeFilter ? ` for ${assigneeFilter.name}` : '') +
+        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${fieldCaveat}`,
+      assignee: assigneeFilter?.name ?? null,
       requested: contacts.length,
       batches: chunk(contacts).length,
+      fields: fieldReport,
       preview: contacts.slice(0, 10).map((c) => ({
         name: c.name,
         title: c.title,
@@ -239,10 +410,17 @@ export async function POST(request: NextRequest) {
         list: c.label,
         ownedInApollo: Boolean(c.ownerId),
         accountResolved: Boolean(c.accountId),
+        // So the preview shows which of these a rep should sanity-check.
+        titleFlagged: unqualified.some((u) => u.name === c.name && u.title === c.title),
       })),
-      // Named rather than counted: "12 skipped" is not actionable, a list is.
-      skipped: skipped.slice(0, 20),
-      skippedCount: skipped.length,
+      // Named rather than counted: "12 flagged" is not actionable, a list is.
+      // `skipped` is kept as a key for one release because the checklist and the
+      // cron report read it, but nothing is skipped for a title any more — these
+      // contacts were all included.
+      flagged: unqualified.slice(0, 20),
+      flaggedCount: unqualified.length,
+      skipped: [],
+      skippedCount: 0,
     });
   }
 
@@ -255,7 +433,15 @@ export async function POST(request: NextRequest) {
         destination: 'apollo',
         trigger: body.trigger ?? 'manual',
         triggered_by: auth.user.id,
-        filters: { bu: body.bu ?? null, limit, label: body.label ?? null },
+        // The assignee belongs in the audit trail: "who was this run for" is the
+        // first question asked of a targeted export after the fact.
+        filters: {
+          bu: body.bu ?? null,
+          limit,
+          label: body.label ?? null,
+          assignee: assigneeFilter?.name ?? null,
+          assigneeId: assigneeFilter?.id ?? null,
+        },
         requested: contacts.length,
         status: 'running',
       })
@@ -269,11 +455,17 @@ export async function POST(request: NextRequest) {
   let created = 0;
   let existing = 0;
   let failed = 0;
+  // Owner and list are a second call per contact, so they can fail on their own.
+  // Counted separately: an unowned contact is in Apollo, just not on a desk.
+  let enriched = 0;
+  let enrichFailed = 0;
   const allResults = [];
   const batches = chunk(contacts);
 
   for (const batch of batches) {
     const outcome = await exportBatchWithRetry(batch, { dedupe: true });
+    enriched += outcome.enriched ?? 0;
+    enrichFailed += outcome.enrichFailed ?? 0;
 
     for (const r of outcome.results) {
       if (r.outcome === 'created') created += 1;
@@ -313,7 +505,11 @@ export async function POST(request: NextRequest) {
           failed,
           batches: batches.length,
           results: allResults.slice(0, 500),
-          status: failed === contacts.length ? 'failed' : 'completed',
+          // `failed === contacts.length` alone called a run with nothing to send
+          // a failure, because 0 === 0. Two cron runs sit in the history marked
+          // failed with zero failures for exactly that reason. A run only failed
+          // if something actually did.
+          status: failed > 0 && failed === contacts.length ? 'failed' : 'completed',
           finished_at: new Date().toISOString(),
           duration_ms: durationMs,
         })
@@ -323,10 +519,40 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  /**
+   * Tell the team, because Apollo will not.
+   *
+   * Deliberately after the run row is closed: the export is durable by this
+   * point, so a chat outage costs a notice, never a record. The result is
+   * reported in the response rather than acted on — an unsent notice is worth
+   * knowing about, but it is not a failed export.
+   */
+  const perAssignee = [...takenPerAssignee.entries()].map(([id, count]) => ({
+    name: activeRoster.find((r) => r.id === id)?.name ?? id,
+    count,
+  }));
+  const notice = await notifyExportFinished({
+    requested: contacts.length,
+    created,
+    existing,
+    failed,
+    perAssignee,
+    atQuota: overQuota,
+    flagged: unqualified.length,
+    ownerOrListFailed: enrichFailed,
+    trigger: body.trigger ?? 'manual',
+    assignee: assigneeFilter?.name ?? null,
+    durationMs,
+  });
+
   return NextResponse.json({
-    ok: failed < contacts.length,
+    // Same guard as the run row: an empty send is not a failed one.
+    ok: failed === 0 || failed < contacts.length,
     message:
-      `Sent ${contacts.length} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}` +
+      `Sent ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${fieldCaveat}` +
+      // Owner and list are what make a contact somebody's to call. If they did
+      // not stick, the export "succeeded" into an unassigned pile.
+      (enrichFailed ? ` ${enrichFailed} could not be assigned an owner or list.` : '') +
       // Per-person trimming, said out loud. Otherwise a run that stopped at
       // somebody's quota looks identical to one that ran out of leads, and the
       // difference decides whether you raise a quota or enrich more.
@@ -340,6 +566,13 @@ export async function POST(request: NextRequest) {
     created,
     existing,
     failed,
+    owned: enriched,
+    ownerOrListFailed: enrichFailed,
+    fields: fieldReport,
+    // 'not-configured' until someone pastes a Cliq URL in Settings — stated so a
+    // silent chat is a visible fact rather than a mystery.
+    notified: notice.sent,
+    notifyReason: notice.sent ? null : notice.reason,
     batches: batches.length,
     durationMs,
   });

@@ -5,11 +5,15 @@ import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import CredentialForm from '@/components/settings/CredentialForm';
 import TestConnectionButton from '@/components/settings/TestConnectionButton';
 import SecretsPanel from '@/components/settings/SecretsPanel';
+import ApolloFieldMapPanel from '@/components/settings/ApolloFieldMapPanel';
 import ConfigExport from '@/components/settings/ConfigExport';
 import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 import { getSecretStatuses } from '@/lib/crypto/store';
 import { activeKeyId } from '@/lib/crypto/secrets';
 import { requirePermission } from '@/lib/auth/session';
+import { loadCustomFields, FIELD_MAP } from '@/lib/export/apolloFields';
+import { getExportFieldPolicy } from '@/lib/policies';
+import { DEFAULT_EXPORT_FIELD_POLICY } from '@/lib/export/fieldPolicy';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +38,40 @@ export default async function SettingsPage() {
   // Only keyed sources appear: the keyless ones (open gov/EU data, RSS, GEM
   // uploads) have nothing to configure.
   const keyedSources = SOURCE_CATALOG.filter((s) => s.auth === 'keyed');
+
+  /*
+    The Apollo field mapping, resolved against what the workspace actually has.
+
+    The choices have to come from Apollo rather than a hardcoded list, because the
+    whole failure this fixes is a mapping that no longer matches the workspace. Only
+    contact-modality free-text fields are offered: a picklist rejects the entire
+    contact, and an account-level field accepts the value and silently drops it.
+  */
+  const WRITABLE_TYPES = new Set(['string', 'textarea', 'text']);
+  const allFields = await loadCustomFields();
+  const fieldOptions = allFields
+    .filter((f) => f.modality === 'contact' && WRITABLE_TYPES.has(f.type))
+    .map((f) => ({ name: f.name, type: f.type, maxLength: f.maxLength }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  // Deduplicated by name: this workspace has two fields called "Project Name" and
+  // a dropdown with the same label twice is a coin toss, not a choice.
+  const uniqueFieldOptions = fieldOptions.filter((o, i) => fieldOptions.findIndex((x) => x.name === o.name) === i);
+
+  const { config: savedFieldMap, isDefault: fieldMapIsDefault } = await getExportFieldPolicy();
+  const fieldSources = FIELD_MAP.map((f) => {
+    const current = savedFieldMap[f.source] ?? null;
+    const def = allFields.find((d) => d.name === current && d.modality === 'contact' && WRITABLE_TYPES.has(d.type));
+    // Named only when the target exists but belongs to another modality — that is
+    // the case Apollo accepts and discards, and the reason this panel exists.
+    const elsewhere = current && !def ? allFields.find((d) => d.name === current) : undefined;
+    return {
+      source: f.source,
+      describe: f.describe,
+      defaultTarget: DEFAULT_EXPORT_FIELD_POLICY[f.source] ?? null,
+      current,
+      brokenModality: elsewhere && elsewhere.modality !== 'contact' ? elsewhere.modality : null,
+    };
+  });
 
   let credentials: Awaited<ReturnType<typeof getMaskedCredentials>> = {};
   let loadError: string | null = null;
@@ -78,6 +116,27 @@ export default async function SettingsPage() {
         </p>
         <div className="mt-4">
           <SecretsPanel statuses={secrets.statuses} keyId={activeKeyId()} tableMissing={secrets.tableMissing} />
+        </div>
+      </section>
+
+      {/*
+        Directly after the keys, because it depends on one: the choices are read
+        from Apollo with the key above, and the panel says so when it cannot.
+      */}
+      <section className="mt-12">
+        <h2 className="text-foreground text-lg font-semibold">Apollo export fields</h2>
+        <p className="text-muted mt-1 max-w-3xl text-sm">
+          Apollo has no field for a construction project, so everything that makes a lead worth calling is written into
+          custom fields. Apollo accepts a field it will not store and answers 200, so a mapping that stops working is
+          silent — this is where it gets corrected without a deploy.
+        </p>
+        <div className="mt-4">
+          <ApolloFieldMapPanel
+            sources={fieldSources}
+            options={uniqueFieldOptions}
+            isDefault={fieldMapIsDefault}
+            apolloConfigured={allFields.length > 0}
+          />
         </div>
       </section>
 

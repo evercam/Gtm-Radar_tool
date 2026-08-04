@@ -10,6 +10,7 @@ import {
   Users,
   Satellite,
   Settings2,
+  History,
   type LucideIcon,
 } from 'lucide-react';
 import type { Permission } from '@/lib/auth/roles';
@@ -101,6 +102,9 @@ export const CONTROL_TABS: NavItem[] = [
   { label: 'Enrichment', href: '/control/enrichment', icon: Sparkles, permission: 'enrichment.run' },
   { label: 'Routing', href: '/control/routing', icon: Route, permission: 'routing.edit' },
   { label: 'Team & Users', href: '/control/team', icon: Users, permission: 'leads.reassign' },
+  // Last, because it is the only tab you read rather than operate — and the one
+  // you open after a send, not before.
+  { label: 'Export History', href: '/control/exports', icon: History, permission: 'leads.export' },
 ];
 
 /** Tabs across the top of every Administration page. */

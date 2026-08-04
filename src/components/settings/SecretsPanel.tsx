@@ -11,6 +11,16 @@ import { useToast } from '@/components/ui/Toast';
  * key, so an input left blank means "leave it unchanged" and the panel shows
  * only a last-4 hint.
  */
+
+/**
+ * Secrets that can be proven correct on the spot, and so get a Test button.
+ *
+ * Deliberately a small set. An API key can only be tested by spending a call on
+ * it, so those stay unverified until first use; a chat webhook either delivers
+ * now or never will, and the answer is worth having before an export depends on
+ * it.
+ */
+const TESTABLE = new Set<string>(['cliq_webhook_url']);
 export default function SecretsPanel({
   statuses,
   keyId,
@@ -39,6 +49,32 @@ export default function SecretsPanel({
         setValues((v) => ({ ...v, [String(payload.key ?? '')]: '' }));
         router.refresh();
       }
+    } catch (e) {
+      toast.show(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Sends a test message for a secret that can be proven rather than assumed.
+   *
+   * Tests the value in the box when there is one, falling back to what is stored.
+   * A webhook is the one key here whose correctness is knowable before use — an
+   * API key fails on the next real call, but a chat URL either delivers now or
+   * never will, and finding out after an export is finding out too late.
+   */
+  async function sendTest(key: string) {
+    setBusy(`test:${key}`);
+    try {
+      const typed = (values[key] ?? '').trim();
+      const res = await fetch('/api/notify/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(typed ? { url: typed } : {}),
+      });
+      const json = await res.json();
+      toast.show(json.message, json.ok ? 'success' : 'error');
     } catch (e) {
       toast.show(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -120,6 +156,26 @@ export default function SecretsPanel({
                 >
                   {busy === s.key ? 'Saving…' : 'Save'}
                 </Button>
+                {/*
+                  Only for the webhook, and only once there is something to test —
+                  either pasted or already saved. A Test button that can only
+                  report "nothing configured" is a button that teaches you not to
+                  press it.
+                */}
+                {TESTABLE.has(s.key) && (s.isSet || (values[s.key] ?? '').trim()) ? (
+                  <Button
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() => sendTest(s.key)}
+                    title={
+                      (values[s.key] ?? '').trim()
+                        ? 'Send a test message to the URL in the box, without saving it'
+                        : 'Send a test message using the saved URL'
+                    }
+                  >
+                    {busy === `test:${s.key}` ? 'Sending…' : 'Test'}
+                  </Button>
+                ) : null}
                 {s.origin === 'database' ? (
                   <Button
                     size="sm"

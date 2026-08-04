@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { validatePriorityConfig, DEFAULT_PRIORITY_CONFIG } from '@/lib/priority';
 import { validateEnrichmentPolicy, DEFAULT_ENRICHMENT_POLICY } from '@/lib/enrich/policy';
+import { validateExportFieldPolicy, DEFAULT_EXPORT_FIELD_POLICY } from '@/lib/export/fieldPolicy';
 import { checkPermission } from '@/lib/auth/session';
 import type { Permission } from '@/lib/auth/roles';
 
@@ -27,6 +28,8 @@ const POLICIES = {
     },
     defaults: DEFAULT_PRIORITY_CONFIG as unknown,
     label: 'Scoring parameters',
+    applyHint: 'Re-run "Score & route all" on /routing to apply it to existing records.',
+    migration: 'priority_and_enrichment_runs',
     permission: 'scoring.edit' as Permission,
   },
   enrichment: {
@@ -37,6 +40,23 @@ const POLICIES = {
     },
     defaults: DEFAULT_ENRICHMENT_POLICY as unknown,
     label: 'Enrichment policy',
+    applyHint: 'It takes effect on the next enrichment run.',
+    migration: 'priority_and_enrichment_runs',
+    permission: 'settings.manage' as Permission,
+  },
+  'export-fields': {
+    table: 'export_field_policy',
+    validate: (input: unknown) => {
+      const v = validateExportFieldPolicy(input);
+      return v.ok ? { ok: true as const, value: v.policy } : { ok: false as const, error: v.error };
+    },
+    defaults: DEFAULT_EXPORT_FIELD_POLICY as unknown,
+    label: 'Apollo field mapping',
+    // Nothing to rebuild: the mapping is read per contact as the payload is
+    // assembled, so the next export uses it and already-sent contacts are
+    // untouched.
+    applyHint: 'The next export uses it. Contacts already in Apollo are not rewritten.',
+    migration: 'export_field_policy',
     permission: 'settings.manage' as Permission,
   },
 } as const;
@@ -69,14 +89,20 @@ export async function POST(request: NextRequest, context: { params: Promise<{ na
     .from(policy.table)
     .upsert({ id: 'default', config: validated.value }, { onConflict: 'id' });
   if (error) {
+    // Names THIS policy's migration. A shared hint pointed everyone at
+    // priority_and_enrichment_runs, which does not create every policy table —
+    // so the one instruction given was the one that could not help.
     const hint = /schema cache|does not exist/i.test(error.message)
-      ? ' Run the priority_and_enrichment_runs migration first.'
+      ? ` Run the ${policy.migration} migration first.`
       : '';
     return NextResponse.json({ ok: false, message: `Could not save: ${error.message}.${hint}` }, { status: 200 });
   }
 
   return NextResponse.json({
     ok: true,
-    message: `${policy.label} saved. Re-run "Score & route all" on /routing to apply it to existing records.`,
+    // Per-policy, because the next step genuinely differs. Telling someone to
+    // re-score after changing a field mapping sends them to rebuild 20,000 rows
+    // for a change that only affects the next export.
+    message: `${policy.label} saved. ${policy.applyHint}`,
   });
 }

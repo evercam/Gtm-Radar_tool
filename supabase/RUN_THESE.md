@@ -19,6 +19,25 @@ always safe.
 | 9 | `20260726180000_bootstrap_first_admin.sql` | makes the first signup an admin |
 | 10 | `20260802100000_apollo_reveal_cache.sql` | `apollo_reveal_cache` — one Apollo credit per person, not per record |
 | 11 | `20260802110000_account_research.sql` | `researched_at` + `research_summary` on `account_enrichment` — research a company once, not once per project |
+| 12 | `20260803100000_repair_stale_enriched_status.sql` | repairs the status of records enriched while the transition was broken |
+| 13 | `20260804090000_export_field_policy.sql` | `export_field_policy` — makes the Apollo custom-field mapping editable from Settings |
+
+**File 13 is what stops the export losing content silently.** The mapping from
+our fields to Apollo custom fields was hardcoded, matched by name, and two of
+its seven entries no longer resolve to anything a contact write can land in:
+`Qualify Account` and `evercam_us_project_signal` are modality `account`, so
+Apollo accepts them on a contact and discards them. The ICP score, trigger
+event and pain point were therefore "sent" on every export and never arrived.
+Until this runs, Settings still renders the mapping and still reports which
+fields cannot receive a write — it just cannot save a correction, because there
+is nowhere to put it. The export keeps using the built-in defaults.
+
+**File 12 changes data, not schema — the only one here that does.** It moves 380
+records that carry `enriched_at` while still reading RAW or Queued onto the
+status their own timestamps prove they reached. Until it runs, those leads look
+like unenriched stock to the queue, which will offer to pay for them a second
+time. It skips anything deliberately re-queued after enrichment (`queued_at`
+later than `enriched_at`), so a real staleness refresh is never cancelled.
 
 **File 11, likewise optional and likewise pays for itself.** Without it the
 brief job still works; it simply cannot tell that a company has already been

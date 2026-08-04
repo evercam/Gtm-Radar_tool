@@ -378,6 +378,10 @@ export async function getRoutingPreview(
       const { data, error } = await supabase
         .from('canonical_projects')
         .select(SCORING_COLUMNS)
+        // Ordered for the same reason as the scoring pass above: an unordered
+        // `.range()` walk repeats rows and skips others, which here would make
+        // the lane and band preview disagree with what the run actually does.
+        .order('id', { ascending: true })
         .range(from, from + 999);
       if (error) return empty;
       for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
@@ -451,8 +455,10 @@ export interface RecordRow {
   call_prep_summary: string | null;
   owner_group_key: string | null;
   created_at: string;
+  apollo_exported_at: string | null;
+  apollo_export_status: string | null;
 }
-export type RecordSort = 'priority' | 'newest' | 'value';
+export type RecordSort = 'priority' | 'newest' | 'value' | 'exported';
 export interface RecordsQuery {
   page?: number;
   pageSize?: number;
@@ -497,7 +503,13 @@ const RECORD_COLUMNS_CORE =
   // the list disagreeing with the record drawer, which reads the row entire.
   // All five are base columns, present in every migration state, so they
   // belong in the CORE tier rather than a higher one.
-  'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
+  'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date,' +
+  // The archive flag, also CORE because the archived filter below reads it at
+  // every tier — a database missing the apollo_export migration could already
+  // not run this query, so carrying the column costs no robustness. The list
+  // needs the value and not just the predicate: a row that survives
+  // `includeExported` has to be able to say when it was handed over.
+  'apollo_exported_at,apollo_export_status';
 const RECORD_COLUMNS_ROUTING = `${RECORD_COLUMNS_CORE},route,stage`;
 const RECORD_COLUMNS_FULL =
   `${RECORD_COLUMNS_ROUTING},priority_score,priority_band,priority_reasons,status,` +
@@ -554,6 +566,13 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     // Priority-first by default — the whole point of scoring is that the top of
     // the list is the work queue. Unscored records sort last, not first.
     if (q.sort === 'value') query = query.order('estimated_value', { ascending: false, nullsFirst: false });
+    // Most recently handed over first, and never a null export date at the top:
+    // this sort exists to audit what was sent, so a page of unexported records
+    // above the newest handover would defeat the only reason to pick it.
+    else if (q.sort === 'exported')
+      query = query
+        .order('apollo_exported_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false });
     else if (q.sort === 'newest' || !hasPriority) query = query.order('created_at', { ascending: false });
     else
       query = query
@@ -586,6 +605,9 @@ export async function getSourceStats(): Promise<Record<string, SourceStat>> {
     const { data, error } = await supabase
       .from('canonical_projects')
       .select('source_key, population_percentage, created_at')
+      // Ordered, because an unordered `.range()` walk repeats and skips rows —
+      // here it would misreport how much each source has actually contributed.
+      .order('id', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) return {};
     for (const r of (data ?? []) as {
@@ -745,6 +767,9 @@ export async function getPipelineRollup(): Promise<PipelineRollupRow[]> {
     const { data, error } = await supabase
       .from('canonical_projects')
       .select('bu, vertical, contact_status')
+      // Ordered, because an unordered `.range()` walk repeats and skips rows —
+      // here it would overstate one BU's stock and understate another's.
+      .order('id', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) return from === 0 ? [] : Array.from(counts.values());
     for (const r of (data ?? []) as { bu: string; vertical: string; contact_status: string }[]) {
@@ -822,7 +847,13 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
   let untiered = 0;
   let columns = 'priority_band, route, stage, routed_at, source_completeness_tier';
   for (let from = 0; from < 1_000_000; from += 1000) {
-    const { data, error } = await supabase.from('canonical_projects').select(columns).range(from, from + 999);
+    // Ordered, because an unordered `.range()` walk repeats and skips rows —
+    // here it would miscount the band and routing totals on the dashboard.
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select(columns)
+      .order('id', { ascending: true })
+      .range(from, from + 999);
     if (error) {
       if (columns !== 'priority_band, source_completeness_tier' && /does not exist|schema cache|column/i.test(error.message)) {
         routingMissing = true;
@@ -881,6 +912,9 @@ export async function getPriorityRollup(): Promise<{ band: string; count: number
     const { data, error } = await supabase
       .from('canonical_projects')
       .select('priority_band')
+      // Ordered, because an unordered `.range()` walk repeats and skips rows —
+      // here it would misstate how much of the book has been scored at all.
+      .order('id', { ascending: true })
       .range(from, from + 999);
     if (error) break;
     for (const r of (data ?? []) as { priority_band: string | null }[]) {
@@ -1269,5 +1303,77 @@ export async function getEnrichedTodayCount(): Promise<number> {
     return count ?? 0;
   } catch {
     return 0;
+  }
+}
+
+// ============================================================================
+// export_runs
+// ============================================================================
+
+export interface ExportRunRow {
+  id: string;
+  destination: string;
+  trigger: string;
+  triggeredBy: string | null;
+  /** What the run was scoped to — assignee, BU, limit. */
+  filters: { assignee?: string | null; bu?: string | null; limit?: number | null; label?: string | null };
+  requested: number;
+  created: number;
+  existing: number;
+  failed: number;
+  batches: number;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+/**
+ * Export history, newest first.
+ *
+ * Ordered by `started_at`, which is the only chronological column here — `id` is
+ * a uuid, so ordering by it returns an arbitrary run and calls it the latest.
+ *
+ * The route has always written these rows; nothing read them, so "did the export
+ * run, and what did it send" could only be answered by re-running it. Apollo
+ * itself cannot answer it — it emits no notification on contact creation.
+ */
+export async function getExportRuns(limit = 50): Promise<{ rows: ExportRunRow[]; tableMissing: boolean }> {
+  try {
+    const service = getServiceSupabase();
+    const { data, error } = await service
+      .from('export_runs')
+      .select(
+        'id, destination, trigger, triggered_by, filters, requested, created, existing, failed, batches, status, started_at, finished_at, duration_ms, error'
+      )
+      .order('started_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      return { rows: [], tableMissing: /does not exist|schema cache|relation/i.test(error.message) };
+    }
+
+    const rows = ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string,
+      destination: (r.destination as string) ?? 'apollo',
+      trigger: (r.trigger as string) ?? 'manual',
+      triggeredBy: (r.triggered_by as string) ?? null,
+      filters: (r.filters as ExportRunRow['filters']) ?? {},
+      requested: (r.requested as number) ?? 0,
+      created: (r.created as number) ?? 0,
+      existing: (r.existing as number) ?? 0,
+      failed: (r.failed as number) ?? 0,
+      batches: (r.batches as number) ?? 0,
+      status: (r.status as string) ?? 'running',
+      startedAt: r.started_at as string,
+      finishedAt: (r.finished_at as string) ?? null,
+      durationMs: (r.duration_ms as number) ?? null,
+      error: (r.error as string) ?? null,
+    }));
+
+    return { rows, tableMissing: false };
+  } catch {
+    return { rows: [], tableMissing: true };
   }
 }

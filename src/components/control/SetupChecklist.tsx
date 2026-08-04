@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, Play } from 'lucide-react';
 import { Badge, Button, Card, CardHeader, Label, controlClass } from '@/components/ui';
+import { useToast } from '@/components/ui/Toast';
 
 type Channel = 'phone' | 'email' | 'both' | 'any' | 'none';
 
@@ -98,9 +99,12 @@ function whyRulesReachNobody(state: SetupState): string {
  */
 export default function SetupChecklist({ state }: { state: SetupState }) {
   const router = useRouter();
+  const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<{ step: string; ok: boolean; text: string }[]>([]);
   const [rules, setRules] = useState(state.channelRules);
+  /** Roster id to export for, or '' for everyone. See the picker below. */
+  const [exportAssignee, setExportAssignee] = useState('');
 
   const say = (step: string, ok: boolean, text: string) => setLog((l) => [{ step, ok, text }, ...l].slice(0, 8));
 
@@ -113,11 +117,23 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
         body: JSON.stringify(body),
       });
       const json = await res.json();
-      say(step, json.ok !== false, json.message ?? `HTTP ${res.status}`);
+      const ok = json.ok !== false;
+      const text = json.message ?? `HTTP ${res.status}`;
+      say(step, ok, text);
+      /*
+        The log below the checklist is only visible if you are looking at it, and
+        an export takes long enough that you have usually scrolled away or moved
+        to another tab. The toast is the part that reaches you — it is the only
+        in-app signal a send finished, since Apollo raises no notification of its
+        own.
+      */
+      toast.show(text, ok ? 'success' : 'error');
       router.refresh();
       return json;
     } catch (e) {
-      say(step, false, e instanceof Error ? e.message : String(e));
+      const text = e instanceof Error ? e.message : String(e);
+      say(step, false, text);
+      toast.show(text, 'error');
       return null;
     } finally {
       setBusy(null);
@@ -312,10 +328,36 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
                   */}
                   {step.id === 'export' ? (
                     <>
+                      {/*
+                        Who this run is for. Everyone by default, because that is
+                        the normal run; one person when a BDR needs their own
+                        sheet filled without waiting for the rest of the book.
+                        The selection is carried by BOTH buttons, so a dry run
+                        never previews a different set than the send.
+                      */}
+                      <select
+                        aria-label="Export for"
+                        className={controlClass}
+                        value={exportAssignee}
+                        disabled={busy !== null}
+                        onChange={(e) => setExportAssignee(e.target.value)}
+                      >
+                        <option value="">Everyone on the roster</option>
+                        {state.roster.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} only
+                          </option>
+                        ))}
+                      </select>
                       <Button
                         size="sm"
                         disabled={busy !== null}
-                        onClick={() => post('export', '/api/export/apollo', { dryRun: true })}
+                        onClick={() =>
+                          post('export', '/api/export/apollo', {
+                            dryRun: true,
+                            ...(exportAssignee ? { assignee: exportAssignee } : {}),
+                          })
+                        }
                       >
                         Dry run — see the payload
                       </Button>
@@ -323,11 +365,17 @@ export default function SetupChecklist({ state }: { state: SetupState }) {
                         size="sm"
                         variant="primary"
                         disabled={busy !== null}
-                        onClick={() => post('export', '/api/export/apollo', {})}
+                        onClick={() =>
+                          post('export', '/api/export/apollo', {
+                            ...(exportAssignee ? { assignee: exportAssignee } : {}),
+                          })
+                        }
                         className="flex items-center gap-1.5"
                       >
                         <Play size={11} strokeWidth={2.4} />
-                        Send to Apollo
+                        {exportAssignee
+                          ? `Send ${state.roster.find((p) => p.id === exportAssignee)?.name ?? 'their'} leads`
+                          : 'Send to Apollo'}
                       </Button>
                     </>
                   ) : null}
