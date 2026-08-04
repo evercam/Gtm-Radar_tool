@@ -128,15 +128,26 @@ export async function POST(request: NextRequest) {
       // literal types, so building this from pieces collapses the row type to
       // GenericStringError. Every column the brief renders is here — selecting
       // only the summary ones made the brief omit whole sections silently.
-      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key, ref_code, description, building_type, project_url, estimated_value_currency, square_footage, number_of_floors, capacity_mw, technology_type, address_line1, city, state_province, is_remote_location, is_access_constrained, announced_date, construction_start_date, estimated_completion_date, bid_date, evercam_timing, priority_band, priority_reasons, committee_coverage, vertical, enriched_at'
+      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key, ref_code, description, building_type, project_url, estimated_value_currency, square_footage, number_of_floors, capacity_mw, technology_type, address_line1, city, state_province, is_remote_location, is_access_constrained, announced_date, construction_start_date, estimated_completion_date, bid_date, evercam_timing, priority_band, priority_reasons, committee_coverage, vertical, enriched_at, route, stage'
     )
     .is('apollo_exported_at', null)
     // Ownership is assignee_id now — owner_user_id is null for everyone on the
     // roster without an app account, so this filter found nothing.
     .not('assignee_id', 'is', null)
     .eq('do_not_contact', false)
-    // An address is always required — there is nothing to export without one.
-    .not('contact_email', 'is', null)
+    /*
+      Either channel, not email only.
+
+      This used to demand `contact_email`, which silently overrode the
+      `channelRules` policy: with act_now set to 'phone', a lead carrying a phone
+      and no address was excluded here and the run reported "nothing eligible" —
+      the export enforcing a rule the configuration had already answered.
+
+      Which channel a given lead actually needs depends on its lane, and that is
+      decided per row below. This only narrows to rows that have SOMETHING to
+      reach a person by.
+    */
+    .or('contact_email.not.is.null,contact_phone.not.is.null')
     .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED'])
     .order('priority_score', { ascending: false, nullsFirst: false })
     .limit(limit);
@@ -316,6 +327,25 @@ export async function POST(request: NextRequest) {
   const unqualified: { name: string; title: string | null; reason: string }[] = [];
 
   /**
+   * Contacts their lane cannot reach.
+   *
+   * Counted and named rather than silently dropped, because "nothing eligible"
+   * with no reason is the failure this whole diagnosis chain exists to end. A
+   * contact listed here has a name but not the channel its lane demands.
+   */
+  const unreachable: { name: string; needs: string }[] = [];
+
+  /**
+   * Leads carrying contact details but no person to attach them to.
+   *
+   * The commonest reason a lead produces no contact at all, and the one nothing
+   * reported: enrichment can return a switchboard number with no name, and Apollo
+   * files a nameless contact as "(No Name)". Counted so "0 contacts" is never
+   * unexplained again.
+   */
+  let namelessContacts = 0;
+
+  /**
    * What happened to the custom fields, gathered across the whole batch.
    *
    * Apollo accepts a field it will not store and answers 200, so the only signal
@@ -364,11 +394,50 @@ export async function POST(request: NextRequest) {
       }[]) ?? []),
     ];
 
+    /*
+      What this lane needs to reach somebody, from the policy rather than from here.
+
+      `channelRules` is keyed by stage: with act_now on 'phone', a phone is
+      sufficient and an address is not required. An unknown stage falls back to
+      'any', which is the permissive reading — the alternative is silently
+      dropping a lead because nobody has written a rule for its lane yet.
+    */
+    const laneChannel = policy.channelRules[String(r.stage ?? '')] ?? 'any';
+    const reachable = (person: { email?: string | null; phone?: string | null }): boolean => {
+      const hasEmail = Boolean(person.email);
+      const hasPhone = Boolean(person.phone);
+      switch (laneChannel) {
+        case 'email':
+          return hasEmail;
+        case 'phone':
+          return hasPhone;
+        case 'both':
+          return hasEmail && hasPhone;
+        case 'none':
+          return true;
+        default:
+          return hasEmail || hasPhone;
+      }
+    };
+
     for (const person of committee) {
-      // A nameless or address-less contact is still dropped: there is nothing to
-      // send, and no note can substitute for an email. Only the TITLE judgement
-      // became advisory.
-      if (!person?.name || !person.email) continue;
+      /*
+        A NAME is still non-negotiable, whatever the channel rule says.
+
+        Apollo accepts a contact with neither name nor email and files it as
+        "(No Name)" — verified against the live API. A CRM full of those is worse
+        than a lead left here, because nobody can tell who they were meant to be.
+        The channel requirement is configurable; having a person to attach it to
+        is not.
+      */
+      if (!person?.name) {
+        if (person?.email || person?.phone) namelessContacts += 1;
+        continue;
+      }
+      if (!reachable(person)) {
+        unreachable.push({ name: person.name, needs: laneChannel });
+        continue;
+      }
 
       const role = classifyTitle(person.title);
       if (!role) {
@@ -429,7 +498,10 @@ export async function POST(request: NextRequest) {
         customFields: custom.values,
         name: person.name,
         title: person.title ?? null,
-        email: person.email,
+        // Null, not undefined: an email is no longer guaranteed to be present
+        // now that a phone-only lane can export, and `toApolloPayload` omits a
+        // null rather than sending the key with nothing in it.
+        email: person.email ?? null,
         phone: person.phone ?? null,
         linkedinUrl: person.linkedin_url ?? null,
       });
@@ -445,6 +517,23 @@ export async function POST(request: NextRequest) {
    */
   const flagCaveat = unqualified.length
     ? ` ${unqualified.length} title${unqualified.length === 1 ? '' : 's'} flagged for review, not held back.`
+    : '';
+
+  /**
+   * Contacts held because their lane's channel is missing.
+   *
+   * Named with the channel it wanted, so the reader can tell "needs a phone" from
+   * "needs an email" — the two have completely different remedies, and the policy
+   * that decided it is editable in Settings.
+   */
+  const namelessCaveat = namelessContacts
+    ? ` ${namelessContacts} contact detail${namelessContacts === 1 ? '' : 's'} had no name attached — Apollo would file ${namelessContacts === 1 ? 'it' : 'them'} as "(No Name)", so ${namelessContacts === 1 ? 'it was' : 'they were'} held.`
+    : '';
+
+  const reachCaveat = unreachable.length
+    ? ` ${unreachable.length} contact${unreachable.length === 1 ? '' : 's'} held for want of the channel their lane requires (` +
+      [...new Set(unreachable.map((u) => u.needs))].map((n) => `needs ${n}`).join(', ') +
+      ').'
     : '';
 
   /**
@@ -477,11 +566,14 @@ export async function POST(request: NextRequest) {
       message:
         `${contacts.length} contact${contacts.length === 1 ? '' : 's'}` +
         (assigneeFilter ? ` for ${assigneeFilter.name}` : '') +
-        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${fieldCaveat}`,
+        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}`,
       assignee: assigneeFilter?.name ?? null,
       requested: contacts.length,
       batches: chunk(contacts).length,
       fields: fieldReport,
+      unreachable: unreachable.slice(0, 20),
+      unreachableCount: unreachable.length,
+      namelessContacts,
       preview: contacts.slice(0, 10).map((c) => ({
         name: c.name,
         title: c.title,
@@ -629,7 +721,7 @@ export async function POST(request: NextRequest) {
     // Same guard as the run row: an empty send is not a failed one.
     ok: failed === 0 || failed < contacts.length,
     message:
-      `Sent ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${fieldCaveat}` +
+      `Sent ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
       // Owner and list are what make a contact somebody's to call. If they did
       // not stick, the export "succeeded" into an unassigned pile.
       (enrichFailed ? ` ${enrichFailed} could not be assigned an owner or list.` : '') +
@@ -649,6 +741,8 @@ export async function POST(request: NextRequest) {
     owned: enriched,
     ownerOrListFailed: enrichFailed,
     fields: fieldReport,
+    unreachableCount: unreachable.length,
+    namelessContacts,
     // 'not-configured' until someone pastes a Cliq URL in Settings — stated so a
     // silent chat is a visible fact rather than a mystery.
     notified: notice.sent,
