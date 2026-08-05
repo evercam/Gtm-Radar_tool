@@ -49,6 +49,17 @@ const h = { 'Content-Type': 'application/json', Accept: 'application/json', 'x-a
  */
 const RAISE_CAPS = [{ name: 'Job Title', min: 500 }];
 
+/**
+ * Account-modality fields this tool owns.
+ *
+ * Deliberately a NEW field rather than one of the six Apollo already has on
+ * accounts. Every one of those is `is_ai_field: true` with
+ * `dynamic_field_type: 'prompt_execution'` — Apollo writes them by running
+ * prompts, and three are read-only-mapped — so writing there would overwrite a
+ * live research workflow and be overwritten back.
+ */
+const ACCOUNT_FIELDS = [{ name: 'Evercam Projects', type: 'textarea' }];
+
 const WRITABLE = new Set(['string', 'textarea', 'text']);
 const existing = await loadCustomFields(true);
 if (existing.length === 0) {
@@ -102,6 +113,24 @@ if (tooTight.length) {
   for (const t of tooTight) console.log(`  "${t.field.name}" allows ${t.field.maxLength}, needs ${t.min}`);
 }
 
+/* Account fields, checked the same way and reported separately: they are a
+   different modality and a different owner. */
+const missingAccount = [];
+for (const want of ACCOUNT_FIELDS) {
+  const found = existing.find((f) => f.name === want.name && f.modality === 'account');
+  if (found) {
+    console.log(`  ok         [account] ${want.name}  (${found.type}${found.maxLength != null ? `, max ${found.maxLength}` : ''})`);
+  } else {
+    const elsewhere = existing.find((f) => f.name === want.name);
+    if (elsewhere) {
+      console.log(`  WRONG PLACE [account] ${want.name} exists as ${elsewhere.modality}/${elsewhere.type} — not touched`);
+    } else {
+      missingAccount.push(want);
+      console.log(`  MISSING    [account] ${want.name}  (would be created as account/${want.type})`);
+    }
+  }
+}
+
 const missing = report.filter((r) => r.state === 'missing');
 const wrong = report.filter((r) => r.state === 'wrong-place');
 
@@ -112,14 +141,15 @@ if (wrong.length) {
   console.log('Re-point them in Settings → Apollo export fields, or switch them off.');
 }
 
-if (missing.length === 0 && tooTight.length === 0) {
+if (missing.length === 0 && tooTight.length === 0 && missingAccount.length === 0) {
   console.log('\nNothing to create or widen.');
   process.exit(0);
 }
 
 if (!apply) {
   const bits = [];
-  if (missing.length) bits.push(`${missing.length} field(s) would be created`);
+  if (missing.length) bits.push(`${missing.length} contact field(s) would be created`);
+  if (missingAccount.length) bits.push(`${missingAccount.length} account field(s) would be created`);
   if (tooTight.length) bits.push(`${tooTight.length} cap(s) would be raised`);
   console.log(`\n${bits.join(', ')}. Re-run with APPLY=1 to do it.`);
   process.exit(0);
@@ -152,6 +182,27 @@ for (const t of tooTight) {
     // Applied either way; only the echo is unavailable.
   }
   console.log(`  widened "${t.field.name}" ${t.field.maxLength} -> ${now ?? t.min}`);
+}
+
+for (const want of missingAccount) {
+  const res = await fetch(`${BASE}/api/v1/typed_custom_fields`, {
+    method: 'POST',
+    headers: h,
+    body: JSON.stringify({ name: want.name, type: want.type, modality: 'account' }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    console.log(`  FAILED [account] "${want.name}" -> HTTP ${res.status} ${body.slice(0, 140)}`);
+    continue;
+  }
+  let id = null;
+  try {
+    id = (JSON.parse(body).typed_custom_field ?? JSON.parse(body)).id ?? null;
+  } catch {
+    // Created either way; only the echo is unavailable.
+  }
+  console.log(`  created [account] "${want.name}"  id=${id ?? 'unknown'}`);
 }
 
 if (missing.length === 0) process.exit(0);
