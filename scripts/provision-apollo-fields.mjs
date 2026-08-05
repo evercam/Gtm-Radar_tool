@@ -70,7 +70,7 @@ if (existing.length === 0) {
 console.log(`${existing.length} custom fields in the workspace.\n`);
 
 const report = [];
-for (const { source, apolloName } of FIELD_MAP) {
+for (const { source, apolloName, type } of FIELD_MAP) {
   const byName = existing.filter((f) => f.name === apolloName);
   const usable = byName.find((f) => f.modality === 'contact' && WRITABLE.has(f.type));
   if (usable) {
@@ -84,7 +84,7 @@ for (const { source, apolloName } of FIELD_MAP) {
       detail: byName.map((f) => `${f.modality}/${f.type}`).join(', '),
     });
   } else {
-    report.push({ source, apolloName, state: 'missing', detail: 'would be created as contact/textarea' });
+    report.push({ source, apolloName, state: 'missing', type: type ?? 'textarea', detail: `would be created as contact/${type ?? 'textarea'}` });
   }
 }
 
@@ -213,7 +213,19 @@ for (const r of missing) {
   const res = await fetch(`${BASE}/api/v1/typed_custom_fields`, {
     method: 'POST',
     headers: h,
-    body: JSON.stringify({ name: r.apolloName, type: 'textarea', modality: 'contact' }),
+    /*
+      Created as the type the map declares. A qualification column has to be
+      `string` — a single-line value is what Apollo shows and sorts in a column,
+      whereas a textarea renders as a block. `text_field_max_length` is set
+      explicitly because the default varies per field in this workspace (Job Title
+      came with 30, which is what failed whole batches of 100).
+    */
+    body: JSON.stringify({
+      name: r.apolloName,
+      type: r.type ?? 'textarea',
+      modality: 'contact',
+      text_field_max_length: (r.type ?? 'textarea') === 'string' ? 200 : 20000,
+    }),
     signal: AbortSignal.timeout(20_000),
   });
   const body = await res.text();

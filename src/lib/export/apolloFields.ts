@@ -100,7 +100,17 @@ const WRITABLE = new Set(['string', 'textarea', 'text']);
  * They cannot be written on a contact at all, so they are reported as
  * unsupported instead of being sent into the void — see `MappedFields`.
  */
-export const FIELD_MAP: { source: string; apolloName: string; describe: string }[] = [
+export const FIELD_MAP: {
+  source: string;
+  apolloName: string;
+  describe: string;
+  /**
+   * What to create the field as when it is missing. `string` is a single-line
+   * value — the shape a filterable column needs; `textarea` is prose. Defaults to
+   * textarea because the original seven are all prose.
+   */
+  type?: 'string' | 'textarea';
+}[] = [
   { source: 'canonical_name', apolloName: 'Project Name', describe: 'The project this lead came from' },
   { source: 'project_summary', apolloName: 'Active account project name', describe: 'Project, phase and value in one line' },
   { source: 'call_prep_summary', apolloName: 'Cold Call Script 4641', describe: 'The brief a rep reads before dialling' },
@@ -122,7 +132,59 @@ export const FIELD_MAP: { source: string; apolloName: string; describe: string }
    * this at it — which is exactly what the Settings mapping is for.
    */
   { source: 'record_brief', apolloName: 'Evercam Project Brief', describe: 'Everything the tool holds, as a briefing' },
+
+  /*
+    Qualification columns.
+
+    These are single-line values a rep can FILTER and SORT on in Apollo, which is
+    a different job from the brief above. The brief is read top to bottom before a
+    call; nobody filters a text block. Both are needed, which is why this partly
+    reverses the "one block, not thirty fields" reasoning — that argument was
+    about reading, and it still holds for the brief.
+
+    Two Apollo limits shape the values rather than the choice:
+
+      There is no number or date type — only string, textarea, picklist, boolean.
+      So dates are written ISO (2028-09-30 sorts correctly as text) and value is
+      written as a banded prefix ("3 · $100M–1B") which also sorts correctly. A
+      raw "$450M" would sort above "$1.5B".
+
+      Picklists cannot be created through the API (HTTP 422), so these are strings.
+      A picklist would filter more cleanly, but it has to be made by hand in the
+      Apollo UI first — and writing a value outside its options fails the whole
+      contact, which is why mapCustomFields refuses to write picklists at all.
+  */
+  { source: 'project_ref', apolloName: 'Evercam Project Ref', describe: 'Stable project key — group contacts by project on this', type: 'string' },
+  { source: 'priority_band', apolloName: 'Evercam Priority', describe: 'P1..P4, sorts correctly as text', type: 'string' },
+  { source: 'party_role', apolloName: 'Evercam Party Role', describe: 'Whether this company owns the project or builds it', type: 'string' },
+  { source: 'project_phase', apolloName: 'Evercam Phase', describe: 'Where the build has got to', type: 'string' },
+  { source: 'start_date', apolloName: 'Evercam Start Date', describe: 'ISO, so it sorts as a date would', type: 'string' },
+  { source: 'value_band', apolloName: 'Evercam Value Band', describe: 'Banded so it sorts by size, not by digits', type: 'string' },
+  { source: 'project_vertical', apolloName: 'Evercam Vertical', describe: 'Which book this belongs to', type: 'string' },
 ];
+
+/**
+ * Value as a band that sorts.
+ *
+ * Apollo has no number type, so a figure written as text sorts lexically — "$450M"
+ * lands above "$1.5B". A leading ordinal fixes that and is also how a rep actually
+ * qualifies: the band matters, the exact figure rarely does. `estimated_value`
+ * lands on only 12% of records, so most contacts carry nothing here.
+ */
+export function valueBand(v: number | null | undefined): string | null {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return null;
+  if (v >= 1e9) return '4 · $1B+';
+  if (v >= 1e8) return '3 · $100M–1B';
+  if (v >= 1e7) return '2 · $10–100M';
+  return '1 · under $10M';
+}
+
+/** ISO day, which is the one date format that sorts correctly as a string. */
+export function isoDay(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
 
 export interface MappedFields {
   /** typed_custom_fields payload, keyed by Apollo field id. */

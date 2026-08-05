@@ -6,7 +6,8 @@ import { resolveFieldMap } from '@/lib/export/fieldPolicy';
 import { renderRecordBrief } from '@/lib/export/recordBrief';
 import { getRoster } from '@/lib/assignmentStore';
 import { findApolloUserId } from '@/lib/export/apolloUsers';
-import { mapCustomFields, projectSummary, qualifyAccount, qualifyContact } from '@/lib/export/apolloFields';
+import { mapCustomFields, projectSummary, qualifyAccount, qualifyContact, valueBand, isoDay, loadCustomFields } from '@/lib/export/apolloFields';
+import { partyRole } from '@/lib/semantics';
 import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
 import { notifyExportFinished } from '@/lib/notify/cliq';
@@ -316,6 +317,19 @@ export async function POST(request: NextRequest) {
   }
 
   const contacts: ExportContact[] = [];
+
+  /**
+   * Project refs per contact identity.
+   *
+   * One person legitimately sits on several projects — 24% of exported contacts do,
+   * and one engineer covers four pumped-storage sites. Apollo dedupes them to a
+   * single contact, so a single-valued `Evercam Project Ref` kept only whichever
+   * lead was written last and the grouping key was wrong for a quarter of the book.
+   * Collected here and joined below so the column carries all of them.
+   */
+  const refsByIdentity = new Map<string, Set<string>>();
+  const identityOf = (c: { email?: string | null; name?: string | null }) =>
+    (c.email?.trim().toLowerCase() || c.name?.trim().toLowerCase() || '');
   /**
    * Contacts whose title does not match the buying-role guide.
    *
@@ -524,6 +538,21 @@ export async function POST(request: NextRequest) {
           .join('\n'),
         project_signal: r.source_key as string,
         contact_title: personTitle ?? (r.contact_title as string),
+        /*
+          Qualification columns — filterable, unlike the brief.
+
+          `project_ref` is the grouping key: `ref_code` is on 100% of records and
+          is stable, whereas canonical_name is long, duplicated across rows and
+          full of punctuation. Grouping an Apollo view by this puts every contact
+          on one project together without needing a list per project.
+        */
+        project_ref: r.ref_code as string,
+        priority_band: r.priority_band as string,
+        party_role: partyRole(r.icp_code as string) === 'owner' ? 'Owner' : partyRole(r.icp_code as string) === 'contractor' ? 'Contractor' : null,
+        project_phase: r.current_phase as string,
+        start_date: isoDay(r.construction_start_date as string),
+        value_band: valueBand(r.estimated_value as number),
+        project_vertical: r.vertical as string,
         // The whole record. Rendered per person so the committee list can mark
         // which member this contact is.
         record_brief: renderRecordBrief(r as never, person.email),
@@ -541,6 +570,16 @@ export async function POST(request: NextRequest) {
         if (!prev || t.from > prev.from) fieldIssues.truncated.set(t.name, t);
       }
 
+      const ref = (r.ref_code as string) ?? null;
+      if (ref) {
+        const id = identityOf({ email: person.email ?? null, name: personName });
+        if (id) {
+          const set = refsByIdentity.get(id) ?? new Set<string>();
+          set.add(ref);
+          refsByIdentity.set(id, set);
+        }
+      }
+
       contacts.push({
         ...shared,
         customFields: custom.values,
@@ -553,6 +592,25 @@ export async function POST(request: NextRequest) {
         phone: person.phone ?? null,
         linkedinUrl: person.linkedin_url ?? null,
       });
+    }
+  }
+
+  /*
+    Second pass: give every contact the full set of refs for its identity.
+
+    Done after the loop rather than inside it because the union is only known once
+    every lead has been walked — the same person can appear on the fourth project
+    long after the first was built.
+  */
+  const refFieldId = (await loadCustomFields()).find(
+    (f) => f.name === 'Evercam Project Ref' && f.modality === 'contact'
+  )?.id;
+  if (refFieldId) {
+    for (const c of contacts) {
+      const refs = refsByIdentity.get(identityOf({ email: c.email, name: c.name }));
+      if (!refs || refs.size === 0) continue;
+      // Sorted so the value is stable between runs and does not churn the record.
+      c.customFields = { ...(c.customFields ?? {}), [refFieldId]: [...refs].sort().join(', ') };
     }
   }
 
