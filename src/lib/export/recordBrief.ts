@@ -1,3 +1,5 @@
+import { partyLabel } from '@/lib/semantics';
+
 /**
  * The whole record, rendered for somebody about to make a call.
  *
@@ -51,6 +53,8 @@ export interface BriefRecord {
   estimated_completion_date?: string | null;
   bid_date?: string | null;
   company_name_raw?: string | null;
+  /** Encodes whether this company owns the project or builds it. */
+  icp_code?: string | null;
   company_website?: string | null;
   apollo_account_name?: string | null;
   icp_fit_score?: number | null;
@@ -176,6 +180,15 @@ export function renderRecordBrief(r: BriefRecord, forEmail?: string | null): str
   out.push(title);
   const sub = [r.project_type, r.current_phase, r.company_name_raw].filter(has);
   if (sub.length) out.push(sub.join(' · '));
+  /*
+    Which side of the table this company is on.
+
+    `icp_code` has always known — 90% of records carry one — and nothing showed
+    it, so an exported contact read as an undifferentiated "company". Calling the
+    owner and calling the main contractor are different conversations.
+  */
+  const party = partyLabel(r.icp_code);
+  if (party) out.push(party);
 
   // ---- Why now: the judgement, first, because it decides whether to read on
   const why: string[] = [];

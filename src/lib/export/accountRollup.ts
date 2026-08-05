@@ -1,4 +1,5 @@
 import 'server-only';
+import { partyLabel } from '@/lib/semantics';
 
 /**
  * Every live project a company has, on the company's Apollo account.
@@ -36,6 +37,7 @@ export interface AccountProjectRow {
   contact_name?: string | null;
   additional_contacts?: unknown;
   apollo_exported_at?: string | null;
+  icp_code?: string | null;
 }
 
 /** Apollo's textarea ceiling. A 270-project company can genuinely reach it. */
@@ -106,7 +108,32 @@ function projectBlock(r: AccountProjectRow, n: number): string[] {
  * call.
  */
 export function renderAccountProjects(company: string, rows: AccountProjectRow[]): string {
-  const live = rows.filter((r) => has(r.canonical_name));
+  /*
+    One entry per project, not one per row.
+
+    The same project is stored many times over: AWS Sunbury holds 9 rows, ACS Fort
+    Worth 17, Micron's New York megafab 15. Listing rows would show a BDR the same
+    build fifteen times and make the count meaningless. Keyed on a normalised name
+    so punctuation and spacing differences collapse; the richest row wins, since
+    duplicates are rarely equally complete.
+  */
+  const key = (n?: string | null) =>
+    String(n ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const score = (r: AccountProjectRow) =>
+    [r.estimated_value, r.trigger_event, r.current_phase, r.construction_start_date, r.apollo_exported_at].filter(has)
+      .length;
+  const richest = new Map<string, AccountProjectRow>();
+  for (const r of rows) {
+    if (!has(r.canonical_name)) continue;
+    const k = key(r.canonical_name);
+    const prev = richest.get(k);
+    if (!prev || score(r) > score(prev)) richest.set(k, r);
+  }
+  const live = [...richest.values()];
   if (live.length === 0) return '';
 
   const sorted = [...live].sort(
@@ -119,6 +146,14 @@ export function renderAccountProjects(company: string, rows: AccountProjectRow[]
   const reached = sorted.filter((r) => r.apollo_exported_at).length;
 
   const head = [`${company.toUpperCase()} — ${sorted.length} project${sorted.length === 1 ? '' : 's'} on file`];
+  /*
+    Owner or contractor, stated once at the top.
+
+    Taken from whichever record carries an icp_code — a company plays the same
+    role across its projects, so the first one that knows is enough.
+  */
+  const party = sorted.map((r) => partyLabel(r.icp_code)).find(Boolean);
+  if (party) head.push(party);
   const summary = [
     // Only claim a combined value when enough of them carry one to mean anything.
     combined > 0 ? `${money(combined)} combined across ${valued.length} of ${sorted.length}` : null,

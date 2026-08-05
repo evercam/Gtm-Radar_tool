@@ -57,7 +57,7 @@ for (let p = 0; p < 200; p += 1) {
   const { data, error } = await s
     .from('canonical_projects')
     .select(
-      'apollo_account_id, apollo_account_name, company_name_raw, canonical_name, project_type, current_phase, estimated_value, estimated_value_currency, priority_band, priority_score, city, state_province, country, trigger_event, construction_start_date, estimated_completion_date, contact_name, additional_contacts, apollo_exported_at'
+      'apollo_account_id, apollo_account_name, company_name_raw, canonical_name, project_type, current_phase, estimated_value, estimated_value_currency, priority_band, priority_score, city, state_province, country, trigger_event, construction_start_date, estimated_completion_date, contact_name, additional_contacts, apollo_exported_at, icp_code'
     )
     .not('apollo_account_id', 'is', null)
     .order('id', { ascending: true })

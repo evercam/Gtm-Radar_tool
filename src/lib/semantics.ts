@@ -161,6 +161,42 @@ export const ICP_LABELS: Record<string, string> = {
 };
 
 /**
+ * Which side of the table a company sits on.
+ *
+ * A construction project has an owner or developer paying for it and a contractor
+ * building it, and a rep needs to know which one they are calling — the pitch,
+ * the timing and the objections all differ. `icp_code` has always encoded this
+ * (90% of records carry one) and nothing surfaced it, so every exported contact
+ * read as an undifferentiated "company".
+ *
+ * A developer counts as the owner side: they commission the work rather than
+ * perform it.
+ */
+export type PartyRole = 'owner' | 'contractor';
+
+const PARTY_BY_ICP: Record<string, PartyRole> = {
+  mission_critical_owner: 'owner',
+  critical_infra_owner: 'owner',
+  developer: 'owner',
+  tier1_gc: 'contractor',
+  tier2_gc: 'contractor',
+};
+
+export function partyRole(icpCode: string | null | undefined): PartyRole | null {
+  if (!icpCode) return null;
+  return PARTY_BY_ICP[icpCode] ?? null;
+}
+
+/** "Main contractor (Tier 1 GC)" — the role first, the tier as detail. */
+export function partyLabel(icpCode: string | null | undefined): string | null {
+  const role = partyRole(icpCode);
+  if (!role) return null;
+  const detail = icpCode ? ICP_LABELS[icpCode] : null;
+  const head = role === 'owner' ? 'Project owner' : 'Main contractor';
+  return detail ? `${head} (${detail})` : head;
+}
+
+/**
  * Verticals the classifier can assign. Mirrors VERTICAL_CODE in lib/classify.ts,
  * which is server-only — this list is the client-safe copy the rule builder
  * offers as choices.
