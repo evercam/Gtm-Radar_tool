@@ -105,10 +105,31 @@ console.log('\nThe follow-up write carries exactly what create dropped');
 
 console.log('\nIt claims nothing it was not given');
 {
-  const bare = { ...contact, phone: null, ownerId: null, label: null };
-  check('no phone, owner or label produces an empty patch', Object.keys(buildDetailPatch(bare, null)).length === 0);
+  // Custom fields now ride the follow-up write too, because bulk_create refuses to
+  // update them on a contact it already has — so "nothing to send" means no owner,
+  // no phone, no label AND no custom fields.
+  const bare = { ...contact, phone: null, ownerId: null, label: null, customFields: {} };
+  check('nothing given at all produces an empty patch', Object.keys(buildDetailPatch(bare, null)).length === 0);
   check('a phone alone produces only a phone', JSON.stringify(buildDetailPatch({ ...bare, phone: '+1 555 0001' }, null)) === '{"direct_phone":"+1 555 0001"}');
-  check('an unresolved label adds nothing', buildDetailPatch({ ...contact, ownerId: null, phone: null }, null).label_ids === undefined);
+  check('an unresolved label adds nothing', buildDetailPatch({ ...bare, ownerId: null, phone: null }, null).label_ids === undefined);
+}
+
+console.log('\nCustom fields are refreshed on a contact Apollo already has');
+{
+  /*
+    The regression this guards: a corrected call script or a re-rendered brief
+    could never reach a contact that had been sent once, because bulk_create
+    returns it as `existing` with every custom field untouched. Re-sending
+    reported success and changed nothing.
+  */
+  const only = buildDetailPatch({ ...contact, phone: null, ownerId: null, label: null }, null);
+  check('custom fields alone still produce a patch', Object.keys(only).length === 1, JSON.stringify(Object.keys(only)));
+  check('and it carries them', only.typed_custom_fields?.['field-id'] === LONG);
+  const full = buildDetailPatch(contact, 'label-abc');
+  check(
+    'alongside owner, phone and list',
+    Boolean(full.owner_id && full.direct_phone && full.label_ids && full.typed_custom_fields)
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

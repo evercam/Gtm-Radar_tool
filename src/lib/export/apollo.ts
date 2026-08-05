@@ -210,6 +210,21 @@ export function buildDetailPatch(contact: ExportContact, labelId: string | null)
   if (contact.ownerId) patch.owner_id = contact.ownerId;
   if (contact.phone) patch.direct_phone = contact.phone;
   if (labelId) patch.label_ids = [labelId];
+  /*
+    The custom fields ride along too, because `bulk_create` will not update them.
+
+    A contact Apollo already has comes back as `existing` with every custom field
+    untouched, so a corrected call script, a re-rendered brief, or a fixed title
+    could never reach a contact that had been sent once — the export reported
+    success and changed nothing. Re-sending one now refreshes it.
+
+    Lengths are already policed by `mapCustomFields` against Apollo's live
+    text_field_max_length, and PUT enforces the same ceiling, so nothing here can
+    exceed it.
+  */
+  if (contact.customFields && Object.keys(contact.customFields).length) {
+    patch.typed_custom_fields = contact.customFields;
+  }
   return patch;
 }
 

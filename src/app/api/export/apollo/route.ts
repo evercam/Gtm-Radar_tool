@@ -343,14 +343,13 @@ export async function POST(request: NextRequest) {
   const unreachable: { name: string; needs: string }[] = [];
 
   /**
-   * Leads carrying contact details but no person to attach them to.
+   * Contacts named after the company line because enrichment found no person.
    *
-   * The commonest reason a lead produces no contact at all, and the one nothing
-   * reported: enrichment can return a switchboard number with no name, and Apollo
-   * files a nameless contact as "(No Name)". Counted so "0 contacts" is never
-   * unexplained again.
+   * Reported rather than hidden: a rep should know they are being handed a
+   * switchboard, not somebody's desk. Previously these were dropped, which lost
+   * the number too.
    */
-  let namelessContacts = 0;
+  let placeholderNames = 0;
 
   /**
    * What happened to the custom fields, gathered across the whole batch.
@@ -432,23 +431,54 @@ export async function POST(request: NextRequest) {
         A NAME is still non-negotiable, whatever the channel rule says.
 
         Apollo accepts a contact with neither name nor email and files it as
-        "(No Name)" — verified against the live API. A CRM full of those is worse
-        than a lead left here, because nobody can tell who they were meant to be.
-        The channel requirement is configurable; having a person to attach it to
-        is not.
+        "(No Name)", which tells a rep nothing. But a reachable number is worth
+        having even when enrichment never found a person: 111 records carry a
+        company line and no name, and dropping them lost the number as well as
+        the name.
+
+        So a nameless contact WITH a channel is named for what it actually is —
+        the company's main line — rather than either invented as a person or
+        thrown away. `${company} — Main Line` is unambiguous in a list, dedupes to
+        one record per company rather than one per project, and reads as a
+        switchboard so nobody calls it expecting Bruce.
+
+        Nothing at all — no name AND no channel — is still dropped. There is
+        genuinely nothing to send.
       */
-      if (!person?.name) {
-        if (person?.email || person?.phone) namelessContacts += 1;
-        continue;
+      let personName = person?.name?.trim() || null;
+      let isPlaceholder = false;
+      if (!personName) {
+        if (!person?.email && !person?.phone) continue;
+        const org = (r.company_name_raw as string)?.trim();
+        if (!org) continue; // no company either — nothing to name it after
+        personName = `${org} — Main Line`;
+        isPlaceholder = true;
+        placeholderNames += 1;
       }
-      if (!reachable(person)) {
-        unreachable.push({ name: person.name, needs: laneChannel });
+
+      /*
+        A placeholder says so in its title as well as its name.
+
+        The name alone could still be mistaken for a person in a list view, and
+        the title is the field a rep reads next. Saying it plainly is cheaper than
+        a rep discovering it on the call.
+      */
+      const personTitle = isPlaceholder ? 'Company main line — no named contact found yet' : (person.title ?? null);
+
+      const personForReach = { email: person?.email, phone: person?.phone };
+      if (!reachable(personForReach)) {
+        unreachable.push({ name: personName, needs: laneChannel });
         continue;
       }
 
-      const role = classifyTitle(person.title);
-      if (!role) {
-        unqualified.push({ name: person.name, title: person.title ?? null, reason: 'title not in the persona guide' });
+      /*
+        A placeholder is not a person, so the persona guide has nothing to say
+        about it. Running classifyTitle here would flag every switchboard as an
+        unrecognised title and bury the real flags in noise.
+      */
+      const role = isPlaceholder ? null : classifyTitle(person.title);
+      if (!role && !isPlaceholder) {
+        unqualified.push({ name: personName, title: person.title ?? null, reason: 'title not in the persona guide' });
       }
 
       /**
@@ -463,7 +493,7 @@ export async function POST(request: NextRequest) {
       // This person's own buying role, not the record's. `contact_role` describes
       // the primary contact, so passing it through put "Buying role: economic" on
       // every committee member regardless of their title.
-      const isPrimary = person.email === r.contact_email;
+      const isPrimary = !isPlaceholder && person.email === r.contact_email;
       const personRole = role ?? (isPrimary ? ((r.contact_role as string) ?? null) : null);
 
       const custom = await mapCustomFields({
@@ -475,14 +505,25 @@ export async function POST(request: NextRequest) {
         // person". A flag nobody sees is the same as no flag.
         qualify_contact: [
           qualifyContact(r as never, personRole),
-          role
-            ? null
-            : `⚠ Title not recognised by the persona guide${person.title ? ` ("${person.title}")` : ' (no title on file)'} — confirm the role before calling.`,
+          /*
+            The persona warning is for PEOPLE.
+
+            A switchboard has no title to recognise, so warning that its title is
+            unrecognised is noise on the one field a rep reads for "why this
+            person" — and it landed on the live record reading "no title on file"
+            under a name that already says Main Line. Placeholders get a line that
+            is actually true instead.
+          */
+          isPlaceholder
+            ? 'No named contact found yet — this is the company line. Ask for whoever runs the project.'
+            : role
+              ? null
+              : `⚠ Title not recognised by the persona guide${person.title ? ` ("${person.title}")` : ' (no title on file)'} — confirm the role before calling.`,
         ]
           .filter(Boolean)
           .join('\n'),
         project_signal: r.source_key as string,
-        contact_title: person.title ?? (r.contact_title as string),
+        contact_title: personTitle ?? (r.contact_title as string),
         // The whole record. Rendered per person so the committee list can mark
         // which member this contact is.
         record_brief: renderRecordBrief(r as never, person.email),
@@ -503,8 +544,8 @@ export async function POST(request: NextRequest) {
       contacts.push({
         ...shared,
         customFields: custom.values,
-        name: person.name,
-        title: person.title ?? null,
+        name: personName,
+        title: personTitle,
         // Null, not undefined: an email is no longer guaranteed to be present
         // now that a phone-only lane can export, and `toApolloPayload` omits a
         // null rather than sending the key with nothing in it.
@@ -533,8 +574,13 @@ export async function POST(request: NextRequest) {
    * "needs an email" — the two have completely different remedies, and the policy
    * that decided it is editable in Settings.
    */
-  const namelessCaveat = namelessContacts
-    ? ` ${namelessContacts} contact detail${namelessContacts === 1 ? '' : 's'} had no name attached — Apollo would file ${namelessContacts === 1 ? 'it' : 'them'} as "(No Name)", so ${namelessContacts === 1 ? 'it was' : 'they were'} held.`
+  /*
+    Placeholders, stated. A rep opening "Barnard Construction — Main Line" should
+    already know from the run report that it is a switchboard and not a person
+    somebody researched.
+  */
+  const namelessCaveat = placeholderNames
+    ? ` ${placeholderNames} had no named person, so ${placeholderNames === 1 ? 'it is' : 'they are'} sent as the company main line — call and ask for the project team.`
     : '';
 
   const reachCaveat = unreachable.length
@@ -580,7 +626,7 @@ export async function POST(request: NextRequest) {
       fields: fieldReport,
       unreachable: unreachable.slice(0, 20),
       unreachableCount: unreachable.length,
-      namelessContacts,
+      placeholderNames,
       preview: contacts.slice(0, 10).map((c) => ({
         name: c.name,
         title: c.title,
@@ -749,7 +795,7 @@ export async function POST(request: NextRequest) {
     ownerOrListFailed: enrichFailed,
     fields: fieldReport,
     unreachableCount: unreachable.length,
-    namelessContacts,
+    placeholderNames,
     // 'not-configured' until someone pastes a Cliq URL in Settings — stated so a
     // silent chat is a visible fact rather than a mystery.
     notified: notice.sent,
