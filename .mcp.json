@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "gtm-radar": {
+      "command": "node",
+      "args": [
+        "--env-file=.env.local",
+        "--experimental-transform-types",
+        "--no-warnings",
+        "--import",
+        "./scripts/lib/register-alias.mjs",
+        "scripts/mcp-server.mjs"
+      ]
+    }
+  }
+}
