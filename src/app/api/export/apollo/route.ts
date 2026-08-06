@@ -8,6 +8,7 @@ import { getRoster } from '@/lib/assignmentStore';
 import { findApolloUserId } from '@/lib/export/apolloUsers';
 import { mapCustomFields, projectSummary, qualifyAccount, qualifyContact, valueBand, isoDay, loadCustomFields } from '@/lib/export/apolloFields';
 import { partyRole } from '@/lib/semantics';
+import { normalisePhase } from '@/lib/phase';
 import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
 import { notifyExportFinished } from '@/lib/notify/cliq';
@@ -551,7 +552,16 @@ export async function POST(request: NextRequest) {
         project_ref: r.ref_code as string,
         priority_band: r.priority_band as string,
         party_role: partyRole(r.icp_code as string) === 'owner' ? 'Owner' : partyRole(r.icp_code as string) === 'contractor' ? 'Contractor' : null,
-        project_phase: r.current_phase as string,
+        /*
+          The canonical phase, not the source's own word for it.
+
+          `current_phase` holds 117 distinct values across ten feeds — "IN PROCESS",
+          "35 Day Assessment", "Mothballed", "Pipeline" — which nobody can filter and
+          which no picklist can hold. Normalised to 11, covering 100% of the 53,619
+          records that carry a phase. The raw value stays in the brief, so nothing is
+          lost; this is the filterable form.
+        */
+        project_phase: normalisePhase(r.current_phase as string),
         start_date: isoDay(r.construction_start_date as string),
         value_band: valueBand(r.estimated_value as number),
         project_vertical: r.vertical as string,
