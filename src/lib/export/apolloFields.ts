@@ -84,8 +84,26 @@ export async function loadCustomFields(force = false): Promise<CustomFieldDef[]>
   }
 }
 
-/** Types that accept arbitrary text. Anything else is left alone. */
+/** Types that accept arbitrary text. */
 const WRITABLE = new Set(['string', 'textarea', 'text']);
+
+/**
+ * Picklists are written blind, and that is not a choice.
+ *
+ * Apollo never returns a picklist's allowed values through the API. Every
+ * picklist in this workspace reports `picklist_options: []` and defers to a
+ * `picklist_value_set_id`, and every endpoint for reading that value set answers
+ * 404. So there is no way to check a value before sending it.
+ *
+ * Writing one anyway used to be reckless: a value outside the options is a 422
+ * that failed the ENTIRE batch of up to 100 contacts. It is now merely risky,
+ * because `exportBatchWithRetry` bisects a rejected batch and isolates the single
+ * contact Apollo refused — the other 99 still land.
+ *
+ * So these are sent, and every one is reported in `picklists` below. If a contact
+ * comes back rejected, that list is the first place to look.
+ */
+const PICKLIST = 'picklist';
 
 /**
  * Our field → the custom field name to write it into.
@@ -201,6 +219,11 @@ export interface MappedFields {
   unsupported: { name: string; modality: string }[];
   /** Values cut to Apollo's ceiling, so a shortened field is never a surprise. */
   truncated: { name: string; from: number; to: number }[];
+  /**
+   * Picklist values sent without being able to check them, because Apollo does
+   * not expose the options. The first suspect when a contact is rejected.
+   */
+  picklists: { name: string; value: string }[];
 }
 
 /**
@@ -220,6 +243,7 @@ export async function mapCustomFields(
   const duplicated: string[] = [];
   const unsupported: { name: string; modality: string }[] = [];
   const truncated: { name: string; from: number; to: number }[] = [];
+  const picklists: { name: string; value: string }[] = [];
 
   for (const { source, apolloName } of mapping) {
     const value = values[source];
@@ -240,12 +264,20 @@ export async function mapCustomFields(
     }
     if (onContact.length > 1) duplicated.push(apolloName);
 
+    // Prefer a free-text twin when one exists; fall back to a picklist rather
+    // than dropping the value entirely.
     const def = onContact.find((d) => WRITABLE.has(d.type)) ?? onContact[0];
-    if (!WRITABLE.has(def.type)) continue; // a picklist would reject the whole contact
+    if (!WRITABLE.has(def.type) && def.type !== PICKLIST) continue;
 
     // One character over the ceiling is a 422 that fails the whole batch, not a
     // rejected field. Truncating here is what keeps 99 good contacts moving.
     const text = value.trim();
+    if (def.type === PICKLIST) {
+      // Unverifiable, so recorded. Length caps do not apply to a picklist value.
+      picklists.push({ name: def.name, value: text });
+      out[def.id] = text;
+      continue;
+    }
     if (def.maxLength != null && text.length > def.maxLength) {
       truncated.push({ name: def.name, from: text.length, to: def.maxLength });
       out[def.id] = text.slice(0, def.maxLength);
@@ -254,7 +286,7 @@ export async function mapCustomFields(
     }
   }
 
-  return { values: out, unmatched, duplicated, unsupported, truncated };
+  return { values: out, unmatched, duplicated, unsupported, truncated, picklists };
 }
 
 /**

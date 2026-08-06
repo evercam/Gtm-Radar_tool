@@ -377,6 +377,8 @@ export async function POST(request: NextRequest) {
     duplicated: new Set<string>(),
     unsupported: new Map<string, string>(),
     truncated: new Map<string, { name: string; from: number; to: number }>(),
+    /** Picklist values Apollo would not let us verify before sending. */
+    picklists: new Map<string, string>(),
   };
 
   for (const r of rows) {
@@ -564,6 +566,7 @@ export async function POST(request: NextRequest) {
       for (const name of custom.unmatched) fieldIssues.unmatched.add(name);
       for (const name of custom.duplicated) fieldIssues.duplicated.add(name);
       for (const u of custom.unsupported) fieldIssues.unsupported.set(u.name, u.modality);
+      for (const pl of custom.picklists) fieldIssues.picklists.set(pl.name, pl.value);
       for (const t of custom.truncated) {
         const prev = fieldIssues.truncated.get(t.name);
         // Keep the worst offender, so the report shows the real overshoot.
@@ -658,6 +661,7 @@ export async function POST(request: NextRequest) {
     duplicated: [...fieldIssues.duplicated],
     unsupported: [...fieldIssues.unsupported.entries()].map(([name, modality]) => ({ name, modality })),
     truncated: [...fieldIssues.truncated.values()],
+    picklists: [...fieldIssues.picklists.entries()].map(([name, value]) => ({ name, value })),
   };
   const fieldCaveat =
     (fieldReport.unsupported.length
@@ -668,7 +672,14 @@ export async function POST(request: NextRequest) {
     (fieldReport.truncated.length
       ? ` Truncated to Apollo's limit: ${fieldReport.truncated.map((t) => `${t.name} ${t.from}→${t.to}`).join(', ')}.`
       : '') +
-    (fieldReport.unmatched.length ? ` Not found in Apollo: ${fieldReport.unmatched.join(', ')}.` : '');
+    (fieldReport.unmatched.length ? ` Not found in Apollo: ${fieldReport.unmatched.join(', ')}.` : '') +
+    /*
+      Picklists are sent unverified — Apollo does not expose their options — so any
+      rejected contact should be checked against these first.
+    */
+    (fieldReport.picklists.length
+      ? ` ${fieldReport.picklists.length} picklist value${fieldReport.picklists.length === 1 ? '' : 's'} sent unverified (${fieldReport.picklists.map((p) => `${p.name}="${p.value}"`).join(', ')}).`
+      : '');
 
   if (body.dryRun) {
     return NextResponse.json({
