@@ -126,12 +126,16 @@ group('Route guards resolve to the most specific prefix');
   // A prefix must end at a segment boundary, or /controlpanel would be guarded.
   check('a prefix must end at a segment', permissionForPath('/controlpanel') === null);
 
-  // A tab nobody can reach is a link that always redirects.
-  const roles = Object.keys(ROLE_PERMISSIONS);
+  /*
+    Holders, not role names. can() takes a resolved permission bundle now that
+    roles are database rows — passing a name silently denied everything before
+    can() was made to fail closed, and threw after.
+  */
+  const holders = Object.values(ROLE_PERMISSIONS).map((permissions) => ({ permissions }));
   for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
     const need = permissionForPath(item.href);
     if (!need) continue;
-    check(`${item.href} is reachable by some role`, roles.some((r) => can(r, need)), `needs ${need}`);
+    check(`${item.href} is reachable by some role`, holders.some((h) => can(h, need)), `needs ${need}`);
   }
 
   // Every tab's own declared permission must be at least as strong as the route
@@ -139,10 +143,10 @@ group('Route guards resolve to the most specific prefix');
   for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
     const need = permissionForPath(item.href);
     if (!need || !item.permission) continue;
-    const holders = roles.filter((r) => can(r, item.permission));
+    const shown = holders.filter((h) => can(h, item.permission));
     check(
       `${item.href} is not offered to anyone the page rejects`,
-      holders.every((r) => can(r, need)),
+      shown.every((h) => can(h, need)),
       `shows for ${item.permission}, page needs ${need}`
     );
   }

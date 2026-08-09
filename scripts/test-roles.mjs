@@ -47,6 +47,15 @@ console.log('can() reads a resolved bundle, not a role name');
   check('undefined is not permitted', !can(undefined, 'kpi.view'));
   check('an empty bundle grants nothing', !can({ permissions: [] }, 'kpi.view'));
   /*
+    Fails closed on a malformed holder rather than throwing. can() used to take a
+    role NAME, and a caller still passing one threw inside whatever was rendering
+    the page — an authorization check that crashes is worse than one that denies.
+    This is the exact shape the nav test was still passing after the refactor.
+  */
+  check('a role name is denied, not thrown on', !can('admin', 'kpi.view'));
+  check('a holder with no permissions array is denied', !can({}, 'kpi.view'));
+  check('a holder with a non-array is denied', !can({ permissions: 'all' }, 'kpi.view'));
+  /*
     The whole reason can() takes a bundle: roles are database rows, so resolving
     one is I/O. Resolving once when the session loads keeps twenty call sites in
     pages and route handlers synchronous.

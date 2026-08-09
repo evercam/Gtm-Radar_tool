@@ -160,7 +160,15 @@ export interface PermissionHolder {
  * in pages and route handlers into awaits.
  */
 export function can(holder: PermissionHolder | null | undefined, permission: Permission | string): boolean {
-  if (!holder) return false;
+  /*
+    Fails closed on a malformed holder rather than throwing.
+
+    An authorization check that throws is worse than one that says no: the throw
+    escapes into whatever is rendering the page, and a caller passing the wrong
+    shape — a role name, say, which is exactly what this used to take — gets a
+    crash instead of a denial. Deny, and let the caller notice they got nothing.
+  */
+  if (!holder || !Array.isArray(holder.permissions)) return false;
   return holder.permissions.includes(permission);
 }
 
