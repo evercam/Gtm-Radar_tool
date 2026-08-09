@@ -148,6 +148,15 @@ export interface AdapterFetchParams {
    */
   constructionOnly?: boolean;
   /**
+   * UK OCDS feeds only: keep only NHS/health-body construction and estates work.
+   *
+   * REPLACES `constructionOnly` rather than narrowing it. The generic construction
+   * vocabulary is wrong in both directions on health procurement — it admits
+   * "Microsoft Infrastructure Software Licensing" and drops "Asbestos Abatement" —
+   * so running both filters would discard genuine leads. See `@/lib/healthInfra`.
+   */
+  healthInfraOnly?: boolean;
+  /**
    * GEM only: keep only records whose geography-derived business unit is in
    * this list (values: "usa" | "uk" | "ireland" | "apac" | "export",
    * case-insensitive). Empty/omitted returns all BUs.

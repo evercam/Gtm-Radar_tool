@@ -1,6 +1,7 @@
 import type { AdapterFetchParams, CanonicalProjectInsert, RawProjectRecord, SourceAdapter } from './types';
 import { fetchWithRetry, AdapterShapeError } from './types';
 import { computeCompleteness, isPresent } from '@/lib/completeness';
+import { classifyHealthInfra, WORK_LABEL } from '@/lib/healthInfra';
 import type { CriticalField, BusinessUnit } from '@/lib/supabase/types';
 
 /**
@@ -92,7 +93,22 @@ export interface OcdsPublisherConfig {
   buildUrl: (from: string, to: string, stage?: string) => string;
   /** Whether this publisher understands the `stages` parameter. */
   supportsStages?: boolean;
+  /**
+   * Minimum gap between page requests, in ms.
+   *
+   * Both UK publishers throttle at 12 requests per 120 seconds and answer the
+   * 13th with a plain-text HTTP 429 asking for a 120-second wait. That is longer
+   * than `fetchWithRetry` will sit on a Retry-After (30s), so the retry path
+   * cannot rescue a deep pull — it just burns three attempts and fails the run.
+   *
+   * Pacing is therefore the only thing that makes a multi-page backfill possible.
+   * It costs nothing on a one-page scheduled pull, which is the common case.
+   */
+  minRequestIntervalMs?: number;
 }
+
+/** Paces page requests so a deep pull stays under a publisher's throttle. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Find a Tender: "YYYY-MM-DDT00:00:00" — NO trailing Z (a Z 400s / returns empty).
 function fmtNoZ(d: Date, edge: 'from' | 'to'): string {
@@ -112,6 +128,7 @@ export const OCDS_PUBLISHERS: OcdsPublisherConfig[] = [
     countryCode: 'GB',
     fmtDate: fmtNoZ,
     supportsStages: true,
+    minRequestIntervalMs: 10_000,
     // One stage at a time: the API accepts "tender,award" and answers with an
     // empty list rather than an error, so a comma list looks like "no results"
     // instead of "unsupported". Omitting the parameter returns every stage.
@@ -138,6 +155,7 @@ export const OCDS_PUBLISHERS: OcdsPublisherConfig[] = [
     countryCode: 'GB',
     fmtDate: fmtNoZ,
     supportsStages: true,
+    minRequestIntervalMs: 10_000,
     buildUrl: (from, to, stage) =>
       `https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search?publishedFrom=${from}&publishedTo=${to}` +
       `${stage ? `&stages=${stage}` : ''}`,
@@ -166,9 +184,19 @@ function releaseClassifications(r: OcdsRelease): OcdsClassification[] {
   return out;
 }
 
-/** True if a release looks like construction/engineering work. Classification
- *  codes are the reliable signal (present on most UK/AU notices); human text is
- *  the fallback for notices published without an itemized classification. */
+/**
+ * True if a release looks like construction/engineering work.
+ *
+ * Classification codes would be the reliable signal, but they are far rarer than
+ * this once assumed: measured over 500 releases each on 2026-08-07, Find a Tender
+ * carried a CPV code on 4% of notices and Contracts Finder on 0%. So in practice
+ * the keyword fallback decides almost every UK record, and it is a blunt
+ * instrument — "infrastructure" matches an IT contract, and nothing here matches
+ * asbestos removal or ward refurbishment.
+ *
+ * For NHS/health estates work specifically, use `healthInfraOnly` instead; see
+ * `@/lib/healthInfra` for why a separate vocabulary was needed.
+ */
 function isConstructionRelease(r: OcdsRelease): boolean {
   const classes = releaseClassifications(r);
   for (const c of classes) {
@@ -192,6 +220,36 @@ function isConstructionRelease(r: OcdsRelease): boolean {
     .filter(Boolean)
     .join(' ');
   return CONSTRUCTION_KEYWORDS.test(text);
+}
+
+/**
+ * The procuring entity's name.
+ *
+ * This is where "NHS" lives. In a sample of 100 Find a Tender releases, 13 came
+ * from an NHS body and only 3 said so in the title or description — so the
+ * `keyword` filter above, which reads only tender/contract text, cannot find
+ * them. Anything scoping by ORGANISATION has to look here instead.
+ */
+function buyerName(r: OcdsRelease): string | null {
+  const owner = partyByRole(r.parties, 'procuringEntity') ?? partyByRole(r.parties, 'buyer');
+  return owner?.name ?? r.buyer?.name ?? null;
+}
+
+/** Title, description and classification wording, for text classification. */
+function releaseText(r: OcdsRelease): string {
+  const contract = r.contracts?.[0];
+  const award = r.awards?.[0];
+  return [
+    r.tender?.title,
+    r.tender?.description,
+    contract?.title,
+    contract?.description,
+    award?.title,
+    award?.description,
+    ...releaseClassifications(r).map((c) => c.description),
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function partyByRole(parties: OcdsParty[] | undefined, role: string): OcdsParty | null {
@@ -276,6 +334,9 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
       for (let i = 0; i < maxPages && url && releases.length < maxRecords; i++) {
+        // Between pages only — never before the first, so a one-page scheduled
+        // pull is exactly as fast as it was.
+        if (i > 0 && cfg.minRequestIntervalMs) await sleep(cfg.minRequestIntervalMs);
         const res = await fetchWithRetry(
           url,
           {
@@ -302,9 +363,21 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
 
       // Client-side keyword + region filtering (OCDS windows are date-only server-side).
       let filtered = releases;
-      // Default to construction/engineering only — these are general-procurement
-      // publishers, so scope them to the tool's domain unless explicitly disabled.
-      if (params.constructionOnly ?? true) {
+      if (params.healthInfraOnly) {
+        /*
+          Purpose-built, and REPLACES the generic construction test rather than
+          stacking with it.
+
+          Running both would be worse than running neither: the generic keyword
+          list has no entry for asbestos, ward refurbishment or backlog
+          maintenance, so it discards the very notices this filter exists to find.
+          It also cannot lean on CPV codes, which are published on 4% of Find a
+          Tender notices and 0% of Contracts Finder ones.
+        */
+        filtered = filtered.filter((r) => classifyHealthInfra(buyerName(r), releaseText(r)).isHealthInfra);
+      } else if (params.constructionOnly ?? true) {
+        // Default to construction/engineering only — these are general-procurement
+        // publishers, so scope them to the tool's domain unless explicitly disabled.
         filtered = filtered.filter(isConstructionRelease);
       }
       if (params.keyword?.trim()) {
@@ -365,6 +438,20 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       const addr = owner?.address ?? null;
       const classification = (contract?.items?.[0] ?? r.tender?.items?.[0])?.classification;
 
+      /*
+        Health estates work gets a real building_type.
+
+        These publishers supply a CPV description on 4% of notices (0% on
+        Contracts Finder), so building_type was almost always null and a rep had
+        nothing to sort a queue by. Where the classifier is confident, its work
+        kind fills that gap — "Healthcare — refurbishment" beats an empty cell.
+
+        Only ever ADDS a value: a notice that carries a real classification keeps
+        it, because the publisher's own wording outranks an inference from a title.
+      */
+      const health = classifyHealthInfra(companyName, releaseText(r));
+      const healthLabel = health.isHealthInfra && health.workKind ? WORK_LABEL[health.workKind] : null;
+
       const announced = r.date || contract?.dateSigned || award?.date || null;
       const start = contract?.period?.startDate || null;
       const end = contract?.period?.endDate || null;
@@ -374,7 +461,7 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
         project_value: value != null,
         project_location: isPresent(addr?.region) || isPresent(addr?.locality) || isPresent(addr?.countryName),
         project_timeline: isPresent(announced) || isPresent(start),
-        building_type: isPresent(classification?.description) || isPresent(classification?.id),
+        building_type: isPresent(classification?.description) || isPresent(classification?.id) || isPresent(healthLabel),
         company_name: isPresent(companyName),
         company_contact: isPresent(contact?.name),
         project_phase: isPresent(contract) || isPresent(award), // awarded vs tendering
@@ -396,7 +483,7 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
         project_type:
           classification?.description ||
           (classification?.id ? `${classification.scheme ?? ''} ${classification.id}`.trim() : null),
-        building_type: classification?.description || null,
+        building_type: classification?.description || healthLabel,
         description: description ? description.slice(0, 1000) : null,
         address_line1: null,
         city: addr?.locality ?? null,

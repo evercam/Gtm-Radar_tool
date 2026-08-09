@@ -133,12 +133,25 @@ export const API_LIMITS: ApiLimit[] = [
     paging: 'links.next',
     maxTotalResults: null,
     maxDateSpanDays: null,
-    requestsPerMinute: null,
+    /**
+     * Measured, not documented: 6 a minute.
+     *
+     * Both publishers answer a 13th request inside two minutes with HTTP 429 and
+     * the plain-text body "Rate limit of 12 exceeded. Please retry after 120
+     * seconds." — so the real ceiling is 12 per 120s. Recorded here as 6/min
+     * because this field is per-minute.
+     *
+     * This matters more than it looks: `fetchWithRetry` honours Retry-After only
+     * up to MAX_RETRY_AFTER_MS (30s), so a publisher asking for 120 burns all
+     * three attempts and fails the run. The OCDS adapter therefore PACES itself
+     * between pages rather than relying on the retry path. Observed 2026-08-07.
+     */
+    requestsPerMinute: 6,
     recommendedRunBudget: 5_000,
     strategy: 'cursor',
     verified: true,
     doc: 'https://standard.open-contracting.org/latest/en/guidance/build/hosting/',
-    note: 'The standard sets no page limit — it is the publisher’s choice, and Contracts Finder documents no numbers at all. It does prefer a cursor over an offset, because with offsets "a given page won’t return the same results over time".',
+    note: 'The standard sets no page limit — it is the publisher’s choice, and Contracts Finder documents no numbers at all. It does prefer a cursor over an offset, because with offsets "a given page won’t return the same results over time". Measured throttle: 12 requests per 120 seconds, answered with a plain-text 429 asking for a 120-second wait.',
   },
   {
     slugs: ['ted'],

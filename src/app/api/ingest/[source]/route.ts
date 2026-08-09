@@ -116,6 +116,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
     sectors?: string[];
     regions?: string[];
     constructionOnly?: boolean;
+    healthInfraOnly?: boolean;
     stage?: 'planning' | 'tender' | 'award';
     trigger?: string;
   } = {};
@@ -173,6 +174,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       sectors: params.sectors,
       regions: params.regions,
       constructionOnly: params.constructionOnly,
+      healthInfraOnly: params.healthInfraOnly,
       stage: params.stage,
     });
 
