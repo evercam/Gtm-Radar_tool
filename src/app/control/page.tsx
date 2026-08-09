@@ -109,19 +109,19 @@ export default async function ControlCenterPage() {
       label: 'Claude',
       ok: claudeReady,
       detail: claudeReady ? 'Account resolution & call prep ready' : 'ANTHROPIC_API_KEY not set',
-      fix: { href: '/control/settings', label: 'Configure' },
+      fix: { href: '/admin/settings', label: 'Configure' },
     },
     {
       label: 'Apollo',
       ok: apolloReady,
       detail: apolloReady ? 'Verified contacts ready' : 'APOLLO_API_KEY not set',
-      fix: { href: '/control/settings', label: 'Configure' },
+      fix: { href: '/admin/settings', label: 'Configure' },
     },
     {
       label: 'Source credentials',
       ok: keyedConfigured === keyed.length,
       detail: `${keyedConfigured} of ${keyed.length} keyed sources configured`,
-      fix: { href: '/control/settings', label: 'Configure' },
+      fix: { href: '/admin/settings', label: 'Configure' },
     },
     {
       label: 'Authentication',

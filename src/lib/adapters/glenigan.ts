@@ -159,7 +159,7 @@ export const gleniganAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.baseUrl) {
       throw new Error(
-        'Glenigan adapter is not configured — add an API key in /control/settings.'
+        'Glenigan adapter is not configured — add an API key in /admin/settings.'
       );
     }
     const baseUrl = creds.baseUrl.replace(/\/$/, '');

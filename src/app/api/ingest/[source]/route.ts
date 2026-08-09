@@ -75,7 +75,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
     return NextResponse.json(
       {
         configured: false,
-        message: 'Add this source’s API key in /control/settings to enable live ingestion.',
+        message: 'Add this source’s API key in /admin/settings to enable live ingestion.',
       },
       { status: 200 }
     );

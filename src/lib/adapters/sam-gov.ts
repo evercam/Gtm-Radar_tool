@@ -101,7 +101,7 @@ export const samGovAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.baseUrl) {
       throw new Error(
-        'SAM.gov adapter is not configured — add an API key in /control/settings. Get a free key at sam.gov.'
+        'SAM.gov adapter is not configured — add an API key in /admin/settings. Get a free key at sam.gov.'
       );
     }
     const endpoint = creds.baseUrl;

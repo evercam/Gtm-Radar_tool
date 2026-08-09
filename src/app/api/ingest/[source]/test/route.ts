@@ -87,7 +87,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       {
         ok: false,
         configured: false,
-        message: 'Add this source’s API key in /control/settings to enable a connection test.',
+        message: 'Add this source’s API key in /admin/settings to enable a connection test.',
       },
       { status: 200 }
     );

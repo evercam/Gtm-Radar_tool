@@ -11,6 +11,7 @@
  */
 
 import { NAV_SECTIONS, CONTROL_TABS, ADMIN_TABS } from '../src/lib/nav.ts';
+import { permissionForPath, ROUTE_PERMISSIONS, ROLE_PERMISSIONS, can } from '../src/lib/auth/roles.ts';
 
 let passed = 0, failed = 0;
 const check = (n, c, d) => { if (c) { passed++; console.log(`  PASS ${n}`); } else { failed++; console.log(`  FAIL ${n}${d ? ' — ' + d : ''}`); } };
@@ -101,6 +102,51 @@ group('The Work section stays open to everyone');
   const work = NAV_SECTIONS.find((s) => s.title === 'Work')?.items ?? [];
   check('Work has items', work.length > 0);
   check('Work needs no permission', work.every((i) => !i.permission), work.filter((i) => i.permission).map((i) => i.label).join(', '));
+}
+
+group('Route guards resolve to the most specific prefix');
+{
+  /*
+    /admin/costs sits below /admin in ROUTE_PERMISSIONS, so a first-match lookup
+    returned control.access and the entry's own enrichment.run requirement was
+    dead code. Nothing was exposed — every role holding control.access also held
+    enrichment.run — but that is a coincidence of the current matrix, not a
+    guarantee, and it ends the moment roles are defined in the database.
+  */
+  check(
+    '/admin/costs keeps its own requirement',
+    permissionForPath('/admin/costs') === 'enrichment.run',
+    String(permissionForPath('/admin/costs'))
+  );
+  check('/admin/settings is not shadowed by /admin', permissionForPath('/admin/settings') === 'settings.manage');
+  check('/admin itself still needs control.access', permissionForPath('/admin') === 'control.access');
+  check('/control/enrichment keeps its own requirement', permissionForPath('/control/enrichment') === 'enrichment.run');
+  check('/control falls back to control.access', permissionForPath('/control') === 'control.access');
+  check('an unguarded path is null', permissionForPath('/records') === null);
+  // A prefix must end at a segment boundary, or /controlpanel would be guarded.
+  check('a prefix must end at a segment', permissionForPath('/controlpanel') === null);
+
+  // A tab nobody can reach is a link that always redirects.
+  const roles = Object.keys(ROLE_PERMISSIONS);
+  for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
+    const need = permissionForPath(item.href);
+    if (!need) continue;
+    check(`${item.href} is reachable by some role`, roles.some((r) => can(r, need)), `needs ${need}`);
+  }
+
+  // Every tab's own declared permission must be at least as strong as the route
+  // guard, or the sidebar offers a link the page then refuses.
+  for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
+    const need = permissionForPath(item.href);
+    if (!need || !item.permission) continue;
+    const holders = roles.filter((r) => can(r, item.permission));
+    check(
+      `${item.href} is not offered to anyone the page rejects`,
+      holders.every((r) => can(r, need)),
+      `shows for ${item.permission}, page needs ${need}`
+    );
+  }
+  check('every guarded prefix names a permission', ROUTE_PERMISSIONS.every((r) => Boolean(r.permission)));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

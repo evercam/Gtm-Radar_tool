@@ -113,12 +113,38 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: '/control/team', permission: 'leads.reassign' },
   { prefix: '/control/routing', permission: 'routing.edit' },
   { prefix: '/control/sources', permission: 'sources.run' },
+  /*
+    Read-only, and the one Control Center page an AE or marketer is meant to
+    open — so it is guarded by `leads.export` like the page itself, not by
+    `control.access` like the rest of /control.
+
+    Without this entry it fell through to the /control catch-all, and the proxy
+    turned away exactly the people the page admits: the sidebar offered them
+    "Export History" and clicking it redirected to /?denied=1.
+  */
+  { prefix: '/control/exports', permission: 'leads.export' },
   { prefix: '/control', permission: 'control.access' },
 ];
 
-/** The permission guarding a path, or null when the path is open to any user. */
+/**
+ * The permission guarding a path, or null when the path is open to any user.
+ *
+ * The MOST SPECIFIC prefix wins, not the first one listed. Order used to decide
+ * it, and `/admin/costs` sat below `/admin` in the array — so it matched the
+ * broader entry first and its own `enrichment.run` requirement was dead code
+ * that no test would ever notice. Nothing was exposed at the time, because every
+ * role holding `control.access` also held `enrichment.run`, but that is a
+ * coincidence of the current matrix rather than a guarantee — and it stops being
+ * true the moment roles are defined in the database instead of in this file.
+ *
+ * Sorting by length here means a new entry cannot be silently shadowed by an
+ * older, broader one however it is ordered.
+ */
 export function permissionForPath(pathname: string): Permission | null {
-  return (
-    ROUTE_PERMISSIONS.find((r) => pathname === r.prefix || pathname.startsWith(`${r.prefix}/`))?.permission ?? null
-  );
+  let best: { prefix: string; permission: Permission } | null = null;
+  for (const r of ROUTE_PERMISSIONS) {
+    if (pathname !== r.prefix && !pathname.startsWith(`${r.prefix}/`)) continue;
+    if (!best || r.prefix.length > best.prefix.length) best = r;
+  }
+  return best?.permission ?? null;
 }

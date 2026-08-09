@@ -119,7 +119,7 @@ export const barbourAbiAdapter: SourceAdapter = {
     const creds = await getCredentials(params.credentials);
     if (!creds.apiKey || !creds.username || !creds.apiSecret || !creds.baseUrl) {
       throw new Error(
-        'Barbour ABI adapter is not configured — add a username, password and API key in /control/settings.'
+        'Barbour ABI adapter is not configured — add a username, password and API key in /admin/settings.'
       );
     }
     const baseUrl = creds.baseUrl;
