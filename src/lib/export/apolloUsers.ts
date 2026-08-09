@@ -9,9 +9,14 @@ import { readSecret } from '@/lib/crypto/store';
  * Apollo's users once and cached for the process — a lookup per contact would
  * be a request per lead.
  *
- * Matched on email, then on name. Email is exact and unambiguous; a name match
- * is a fallback for roster entries recorded without one, and is only accepted
- * when it is unique.
+ * Matched on EMAIL, which in this workspace is the identity. Two people share
+ * the name "Ronniel Manalo" and differ only by evercam.io versus evercam.com,
+ * and "Ron Leon" and "Ronald Leon" are also distinct people — so a name is not
+ * an identity here, and an address that matches nobody is a mismatch to fix
+ * rather than a reason to guess.
+ *
+ * The name match is therefore reserved for roster entries recorded with no email
+ * at all, and even then only when it is unique.
  */
 
 const BASE = 'https://api.apollo.io';
@@ -88,14 +93,34 @@ export async function loadApolloUsers(force = false): Promise<ApolloUser[]> {
 
 const fullName = (u: ApolloUser) => (u.name ?? `${u.first_name ?? ''} ${u.last_name ?? ''}`).trim().toLowerCase();
 
-/** The Apollo user id for a roster entry, or null when there is no safe match. */
-export async function findApolloUserId(email: string | null, name: string | null): Promise<string | null> {
-  const all = await loadApolloUsers();
+/**
+ * The matching decision itself, with the user list passed in.
+ *
+ * Separated from `findApolloUserId` so it can be tested without a network call
+ * — which matters, because the rule it encodes is the difference between a lead
+ * reaching its owner and reaching their namesake.
+ */
+export function matchApolloUser(all: ApolloUser[], email: string | null, name: string | null): string | null {
   if (all.length === 0) return null;
 
   if (email?.trim()) {
     const hit = all.find((u) => u.email?.toLowerCase() === email.trim().toLowerCase());
     if (hit?.id) return hit.id;
+
+    /*
+      An address that matches nobody is a mismatch to fix, not a reason to guess.
+
+      Falling through to the name here is how a lead ends up owned by somebody
+      else entirely. In this workspace an email IS the identity: two people share
+      the name "Ronniel Manalo" and differ only by evercam.io versus
+      evercam.com, and "Ron Leon" and "Ronald Leon" are likewise distinct people.
+      A single mistyped or stale address would have handed one person's leads to
+      their namesake, in the CRM, silently.
+
+      So the name fallback below is reserved for roster entries with no email at
+      all — which is what it was written for.
+    */
+    return null;
   }
 
   if (name?.trim()) {
@@ -107,4 +132,9 @@ export async function findApolloUserId(email: string | null, name: string | null
   }
 
   return null;
+}
+
+/** The Apollo user id for a roster entry, or null when there is no safe match. */
+export async function findApolloUserId(email: string | null, name: string | null): Promise<string | null> {
+  return matchApolloUser(await loadApolloUsers(), email, name);
 }
