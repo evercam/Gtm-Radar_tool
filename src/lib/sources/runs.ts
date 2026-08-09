@@ -156,9 +156,62 @@ export async function getIngestionRuns(
   }
 }
 
-/** Runs still marked `running` — surfaced as live progress on the seeding page. */
+/**
+ * How long a run may be `running` before it is presumed dead.
+ *
+ * The ingest route's own ceiling is 300 seconds, so nothing legitimate is still
+ * going after thirty minutes — a row that old is a process that was killed, lost
+ * its container, or crashed somewhere `finishRun` could not reach.
+ *
+ * Generous on purpose: reaping a run that is merely slow would report a failure
+ * that did not happen, and the cost of waiting is a stale row for a few extra
+ * minutes.
+ */
+const STALE_RUN_MS = 30 * 60 * 1000;
+
+/**
+ * Closes runs that will never close themselves.
+ *
+ * `startRun` deliberately opens a row before the adapter is called so an
+ * interrupted run stays visible rather than vanishing — but nothing ever ended
+ * those rows, so a killed process left a run marked `running` for good. Two sat
+ * on the Sources page for days looking like live progress, and the page has no
+ * way to tell them from a pull that started a second ago.
+ *
+ * Marked `failed` with a plain explanation rather than deleted: the run did
+ * happen, and how it ended is exactly what somebody reading the history wants.
+ */
+export async function reapStaleRuns(): Promise<number> {
+  if (!isSupabaseServiceConfigured()) return 0;
+  const cutoff = new Date(Date.now() - STALE_RUN_MS).toISOString();
+  try {
+    const { data, error } = await configReader()
+      .from('ingestion_runs')
+      .update({
+        status: 'failed',
+        error: 'Interrupted — the process ended before the run could finish.',
+        error_kind: 'interrupted',
+        finished_at: new Date().toISOString(),
+      })
+      .eq('status', 'running')
+      .lt('started_at', cutoff)
+      .select('id');
+    if (error) return 0;
+    return (data ?? []).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Runs still genuinely in flight — surfaced as live progress on the seeding page.
+ *
+ * Reaps first, so a dead run is never shown as live. Cheap: the update touches
+ * nothing on the common path where no run is stale.
+ */
 export async function getActiveRuns(): Promise<IngestionRun[]> {
   try {
+    await reapStaleRuns();
     const { data, error } = await (
       configReader()
     )

@@ -86,5 +86,28 @@ console.log('\nEvery-15-minutes still behaves');
   t('not due when it ran at 06:00', isDue('*/15 * * * *', utc('2026-07-31T06:00:30Z'), at) === false);
 }
 
+console.log('\nEvery live adapter is visible to the scheduler');
+{
+  /*
+    The cron only ever considers slugs present in SOURCE_SLUGS — getAllSourceConfigs
+    seeds its map from there, and the route filters that map. An adapter that is
+    built, registered and working but missing from SOURCE_SLUGS is invisible to
+    the scheduler: it will never run on a schedule, and nothing anywhere says so.
+
+    That is exactly what happened to news-search. It passed its own tests, ran
+    correctly by hand, and would have sat there doing nothing for as long as
+    anybody trusted it to be running.
+  */
+  const { LIVE_SOURCE_SLUGS } = await import('../src/lib/adapters/index.ts');
+  const { SOURCE_SLUGS } = await import('../src/lib/sourceSlugs.ts');
+
+  const unseen = LIVE_SOURCE_SLUGS.filter((slug) => !(slug in SOURCE_SLUGS));
+  t('no live adapter is missing from SOURCE_SLUGS', unseen.length === 0, unseen.join(', '));
+
+  // The reverse is a scheduled run that 404s on its own ingest route.
+  const orphans = Object.keys(SOURCE_SLUGS).filter((slug) => !LIVE_SOURCE_SLUGS.includes(slug));
+  t('no scheduled slug lacks an adapter', orphans.length === 0, orphans.join(', '));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

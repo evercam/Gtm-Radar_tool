@@ -63,6 +63,7 @@ export const SOURCE_SLUGS: Record<string, SourceSlugInfo> = {
   'mining-com': { sourceKey: 'mining_com', keyless: true },
   'construction-dive': { sourceKey: 'construction_dive', keyless: true },
   gem: { sourceKey: 'gem_energy_tracker', keyless: true },
+  'news-search': { sourceKey: 'news_search', keyless: true },
 };
 
 export function sourceKeyForSlug(slug: string): string | null {
