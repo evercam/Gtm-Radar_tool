@@ -1,0 +1,508 @@
+import 'server-only';
+import { z } from 'zod';
+import { getServiceSupabase } from '@/lib/supabase/server';
+import { getRoster } from '@/lib/assignmentStore';
+import { getHandoverByPerson, getExportRuns, getSourceStats, getAccountDetail } from '@/lib/queries';
+import { getEnrichmentPolicy } from '@/lib/policies';
+import { getIngestionRuns } from '@/lib/sources/runs';
+import { getAllSourceConfigs } from '@/lib/sources/config';
+import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
+import { renderRecordBrief } from '@/lib/export/recordBrief';
+import { normalisePhase, PROJECT_PHASES } from '@/lib/phase';
+import { partyLabel } from '@/lib/semantics';
+import type { Permission } from '@/lib/auth/roles';
+
+/**
+ * The MCP tools, defined once and served over two transports.
+ *
+ * `scripts/mcp-server.mjs` exposes them over stdio to a local agent; the
+ * `/api/mcp` route exposes the same list over HTTP to a bearer-token client.
+ * They were briefly going to be two implementations, which is how the two copies
+ * drift until one of them quietly answers a different question — so the handlers
+ * live here and both transports are thin.
+ *
+ * Each tool declares the PERMISSION it needs, so the HTTP endpoint can gate on
+ * the same matrix as the UI. Over stdio there is no session to gate on: the
+ * caller already has the service-role key in their own .env.local, and pretending
+ * otherwise would be theatre.
+ *
+ * READ ONLY. Every handler is a SELECT. Nothing assigns, exports, writes to
+ * Apollo or edits a policy — those paths stay as scripts with dry runs and
+ * APPLY=1 gates, because the gate is the thing that makes somebody read what is
+ * about to change.
+ */
+
+export interface McpTool {
+  name: string;
+  title: string;
+  description: string;
+  /** Raw zod shape — the SDK wants this, and JSON Schema is derived from it. */
+  schema: Record<string, z.ZodTypeAny>;
+  /** What a caller must hold. Enforced over HTTP; stdio is already trusted. */
+  permission: Permission;
+  run: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+/** Raised by a handler when the caller's arguments cannot be satisfied. */
+export class McpToolError extends Error {
+  code: string;
+  details?: unknown;
+  constructor(code: string, message: string, details?: unknown) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const s = () => getServiceSupabase();
+
+/**
+ * Pages a select to exhaustion.
+ *
+ * PostgREST caps a single response at 1000 rows, so an unpaged count is a sample
+ * wearing a total's clothes — that mistake has already produced two wrong figures
+ * in this project. Hitting the page cap is REPORTED rather than absorbed.
+ */
+const PAGE = 1000;
+const MAX_PAGES = 200;
+
+/**
+ * The slice of the PostgREST builder this needs.
+ *
+ * Declared structurally rather than by importing the client's own generics:
+ * threading those through a helper is what previously made the compiler give up
+ * with "type instantiation is excessively deep", and the casts to silence it
+ * were worse than the problem.
+ */
+interface PagedQuery {
+  order: (
+    column: string,
+    opts: { ascending: boolean }
+  ) => { range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> };
+}
+
+async function pageAll(build: () => PagedQuery) {
+  const rows: Record<string, unknown>[] = [];
+  let truncated = false;
+  for (let p = 0; ; p += 1) {
+    if (p >= MAX_PAGES) {
+      truncated = true;
+      break;
+    }
+    // A stable sort key is required, or ranges overlap and rows repeat.
+    const { data, error } = await build().order('id', { ascending: true }).range(p * PAGE, (p + 1) * PAGE - 1);
+    if (error) throw new McpToolError('query_failed', error.message);
+    const batch = (data ?? []) as Record<string, unknown>[];
+    if (batch.length === 0) break;
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+  return { rows, truncated };
+}
+
+/*
+  One string literal, deliberately not a concatenation.
+
+  supabase-js infers the row type from the select TEXT, and it can only do that
+  when the argument is a literal. Built by joining or concatenating, the inference
+  collapses to `GenericStringError[]` and every field access downstream becomes a
+  cast. Long line, correct types.
+*/
+const PROJECT_COLUMNS =
+  'id, ref_code, canonical_name, company_name_raw, account_key, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, estimated_value_currency, building_type, source_key, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at';
+
+export const MCP_TOOLS: McpTool[] = [
+  {
+    name: 'search_projects',
+    title: 'Search projects',
+    description:
+      'Find construction projects in the pipeline. Filters are combined with AND. Returns a summary row per project — use get_project for the full record. Phase filtering uses the normalised vocabulary, not the raw source wording.',
+    permission: 'leads.view.all',
+    schema: {
+      query: z.string().optional().describe('Case-insensitive match on project name or company name'),
+      bu: z.enum(['usa', 'uk', 'ireland', 'apac', 'export']).optional().describe('Business unit'),
+      vertical: z.string().optional().describe('e.g. construction, solar, procurement, oil_gas'),
+      phase: z.enum(PROJECT_PHASES).optional().describe('Normalised phase, not the raw source value'),
+      band: z.enum(['P1', 'P2', 'P3', 'P4']).optional().describe('Priority band'),
+      assignee: z.string().optional().describe('Roster member name; matched loosely'),
+      exported: z.boolean().optional().describe('true = already sent to Apollo, false = not yet'),
+      hasContact: z.boolean().optional().describe('true = has an email or phone on file'),
+      source: z.string().optional().describe('source_key, e.g. find_a_tender_uk, gem_energy_tracker'),
+      buildingType: z
+        .string()
+        .optional()
+        .describe('Substring of building_type. "Healthcare" finds the NHS construction leads.'),
+      minValue: z.number().optional().describe('Minimum estimated_value'),
+      limit: z.number().int().min(1).max(200).default(25),
+    },
+    async run(a) {
+      const limit = (a.limit as number) ?? 25;
+      let assigneeId: string | null = null;
+      const assignee = a.assignee as string | undefined;
+      if (assignee?.trim()) {
+        const { rows } = await getRoster();
+        const hits = rows.filter((r) => r.name?.toLowerCase().includes(assignee.trim().toLowerCase()));
+        if (hits.length === 0) {
+          throw new McpToolError('assignee_not_found', `No roster member matches "${assignee}".`, {
+            available: rows.map((r) => r.name),
+          });
+        }
+        if (hits.length > 1) {
+          throw new McpToolError('assignee_ambiguous', `"${assignee}" matches ${hits.length} people.`, {
+            matches: hits.map((r) => r.name),
+          });
+        }
+        assigneeId = hits[0].id;
+      }
+
+      let q = s().from('canonical_projects').select(PROJECT_COLUMNS);
+      if (a.bu) q = q.eq('bu', a.bu as string);
+      if (a.vertical) q = q.eq('vertical', a.vertical as string);
+      if (a.band) q = q.eq('priority_band', a.band as string);
+      if (assigneeId) q = q.eq('assignee_id', assigneeId);
+      if (a.exported === true) q = q.not('apollo_exported_at', 'is', null);
+      if (a.exported === false) q = q.is('apollo_exported_at', null);
+      if (a.hasContact === true) q = q.or('contact_email.not.is.null,contact_phone.not.is.null');
+      if (a.source) q = q.eq('source_key', (a.source as string).trim());
+      if (a.buildingType) q = q.ilike('building_type', `%${(a.buildingType as string).trim()}%`);
+      if (a.minValue != null) q = q.gte('estimated_value', a.minValue as number);
+      if (a.query) {
+        const like = `%${(a.query as string).trim()}%`;
+        q = q.or(`canonical_name.ilike.${like},company_name_raw.ilike.${like}`);
+      }
+
+      /*
+        Phase is normalised in code, not in SQL — 117 raw values map to 11, and
+        the mapping lives in lib/phase.ts. So filtering on phase over-fetches and
+        filters here, which is why the cap is generous but bounded.
+      */
+      const wantPhase = (a.phase as string) ?? null;
+      const { data, error } = await q
+        .order('priority_score', { ascending: false, nullsFirst: false })
+        .limit(wantPhase ? Math.min(2000, limit * 40) : limit);
+      if (error) throw new McpToolError('query_failed', error.message);
+
+      let rows = (data ?? []) as Record<string, unknown>[];
+      if (wantPhase) rows = rows.filter((r) => normalisePhase(r.current_phase as string) === wantPhase).slice(0, limit);
+
+      return {
+        count: rows.length,
+        truncated: rows.length === limit,
+        projects: rows.map((r) => ({
+          id: r.id,
+          ref: r.ref_code,
+          name: r.canonical_name,
+          company: r.company_name_raw,
+          // The handle get_account takes. Without it that tool is unreachable.
+          accountKey: r.account_key,
+          party: partyLabel(r.icp_code as string),
+          bu: r.bu,
+          vertical: r.vertical,
+          phase: normalisePhase(r.current_phase as string),
+          phaseRaw: r.current_phase,
+          band: r.priority_band,
+          score: r.priority_score,
+          value: r.estimated_value,
+          currency: r.estimated_value_currency,
+          buildingType: r.building_type,
+          source: r.source_key,
+          location: [r.city, r.state_province, r.country].filter(Boolean).join(', ') || null,
+          contacts:
+            (Array.isArray(r.additional_contacts) ? (r.additional_contacts as unknown[]).length : 0) +
+            (r.contact_name ? 1 : 0),
+          reachable: Boolean(r.contact_email || r.contact_phone),
+          exportedAt: r.apollo_exported_at,
+        })),
+      };
+    },
+  },
+
+  {
+    name: 'get_project',
+    title: 'Get one project in full',
+    description:
+      'Everything held on a single project, including the rendered call brief a rep would read: why now, the facts, timing, the full contact committee, priority reasoning and the source link. Accepts either the record id or the ref code.',
+    permission: 'leads.view.all',
+    schema: {
+      id: z.string().optional().describe('The record id (uuid)'),
+      ref: z.string().optional().describe('The ref_code, e.g. USA-PROC-US-7FA612FB'),
+    },
+    async run(a) {
+      if (!a.id && !a.ref) throw new McpToolError('missing_argument', 'Give either id or ref.');
+      let q = s().from('canonical_projects').select('*');
+      q = a.id ? q.eq('id', a.id as string) : q.eq('ref_code', a.ref as string);
+      const { data, error } = await q.limit(1);
+      if (error) throw new McpToolError('query_failed', error.message);
+      const r = ((data ?? []) as unknown as Record<string, unknown>[])[0];
+      if (!r) throw new McpToolError('not_found', `No project for ${a.id ? `id ${a.id}` : `ref ${a.ref}`}.`);
+
+      const { rows: roster } = await getRoster();
+      return {
+        id: r.id,
+        ref: r.ref_code,
+        name: r.canonical_name,
+        company: r.company_name_raw,
+        accountKey: r.account_key,
+        party: partyLabel(r.icp_code as string),
+        phase: normalisePhase(r.current_phase as string),
+        phaseRaw: r.current_phase,
+        assignedTo: roster.find((x) => x.id === r.assignee_id)?.name ?? null,
+        exportedAt: r.apollo_exported_at,
+        apolloContactId: r.apollo_contact_id,
+        // The same text the export writes into Apollo, so both agree by construction.
+        brief: renderRecordBrief(r as never, r.contact_email as string),
+      };
+    },
+  },
+
+  {
+    name: 'get_handover_status',
+    title: 'Who received leads, and what is stuck',
+    description:
+      'Per roster member: leads already sent to Apollo, leads ready to send on the next run, and the first blocking reason for the rest. Uses the export\'s own eligibility gates, so "ready" is what would genuinely be sent.',
+    permission: 'kpi.view.team',
+    schema: {},
+    async run() {
+      const b = await getHandoverByPerson();
+      if (b.tableMissing) throw new McpToolError('migration_required', 'The roster table is missing.');
+      return {
+        requiresVerifiedEmail: b.requireVerified,
+        unrosteredLeads: b.unrostered,
+        people: b.rows.map((r) => ({
+          name: r.name,
+          active: r.isActive,
+          dailyQuota: r.dailyQuota,
+          received: r.received,
+          readyToSend: r.ready,
+          waitingOnContact: r.waitingOnContact,
+          blockedUnverified: r.blockedUnverified,
+          doNotContact: r.doNotContact,
+        })),
+      };
+    },
+  },
+
+  {
+    name: 'list_export_runs',
+    title: 'Recent Apollo export runs',
+    description:
+      'History of sends to Apollo, newest first — when, who triggered it, what scope, and the created/existing/failed counts. Apollo raises no notification of its own, so this is the only record that an export happened.',
+    permission: 'leads.export',
+    schema: { limit: z.number().int().min(1).max(50).default(10) },
+    async run(a) {
+      const { rows, tableMissing } = await getExportRuns((a.limit as number) ?? 10);
+      if (tableMissing) throw new McpToolError('migration_required', 'export_runs is missing.');
+      return {
+        count: rows.length,
+        runs: rows.map((r) => ({
+          startedAt: r.startedAt,
+          trigger: r.trigger,
+          scope: r.filters?.assignee ?? (r.filters?.bu ? `BU ${r.filters.bu}` : 'everyone'),
+          requested: r.requested,
+          created: r.created,
+          existing: r.existing,
+          failed: r.failed,
+          status: r.status,
+          durationMs: r.durationMs,
+        })),
+      };
+    },
+  },
+
+  {
+    name: 'list_assignees',
+    title: 'The roster',
+    description:
+      'Who can receive leads, their daily quota, and the scope that decides which leads reach them. An empty bu/vertical/region list means no restriction on that axis, not "nothing".',
+    permission: 'kpi.view.team',
+    schema: { includeInactive: z.boolean().default(false) },
+    async run(a) {
+      const { rows, tableMissing } = await getRoster();
+      if (tableMissing) throw new McpToolError('migration_required', 'The assignees table is missing.');
+      const people = rows.filter((r) => a.includeInactive || r.is_active);
+      return {
+        count: people.length,
+        activeCount: rows.filter((r) => r.is_active).length,
+        people: people.map((r) => ({
+          name: r.name,
+          email: r.email,
+          role: r.role,
+          active: r.is_active,
+          dailyQuota: r.daily_lead_quota,
+          bu: r.bu ?? [],
+          verticals: r.verticals ?? [],
+          regions: r.regions ?? [],
+        })),
+      };
+    },
+  },
+
+  {
+    name: 'summarise_pipeline',
+    title: 'Pipeline totals',
+    description:
+      'Counts across the whole table, grouped by a dimension. Phase uses the normalised 11-value vocabulary. Paged, so totals are exact rather than a 1000-row sample.',
+    permission: 'kpi.view.team',
+    schema: { groupBy: z.enum(['phase', 'band', 'vertical', 'bu', 'party']).default('phase') },
+    async run(a) {
+      const groupBy = (a.groupBy as string) ?? 'phase';
+      const { rows, truncated } = await pageAll(
+        () =>
+          s()
+            .from('canonical_projects')
+            .select('current_phase, priority_band, vertical, bu, icp_code, apollo_exported_at, assignee_id') as unknown as PagedQuery
+      );
+      const keyOf = (r: Record<string, unknown>) => {
+        if (groupBy === 'phase') return normalisePhase(r.current_phase as string) ?? '(unknown)';
+        if (groupBy === 'band') return (r.priority_band as string) ?? '(unscored)';
+        if (groupBy === 'party') return partyLabel(r.icp_code as string) ?? '(unknown)';
+        return (r[groupBy] as string) ?? '(none)';
+      };
+      const tally: Record<string, { total: number; assigned: number; exported: number }> = {};
+      for (const r of rows) {
+        const k = keyOf(r);
+        tally[k] ??= { total: 0, assigned: 0, exported: 0 };
+        tally[k].total += 1;
+        if (r.assignee_id) tally[k].assigned += 1;
+        if (r.apollo_exported_at) tally[k].exported += 1;
+      }
+      const { config } = await getEnrichmentPolicy();
+      return {
+        records: rows.length,
+        // Loud, because a partial total read as a total is worse than no total.
+        ...(truncated
+          ? { truncated: true, warning: `Stopped at the ${MAX_PAGES * PAGE}-row page cap — counts are a floor.` }
+          : {}),
+        groupBy,
+        requireVerifiedEmail: config.requireChannel,
+        groups: Object.entries(tally)
+          .sort((x, y) => y[1].total - x[1].total)
+          .map(([key, v]) => ({ key, ...v })),
+      };
+    },
+  },
+
+  {
+    name: 'list_sources',
+    title: 'Where the data comes from',
+    description:
+      'Every source the tool can pull from, with how many records it has contributed, how complete they are, when it last delivered, and whether it is switched on. Use this to answer "why do we have no leads in X" before assuming the pipeline is broken.',
+    permission: 'sources.run',
+    schema: { withRecordsOnly: z.boolean().default(false) },
+    async run(a) {
+      const [stats, cfg] = await Promise.all([getSourceStats(), getAllSourceConfigs()]);
+      const rows = SOURCE_CATALOG.map((c) => {
+        const st = stats[c.sourceKey];
+        const conf = c.slug ? cfg.configs[c.slug] : undefined;
+        return {
+          name: c.name,
+          sourceKey: c.sourceKey,
+          slug: c.slug ?? null,
+          category: c.category,
+          coverage: c.coverage,
+          auth: c.auth,
+          records: st?.count ?? 0,
+          avgCompleteness: st?.avgCompleteness ?? null,
+          lastIngested: st?.lastIngested ?? null,
+          enabled: conf?.isEnabled ?? null,
+          schedule: conf?.scheduleCron ?? null,
+          maxRecordsPerRun: conf?.maxRecordsPerRun ?? null,
+        };
+      })
+        .filter((r) => !a.withRecordsOnly || r.records > 0)
+        .sort((x, y) => y.records - x.records);
+      return {
+        count: rows.length,
+        totalRecords: rows.reduce((n, r) => n + r.records, 0),
+        configTableMissing: cfg.tableMissing,
+        sources: rows,
+      };
+    },
+  },
+
+  {
+    name: 'list_ingestion_runs',
+    title: 'Recent source pulls',
+    description:
+      'History of fetches FROM sources — distinct from list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
+    permission: 'sources.run',
+    schema: {
+      source: z.string().optional().describe('Slug, e.g. find-a-tender, gem, nyc-permits'),
+      limit: z.number().int().min(1).max(100).default(15),
+    },
+    async run(a) {
+      const { runs, tableMissing } = await getIngestionRuns({
+        slug: a.source as string | undefined,
+        limit: (a.limit as number) ?? 15,
+      });
+      if (tableMissing) throw new McpToolError('migration_required', 'ingestion_runs is missing.');
+      return {
+        count: runs.length,
+        runs: runs.map((r) => ({
+          startedAt: r.startedAt,
+          source: r.slug,
+          trigger: r.trigger,
+          status: r.status,
+          fetched: r.fetched,
+          inserted: r.inserted,
+          updated: r.updated,
+          duplicates: r.duplicates,
+          failed: r.failed,
+          durationMs: r.durationMs,
+          error: r.error,
+          params: r.params,
+        })),
+      };
+    },
+  },
+
+  {
+    name: 'get_account',
+    title: 'One company and every project it touches',
+    description:
+      'A company-level view rather than a per-project one: the account record, its enrichment, and every project linked to it. This is the view for "what else is this contractor doing" before a call.',
+    permission: 'leads.view.all',
+    schema: { accountKey: z.string().describe('The normalised account_key, as returned on a project') },
+    async run(a) {
+      const key = a.accountKey as string;
+      const d = await getAccountDetail(key);
+      if (!d.view && !d.account && d.projectCount === 0) {
+        throw new McpToolError('not_found', `No account for key "${key}".`);
+      }
+      return {
+        accountKey: key,
+        name: d.view?.account_name ?? d.account?.company_name_raw ?? null,
+        role: d.view?.account_role ?? null,
+        keyAccount: d.view?.key_account ?? null,
+        totalValue: d.view?.total_value ?? null,
+        projectCount: d.projectCount,
+        enrichment: d.enrichment
+          ? {
+              parentAccount: d.enrichment.parent_account,
+              expansionSignal: d.enrichment.expansion_signal,
+              relatedEntities: d.enrichment.related_entities?.length ?? 0,
+              portfolioProjects: d.enrichment.portfolio_project_count,
+            }
+          : null,
+        projects: d.projects.map((p) => ({
+          ref: p.ref_code,
+          name: p.canonical_name,
+          phase: normalisePhase(p.current_phase),
+          buildingType: p.building_type,
+          value: p.estimated_value,
+          currency: p.estimated_value_currency,
+          exportedAt: p.apollo_exported_at,
+        })),
+      };
+    },
+  },
+];
+
+/** JSON Schema for a tool's arguments, derived from the zod shape. */
+export function toolInputSchema(tool: McpTool): Record<string, unknown> {
+  return z.toJSONSchema(z.object(tool.schema)) as Record<string, unknown>;
+}
+
+export function findTool(name: string): McpTool | undefined {
+  return MCP_TOOLS.find((t) => t.name === name);
+}

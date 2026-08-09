@@ -14,6 +14,9 @@ import { requirePermission } from '@/lib/auth/session';
 import { loadCustomFields, FIELD_MAP } from '@/lib/export/apolloFields';
 import { getExportFieldPolicy } from '@/lib/policies';
 import { DEFAULT_EXPORT_FIELD_POLICY } from '@/lib/export/fieldPolicy';
+import { listTokens } from '@/lib/auth/apiTokens';
+import { getRoles } from '@/lib/auth/roleStore';
+import TokenManager from '@/components/settings/TokenManager';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +26,11 @@ export default async function SettingsPage() {
   await requirePermission('settings.manage', '/admin/settings');
 
   const supabaseOn = isSupabaseServerConfigured();
+
+  // Tokens for the HTTP MCP endpoint. A token carries a role, so the picker
+  // needs the live role list rather than a hard-coded six.
+  const [{ tokens, tableMissing: tokensMissing }, { roles: allRoles }] = await Promise.all([listTokens(), getRoles()]);
+  const tokenRoles = allRoles.map((r) => ({ name: r.name, label: r.label }));
 
   // The policies moved to the pages that run them: scoring to /control/routing
   // next to the bands it produces, enrichment to /control/enrichment next to
@@ -141,6 +149,18 @@ export default async function SettingsPage() {
       </section>
 
       {/* Per-source credential storage (Supabase-backed) */}
+      <section className="mt-12">
+        <h2 className="text-lg font-semibold text-foreground">MCP access tokens</h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          Let an AI assistant read the pipeline over HTTP at <code>/api/mcp</code> — the same tools the local MCP
+          server offers, read-only, scoped to the role you pick. Point Claude Desktop or any MCP client at that URL
+          with the token as a bearer header.
+        </p>
+        <div className="mt-4">
+          <TokenManager tokens={tokens} roles={tokenRoles} tableMissing={tokensMissing} />
+        </div>
+      </section>
+
       <section className="mt-12">
         <h2 className="text-lg font-semibold text-foreground">Source Credentials</h2>
         <p className="mt-1 max-w-2xl text-sm text-muted">
