@@ -8,6 +8,7 @@ import { BU_LABELS } from '@/lib/semantics';
 import { Card, CardBody, CardHeader } from '@/components/ui';
 import HowItRuns from '@/components/help/HowItRuns';
 import SourceLimits from '@/components/help/SourceLimits';
+import HealthInfraFilter from '@/components/help/HealthInfraFilter';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 
@@ -421,6 +422,8 @@ export default async function HelpPage() {
       <HowItRuns />
 
       <SourceLimits />
+
+      <HealthInfraFilter />
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-12">
