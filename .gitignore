@@ -53,3 +53,8 @@ captured.json
 !public/*.png
 !src/app/*.png
 captured-*.json
+
+# Restore files written by scripts/unassign-leads.mjs.
+# They hold lead ids and who owned them — operational data, not source, and not
+# something to carry in the repo. Keep them where the operator ran the script.
+unassigned-*.json
