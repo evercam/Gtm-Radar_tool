@@ -217,7 +217,7 @@ export default async function EnrichmentPage() {
         <EnrichmentRunner defaultBatchSize={policy.batchSize} maxBatchSize={policy.maxBatchSize} />
       </div>
 
-      {can(user.role, 'settings.manage') ? (
+      {can(user, 'settings.manage') ? (
         <div className="mb-8">
           <Card id="policy" className="scroll-mt-6">
             <CardHeader

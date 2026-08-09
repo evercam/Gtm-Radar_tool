@@ -3,7 +3,9 @@ import { requirePermission } from '@/lib/auth/session';
 import { isSupabaseServiceConfigured, getServiceSupabase } from '@/lib/supabase/server';
 import { getAssignmentRules } from '@/lib/assignmentStore';
 import { getUserProfiles } from '@/lib/auth/users';
-import { ROLE_LABELS, can, type Role } from '@/lib/auth/roles';
+import { can } from '@/lib/auth/roles';
+import { listRoles, getPermissionCatalog } from '@/lib/auth/roleStore';
+import RoleManager from '@/components/control/RoleManager';
 import { Card, CardHeader, CardBody, EmptyState } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
@@ -267,7 +269,7 @@ export default async function TeamPage() {
     return {
       id: u.id,
       name: u.fullName || u.email || 'Unnamed',
-      role: ROLE_LABELS[u.role as Role] ?? u.role,
+      role: u.role,
       assignedToday: load.assignedToday,
       dailyQuota: 50,
       openLeads: load.openLeads,
@@ -275,7 +277,13 @@ export default async function TeamPage() {
     };
   });
 
-  const canManageUsers = can(me.role, 'users.manage');
+  const canManageUsers = can(me, 'users.manage');
+
+  /*
+    The roles an admin may hand out, read from the table rather than from a
+    constant — a role somebody defines is useless if the picker cannot offer it.
+  */
+  const [{ roles: roleList }, permissionCatalog] = await Promise.all([listRoles(), getPermissionCatalog()]);
 
   return (
     <div>
@@ -402,13 +410,23 @@ export default async function TeamPage() {
           />
 
           <Card>
+            <CardHeader
+              title="Roles"
+              subtitle="What each role may do. Create your own — permissions are the checks the code enforces"
+            />
+            <CardBody>
+              <RoleManager roles={roleList} permissions={permissionCatalog} />
+            </CardBody>
+          </Card>
+
+          <Card>
             <CardHeader title={`Members (${users.length})`} subtitle="Everyone with access, sellers and staff alike" />
             {users.length === 0 ? (
               <CardBody>
                 <EmptyState title="No users yet" description="Grant someone access below, or let them sign in with Google." />
               </CardBody>
             ) : (
-              <UserTable users={users} currentUserId={me.id} />
+              <UserTable users={users} currentUserId={me.id} roles={roleList} />
             )}
           </Card>
 
@@ -418,7 +436,7 @@ export default async function TeamPage() {
               subtitle="Sets their role now, so their first Google sign-in lands with it — nothing is emailed"
             />
             <CardBody>
-              <InviteUserForm />
+              <InviteUserForm roles={roleList} />
             </CardBody>
           </Card>
         </div>

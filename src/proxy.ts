@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { permissionForPath, can, isRole, type Role } from '@/lib/auth/roles';
+import { permissionsForRole } from '@/lib/auth/roleStore';
 import {
   SESSION_COOKIE,
   verifySession,
@@ -98,7 +99,15 @@ export async function proxy(request: NextRequest) {
     const row = profile as { role: string; is_active: boolean } | null;
     const role: Role | null = row && isRole(row.role) ? row.role : null;
 
-    if (!row?.is_active || !can(role, required)) {
+    /*
+      Roles are database rows now, so the permission bundle has to be looked up
+      rather than read from a constant. This is the proxy's own optimistic check
+      — the page re-checks server-side regardless — but it must not go stale, so
+      it reads the role live rather than caching a matrix in the edge runtime.
+    */
+    const permissions = role ? await permissionsForRole(role) : [];
+
+    if (!row?.is_active || !can({ permissions }, required)) {
       const home = request.nextUrl.clone();
       home.pathname = '/';
       home.search = '?denied=1';

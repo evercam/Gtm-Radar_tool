@@ -125,7 +125,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   // Sellers see their own book by default; managers and admins see everything
   // and opt into a narrower view. `mine=0` lets a seller look at the wider
   // pool their scope covers without pretending they own it.
-  const canSeeAll = can(user.role, 'leads.view.all');
+  const canSeeAll = can(user, 'leads.view.all');
   const mine = sp.mine ?? (canSeeAll ? '0' : '1');
   const ownerId = mine === '1' ? user.id : undefined;
   const unassigned = sp.owner === 'none';

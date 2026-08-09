@@ -2,15 +2,20 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type Role } from '@/lib/auth/roles';
+import type { Role } from '@/lib/auth/roles';
 import { Button } from '@/components/ui';
 import { useToast } from '@/components/ui/Toast';
 
-export default function InviteUserForm() {
+export default function InviteUserForm({
+  roles,
+}: {
+  /* Database rows, not the built-in six — an admin's own role must be offerable. */
+  roles: { name: string; label: string; description: string }[];
+}) {
   const router = useRouter();
   const toast = useToast();
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<Role>('bdr');
+  const [role, setRole] = useState<Role>(roles[0]?.name ?? 'bdr');
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -54,9 +59,9 @@ export default function InviteUserForm() {
       <label className="text-muted text-xs font-medium">
         Role
         <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={`mt-1 block w-48 ${field}`}>
-          {ROLES.map((r) => (
-            <option key={r} value={r}>
-              {ROLE_LABELS[r]}
+          {roles.map((r) => (
+            <option key={r.name} value={r.name}>
+              {r.label}
             </option>
           ))}
         </select>
@@ -66,7 +71,7 @@ export default function InviteUserForm() {
         {busy ? 'Saving…' : 'Grant access'}
       </Button>
 
-      <p className="text-subtle w-full text-xs">{ROLE_DESCRIPTIONS[role]}</p>
+      <p className="text-subtle w-full text-xs">{roles.find((r) => r.name === role)?.description ?? ''}</p>
     </form>
   );
 }

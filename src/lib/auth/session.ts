@@ -3,7 +3,8 @@ import { isCronRequest } from '@/lib/auth/cronSecret';
 import { redirect } from 'next/navigation';
 import { getRequestSupabase, getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { sessionClaims } from './cookie';
-import { can, isRole, type Permission, type Role } from './roles';
+import { can, isRole, BUILT_IN_ROLE_PERMISSIONS, KNOWN_PERMISSIONS, type Permission, type Role } from './roles';
+import { permissionsForRole } from './roleStore';
 import { isAuthInstalled } from './installed';
 
 /**
@@ -31,6 +32,15 @@ export interface SessionUser {
   regions: string[];
   isActive: boolean;
   onboardedAt: string | null;
+  /**
+   * The role's permissions, resolved once when the session loads.
+   *
+   * Roles are database rows now, so `can()` cannot look one up synchronously.
+   * Resolving here means every call site downstream stays synchronous — which is
+   * what let roles become dynamic without turning twenty checks in pages and
+   * route handlers into awaits.
+   */
+  permissions: string[];
 }
 
 /** A request-scoped Supabase client carrying the caller's session JWT. */
@@ -74,16 +84,18 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     onboarded_at: string | null;
   };
 
+  const role = isRole(row.role) ? row.role : 'bdr';
   return {
     id: row.id,
     email: row.email ?? claims.email ?? null,
     fullName: row.full_name,
-    role: isRole(row.role) ? row.role : 'bdr',
+    role,
     bu: row.bu ?? [],
     verticals: row.verticals ?? [],
     regions: row.regions ?? [],
     isActive: row.is_active,
     onboardedAt: row.onboarded_at,
+    permissions: await permissionsForRole(role),
   };
 }
 
@@ -102,6 +114,8 @@ const SETUP_USER: SessionUser = {
   regions: [],
   isActive: true,
   onboardedAt: null,
+  // Pre-migration stand-in: the built-in admin bundle, not a database lookup.
+  permissions: [...KNOWN_PERMISSIONS],
 };
 
 /** Redirects to sign-in unless somebody is signed in. */
@@ -122,7 +136,7 @@ export async function requireUser(returnTo?: string): Promise<SessionUser> {
  */
 export async function requirePermission(permission: Permission, returnTo?: string): Promise<SessionUser> {
   const user = await requireUser(returnTo);
-  if (!can(user.role, permission)) redirect('/?denied=1');
+  if (!can(user, permission)) redirect('/?denied=1');
   return user;
 }
 
@@ -145,6 +159,8 @@ const CRON_USER: SessionUser = {
   regions: [],
   isActive: true,
   onboardedAt: null,
+  // The scheduler is not a database role; it holds the built-in admin bundle.
+  permissions: [...BUILT_IN_ROLE_PERMISSIONS.admin],
 };
 
 /** Permission check for route handlers, which return a 403 rather than redirect. */
@@ -156,6 +172,6 @@ export async function checkPermission(
 
   const user = await getSessionUser();
   if (!user || !user.isActive) return { ok: false, status: 401, message: 'Sign in to continue.' };
-  if (!can(user.role, permission)) return { ok: false, status: 403, message: 'Your role does not allow this action.' };
+  if (!can(user, permission)) return { ok: false, status: 403, message: 'Your role does not allow this action.' };
   return { ok: true, user };
 }

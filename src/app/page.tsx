@@ -73,12 +73,13 @@ function PanelSkeleton({ rows = 5 }: { rows?: number }) {
 async function KpiSection({
   days,
   seesTeam,
-  role,
+  permissions,
   userId,
 }: {
   days: number;
   seesTeam: boolean;
-  role: string;
+  /* The resolved bundle, not a role name — roles are database rows now. */
+  permissions: string[];
   userId: string;
 }) {
   const kpi = await getKpiSummary({ days, ownerId: seesTeam ? undefined : userId });
@@ -88,8 +89,8 @@ async function KpiSection({
       kpi={kpi}
       days={days}
       scope={seesTeam ? 'team' : 'you'}
-      canExport={can(role as never, 'leads.export') || seesTeam}
-      canSeeExportHistory={can(role as never, 'leads.export')}
+      canExport={can({ permissions }, 'leads.export') || seesTeam}
+      canSeeExportHistory={can({ permissions }, 'leads.export')}
     />
   );
 }
@@ -115,7 +116,7 @@ export default async function DashboardPage({
   const days = KPI_WINDOWS.includes(Number(daysParam)) ? Number(daysParam) : 30;
 
   // A seller sees their own numbers; only managers and admins see the team's.
-  const seesTeam = can(user.role, 'kpi.view.team') || can(user.role, 'leads.view.all');
+  const seesTeam = can(user, 'kpi.view.team') || can(user, 'leads.view.all');
 
   if (!isSupabaseServerConfigured()) {
     return (
@@ -172,8 +173,8 @@ export default async function DashboardPage({
   const tiered = totalRecords - untiered;
   // A and B arrive workable; D and E need enrichment before anyone can call.
   const workable = byTier.filter((t) => t.tier === 'A' || t.tier === 'B').reduce((s, t) => s + t.count, 0);
-  const canSearch = can(user.role, 'sources.run');
-  const canRoute = can(user.role, 'routing.edit');
+  const canSearch = can(user, 'sources.run');
+  const canRoute = can(user, 'routing.edit');
 
   const toSales = byLane.filter((l) => l.route === 'sales').reduce((sum, l) => sum + l.count, 0);
   const actNow = byLane.find((l) => l.route === 'sales' && l.stage === 'act_now')?.count ?? 0;
@@ -213,7 +214,7 @@ export default async function DashboardPage({
         finished. Behind its own boundary the rest of the page paints immediately
         and this fills in when it is ready.
       */}
-      {can(user.role, 'kpi.view') ? (
+      {can(user, 'kpi.view') ? (
         <div className="mb-10">
           <div className="mb-3 flex items-center justify-end gap-1.5">
             {KPI_WINDOWS.map((w) => (
@@ -231,7 +232,7 @@ export default async function DashboardPage({
             ))}
           </div>
           <Suspense fallback={<PanelSkeleton rows={6} />}>
-            <KpiSection days={days} seesTeam={seesTeam} role={user.role} userId={user.id} />
+            <KpiSection days={days} seesTeam={seesTeam} permissions={user.permissions} userId={user.id} />
           </Suspense>
         </div>
       ) : null}
@@ -256,7 +257,7 @@ export default async function DashboardPage({
           <Link href="/records?sort=priority" className="text-brand underline underline-offset-2">
             All records
           </Link>
-          {can(user.role, 'enrichment.run') ? (
+          {can(user, 'enrichment.run') ? (
             <Link href="/control/enrichment" className="text-brand underline underline-offset-2">
               Enrichment queue
             </Link>
@@ -272,7 +273,7 @@ export default async function DashboardPage({
             title="Nothing scored yet"
             description="Records are ingested but not yet ranked."
             action={
-              can(user.role, 'routing.edit') ? (
+              can(user, 'routing.edit') ? (
                 <Link href="/control/routing" className="text-brand text-sm underline">
                   Score &amp; route all
                 </Link>

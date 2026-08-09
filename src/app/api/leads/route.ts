@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
-import { checkPermission } from '@/lib/auth/session';
-import { can, type Role } from '@/lib/auth/roles';
+import { checkPermission, type SessionUser } from '@/lib/auth/session';
+import { can } from '@/lib/auth/roles';
 import { transitionLead } from '@/lib/lifecycleStore';
 import {
   reassignLead,
@@ -25,15 +25,15 @@ export const maxDuration = 120;
  */
 
 /** Whether this user may act on this specific lead. */
-async function ownsOrManages(userId: string, role: Role, leadId: string): Promise<boolean> {
-  if (can(role, 'leads.view.all')) return true;
+async function ownsOrManages(user: SessionUser, leadId: string): Promise<boolean> {
+  if (can(user, 'leads.view.all')) return true;
   try {
     const { data } = await getServiceSupabase()
       .from('canonical_projects')
       .select('owner_user_id')
       .eq('id', leadId)
       .maybeSingle();
-    return (data as { owner_user_id: string | null } | null)?.owner_user_id === userId;
+    return (data as { owner_user_id: string | null } | null)?.owner_user_id === user.id;
   } catch {
     return false;
   }
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
 
   // --- rule management (admins) --------------------------------------------
   if (body.action === 'saveRules') {
-    if (!can(user.role, 'settings.manage')) {
+    if (!can(user, 'settings.manage')) {
       return NextResponse.json({ ok: false, message: 'Your role does not allow this action.' }, { status: 403 });
     }
     const { saveAssignmentRules } = await import('@/lib/assignmentStore');
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
 
   // --- the roster: who can receive leads, no invitation required -----------
   if (body.action === 'saveAssignee' || body.action === 'removeAssignee') {
-    if (!can(user.role, 'users.manage')) {
+    if (!can(user, 'users.manage')) {
       return NextResponse.json({ ok: false, message: 'Your role does not allow this action.' }, { status: 403 });
     }
     const { saveAssignee, removeAssignee } = await import('@/lib/assignmentStore');
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
 
   // --- the auto-assign pass (managers and admins) ---------------------------
   if (body.action === 'autoAssign') {
-    if (!can(user.role, 'leads.reassign')) {
+    if (!can(user, 'leads.reassign')) {
       return NextResponse.json({ ok: false, message: 'Your role does not allow this action.' }, { status: 403 });
     }
 
@@ -173,7 +173,7 @@ export async function POST(request: NextRequest) {
   // --- per-lead actions -----------------------------------------------------
   if (!body.id) return NextResponse.json({ ok: false, message: 'A lead id is required.' }, { status: 400 });
 
-  const permitted = await ownsOrManages(user.id, user.role, body.id);
+  const permitted = await ownsOrManages(user, body.id);
   if (!permitted) {
     return NextResponse.json({ ok: false, message: 'That lead is not assigned to you.' }, { status: 403 });
   }
@@ -193,7 +193,7 @@ export async function POST(request: NextRequest) {
     }
 
     case 'unassign': {
-      if (!can(user.role, 'leads.reassign')) {
+      if (!can(user, 'leads.reassign')) {
         return NextResponse.json({ ok: false, message: 'Your role does not allow this action.' }, { status: 403 });
       }
       const res = await reassignLead(body.id, null, {

@@ -142,7 +142,7 @@ export default async function RoutingPage() {
         </Card>
       </div>
 
-      {can(user.role, 'scoring.edit') ? (
+      {can(user, 'scoring.edit') ? (
         <Card id="scoring" className="scroll-mt-6">
           <CardHeader
             title="Lead scoring parameters"

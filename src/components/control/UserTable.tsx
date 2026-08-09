@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ROLES, ROLE_LABELS, type Role } from '@/lib/auth/roles';
+import type { Role } from '@/lib/auth/roles';
 import type { UserProfile } from '@/lib/auth/users';
 import { Table, THead, TBody, Th, Td, Badge } from '@/components/ui';
 import { useToast } from '@/components/ui/Toast';
@@ -12,7 +12,17 @@ import { useToast } from '@/components/ui/Toast';
  * API — this only reflects the outcome, so the guard cannot be bypassed by
  * editing the page.
  */
-export default function UserTable({ users, currentUserId }: { users: UserProfile[]; currentUserId: string }) {
+export default function UserTable({
+  users,
+  currentUserId,
+  roles,
+}: {
+  users: UserProfile[];
+  currentUserId: string;
+  /* Passed in rather than imported: roles are database rows, so a hard-coded
+     list here would silently hide every role an admin defines. */
+  roles: { name: string; label: string }[];
+}) {
   const router = useRouter();
   const toast = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -62,9 +72,9 @@ export default function UserTable({ users, currentUserId }: { users: UserProfile
                   onChange={(e) => patch(u.id, { role: e.target.value as Role })}
                   className="border-border-strong bg-surface text-foreground rounded-lg border px-2 py-1 text-xs"
                 >
-                  {ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {ROLE_LABELS[r]}
+                  {roles.map((r) => (
+                    <option key={r.name} value={r.name}>
+                      {r.label}
                     </option>
                   ))}
                 </select>

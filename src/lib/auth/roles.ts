@@ -1,32 +1,20 @@
 /**
- * Roles and the permission matrix.
+ * Permissions, and the built-in roles.
  *
- * Pure data and pure functions — no I/O — so the same definitions drive the
- * proxy guard, the server-side checks in pages and route handlers, and the
- * navigation. Anything that needs to know "may this user do X" imports `can`
- * from here rather than testing role strings inline.
+ * The split that matters: PERMISSIONS live here because each one exists only
+ * where something checks it — `can(user, 'routing.edit')` is a real call site,
+ * and a permission with no call site enforces nothing. ROLES live in the
+ * database (see roleStore.ts), because a role is just a named bundle of these,
+ * and naming a new bundle should not require a deploy.
+ *
+ * What remains here is the compile-time truth the store needs: which permissions
+ * the code actually enforces, and the six built-in roles used as a fallback
+ * whenever the roles table is missing — so a workspace that has not run the
+ * migration keeps working instead of losing every permission at once.
+ *
+ * Pure data and pure functions, no I/O, so the same definitions drive the proxy
+ * guard, the server-side checks, and the navigation.
  */
-
-export const ROLES = ['bdr', 'sdr', 'ae', 'marketing', 'sales_manager', 'admin'] as const;
-export type Role = (typeof ROLES)[number];
-
-export const ROLE_LABELS: Record<Role, string> = {
-  bdr: 'BDR',
-  sdr: 'SDR',
-  ae: 'Account Executive',
-  marketing: 'Marketing',
-  sales_manager: 'Sales Manager',
-  admin: 'Admin',
-};
-
-export const ROLE_DESCRIPTIONS: Record<Role, string> = {
-  bdr: 'Works assigned leads — view, mark handled, transfer',
-  sdr: 'Works assigned leads — view, qualify, transfer',
-  ae: 'Receives qualified leads — view, export, deal status',
-  marketing: 'Works nurture leads — view, nurture, export',
-  sales_manager: 'Whole team — reassignment and BU scoring',
-  admin: 'Everything, plus users, keys, rules and cron',
-};
 
 /** Every capability the UI or an endpoint can gate on. */
 export type Permission =
@@ -48,9 +36,69 @@ export type Permission =
   | 'credentials.manage'
   | 'users.manage';
 
+/**
+ * The permissions the code enforces, as data.
+ *
+ * This is what makes "custom permissions" honest: anything an admin invents is
+ * absent from this list, and every path that surfaces a permission reports it as
+ * unenforced rather than letting it look like it does something.
+ */
+export const KNOWN_PERMISSIONS: readonly Permission[] = [
+  'leads.view.own',
+  'leads.view.all',
+  'leads.qualify',
+  'leads.transfer',
+  'leads.reassign',
+  'leads.export',
+  'kpi.view',
+  'kpi.view.team',
+  'control.access',
+  'sources.run',
+  'sources.ingest',
+  'enrichment.run',
+  'scoring.edit',
+  'routing.edit',
+  'settings.manage',
+  'credentials.manage',
+  'users.manage',
+] as const;
+
+export const PERMISSION_LABELS: Record<string, string> = {
+  'leads.view.own': 'View own leads',
+  'leads.view.all': 'View all leads',
+  'leads.qualify': 'Qualify leads',
+  'leads.transfer': 'Transfer leads',
+  'leads.reassign': 'Reassign leads',
+  'leads.export': 'Export leads',
+  'kpi.view': 'View own KPIs',
+  'kpi.view.team': 'View team KPIs',
+  'control.access': 'Open Control Center',
+  'sources.run': 'Run source searches',
+  'sources.ingest': 'Ingest from sources',
+  'enrichment.run': 'Run enrichment',
+  'scoring.edit': 'Edit scoring',
+  'routing.edit': 'Edit routing',
+  'settings.manage': 'Manage settings',
+  'credentials.manage': 'Manage credentials',
+  'users.manage': 'Manage users',
+};
+
+/**
+ * A role is now any string the roles table defines.
+ *
+ * It was a union of six literals, which is exactly what stopped a seventh from
+ * existing. Kept as a named type so the intent still reads at call sites.
+ */
+export type Role = string;
+
 const BASE_SELLER: Permission[] = ['leads.view.own', 'leads.transfer', 'kpi.view'];
 
-export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+/**
+ * The six built-ins — the fallback when the roles table is unavailable, and the
+ * seed the migration inserts. Editing these no longer changes a running
+ * workspace; edit the role in the UI instead.
+ */
+export const BUILT_IN_ROLE_PERMISSIONS: Record<string, Permission[]> = {
   bdr: [...BASE_SELLER],
   sdr: [...BASE_SELLER, 'leads.qualify'],
   ae: [...BASE_SELLER, 'leads.export'],
@@ -70,34 +118,63 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'scoring.edit',
     'routing.edit',
   ],
-  admin: [
-    'leads.view.own',
-    'leads.view.all',
-    'leads.qualify',
-    'leads.transfer',
-    'leads.reassign',
-    'leads.export',
-    'kpi.view',
-    'kpi.view.team',
-    'control.access',
-    'sources.run',
-    'sources.ingest',
-    'enrichment.run',
-    'scoring.edit',
-    'routing.edit',
-    'settings.manage',
-    'credentials.manage',
-    'users.manage',
-  ],
+  admin: [...KNOWN_PERMISSIONS],
 };
 
-export function can(role: Role | null | undefined, permission: Permission): boolean {
-  if (!role) return false;
-  return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+export const BUILT_IN_ROLE_LABELS: Record<string, string> = {
+  bdr: 'BDR',
+  sdr: 'SDR',
+  ae: 'Account Executive',
+  marketing: 'Marketing',
+  sales_manager: 'Sales Manager',
+  admin: 'Admin',
+};
+
+export const BUILT_IN_ROLE_DESCRIPTIONS: Record<string, string> = {
+  bdr: 'Works assigned leads — view, mark handled, transfer',
+  sdr: 'Works assigned leads — view, qualify, transfer',
+  ae: 'Receives qualified leads — view, export, deal status',
+  marketing: 'Works nurture leads — view, nurture, export',
+  sales_manager: 'Whole team — reassignment and BU scoring',
+  admin: 'Everything, plus users, keys, rules and cron',
+};
+
+/** Kept for the screens that still render the built-in six by name. */
+export const ROLES = Object.keys(BUILT_IN_ROLE_PERMISSIONS);
+export const ROLE_LABELS = BUILT_IN_ROLE_LABELS;
+export const ROLE_DESCRIPTIONS = BUILT_IN_ROLE_DESCRIPTIONS;
+export const ROLE_PERMISSIONS = BUILT_IN_ROLE_PERMISSIONS;
+
+/** Anything carrying a resolved permission list — in practice, a SessionUser. */
+export interface PermissionHolder {
+  permissions: readonly string[];
 }
 
+/**
+ * May this caller do this?
+ *
+ * Takes the RESOLVED permission list rather than a role name, because roles are
+ * data now and resolving one means a database read. Doing that read once per
+ * request when the session loads keeps every call site synchronous — which is
+ * what allowed roles to become dynamic without turning twenty `can(...)` checks
+ * in pages and route handlers into awaits.
+ */
+export function can(holder: PermissionHolder | null | undefined, permission: Permission | string): boolean {
+  if (!holder) return false;
+  return holder.permissions.includes(permission);
+}
+
+/** Whether a name is one the code actually enforces. */
+export function isKnownPermission(value: unknown): value is Permission {
+  return typeof value === 'string' && (KNOWN_PERMISSIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Role names are validated against the database now, not against a union, so
+ * this only rejects the shapes that could never be a role.
+ */
 export function isRole(value: unknown): value is Role {
-  return typeof value === 'string' && (ROLES as readonly string[]).includes(value);
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**
@@ -107,9 +184,9 @@ export function isRole(value: unknown): value is Role {
  */
 export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: '/admin/settings', permission: 'settings.manage' },
+  { prefix: '/admin/costs', permission: 'enrichment.run' },
   { prefix: '/admin', permission: 'control.access' },
   { prefix: '/control/enrichment', permission: 'enrichment.run' },
-  { prefix: '/admin/costs', permission: 'enrichment.run' },
   { prefix: '/control/team', permission: 'leads.reassign' },
   { prefix: '/control/routing', permission: 'routing.edit' },
   { prefix: '/control/sources', permission: 'sources.run' },
@@ -134,11 +211,8 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
  * broader entry first and its own `enrichment.run` requirement was dead code
  * that no test would ever notice. Nothing was exposed at the time, because every
  * role holding `control.access` also held `enrichment.run`, but that is a
- * coincidence of the current matrix rather than a guarantee — and it stops being
- * true the moment roles are defined in the database instead of in this file.
- *
- * Sorting by length here means a new entry cannot be silently shadowed by an
- * older, broader one however it is ordered.
+ * coincidence of the built-in matrix rather than a guarantee — and it stops
+ * being true the moment an admin defines a role in the database.
  */
 export function permissionForPath(pathname: string): Permission | null {
   let best: { prefix: string; permission: Permission } | null = null;

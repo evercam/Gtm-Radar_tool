@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { checkPermission } from '@/lib/auth/session';
-import { isRole, ROLES } from '@/lib/auth/roles';
+import { getRoles } from '@/lib/auth/roleStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,8 +37,20 @@ export async function PATCH(request: NextRequest) {
   }
 
   if (!body.id) return NextResponse.json({ ok: false, message: 'A user id is required.' }, { status: 400 });
-  if (body.role !== undefined && !isRole(body.role)) {
-    return NextResponse.json({ ok: false, message: `Role must be one of: ${ROLES.join(', ')}.` }, { status: 400 });
+  /*
+    Roles are rows now, so a role is valid because the table has it — not because
+    it appears in a union in the source. Checked here as well as by the foreign
+    key so the caller gets the list of real roles back instead of a constraint
+    violation string.
+  */
+  if (body.role !== undefined) {
+    const { roles } = await getRoles();
+    if (!roles.some((r) => r.name === body.role)) {
+      return NextResponse.json(
+        { ok: false, message: `Role must be one of: ${roles.map((r) => r.name).join(', ')}.` },
+        { status: 400 }
+      );
+    }
   }
 
   const service = getServiceSupabase();
@@ -114,8 +126,20 @@ export async function POST(request: NextRequest) {
 
   const email = body.email?.trim().toLowerCase();
   if (!email) return NextResponse.json({ ok: false, message: 'An email address is required.' }, { status: 400 });
-  if (body.role !== undefined && !isRole(body.role)) {
-    return NextResponse.json({ ok: false, message: `Role must be one of: ${ROLES.join(', ')}.` }, { status: 400 });
+  /*
+    Roles are rows now, so a role is valid because the table has it — not because
+    it appears in a union in the source. Checked here as well as by the foreign
+    key so the caller gets the list of real roles back instead of a constraint
+    violation string.
+  */
+  if (body.role !== undefined) {
+    const { roles } = await getRoles();
+    if (!roles.some((r) => r.name === body.role)) {
+      return NextResponse.json(
+        { ok: false, message: `Role must be one of: ${roles.map((r) => r.name).join(', ')}.` },
+        { status: 400 }
+      );
+    }
   }
 
   const service = getServiceSupabase();

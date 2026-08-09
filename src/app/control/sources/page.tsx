@@ -49,7 +49,7 @@ export default async function SourceHubPage({ searchParams }: { searchParams: Pr
     getLastCronRun(),
   ]);
 
-  const canUpload = can(user.role, 'sources.ingest');
+  const canUpload = can(user, 'sources.ingest');
   const dbReady = isSupabaseServiceConfigured();
   const gemListing = canUpload ? await listGemDir() : { ok: false, dir: '', files: [], message: null };
 
@@ -100,7 +100,7 @@ export default async function SourceHubPage({ searchParams }: { searchParams: Pr
   const withQuery = rows.filter((r) => Object.keys(r.config.queryParams).length > 0).length;
   const failing = rows.filter((r) => r.config.healthStatus === 'failing').length;
   const needKey = rows.filter((r) => !r.cred?.keyless && !r.cred?.configured).length;
-  const canIngest = can(user.role, 'sources.ingest');
+  const canIngest = can(user, 'sources.ingest');
 
   return (
     <div className="space-y-6">
