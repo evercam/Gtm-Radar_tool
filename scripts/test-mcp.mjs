@@ -117,7 +117,7 @@ console.log('\nThe tool contract');
   const list = await send('tools/list', {});
   const tools = list?.result?.tools ?? [];
   const names = tools.map((t) => t.name).sort();
-  check('six tools are advertised', tools.length === 6, names.join(', '));
+  check('nine tools are advertised', tools.length === 9, names.join(', '));
   check(
     'every tool is verb-first',
     tools.every((t) => /^(search|get|list|summarise)_/.test(t.name)),
@@ -207,6 +207,46 @@ console.log('\nFilters actually filter');
   check('exported filter holds', (sent?.projects ?? []).every((p) => Boolean(p.exportedAt)));
 }
 
+console.log('\nWhere the data comes from');
+{
+  const src = payload(await send('tools/call', { name: 'list_sources', arguments: { withRecordsOnly: true } }));
+  check('list_sources returns contributing sources', Array.isArray(src?.sources) && src.sources.length > 0, JSON.stringify(src)?.slice(0, 140));
+  check('withRecordsOnly means what it says', (src?.sources ?? []).every((x) => x.records > 0));
+  check('and the total matches the rows', src?.totalRecords === (src?.sources ?? []).reduce((n, x) => n + x.records, 0));
+
+  const ing = payload(await send('tools/call', { name: 'list_ingestion_runs', arguments: { limit: 5 } }));
+  check('list_ingestion_runs returns pulls', Array.isArray(ing?.runs), JSON.stringify(ing)?.slice(0, 140));
+  /*
+    Ingestion runs are fetches FROM a source; export runs are sends TO Apollo.
+    They are different tables and different questions, and conflating them is the
+    reason this needed its own tool rather than a flag on the other one.
+  */
+  check('they are not the export runs', ing?.runs !== undefined && !('created' in (ing?.runs?.[0] ?? {})));
+}
+
+console.log('\nThe NHS construction leads are reachable');
+{
+  const nhs = payload(await send('tools/call', { name: 'search_projects', arguments: { buildingType: 'Healthcare', limit: 50 } }));
+  check('buildingType finds them', Array.isArray(nhs?.projects), JSON.stringify(nhs)?.slice(0, 140));
+  check(
+    'and every hit really is one',
+    (nhs?.projects ?? []).every((p) => /Healthcare/i.test(p.buildingType ?? '')),
+    JSON.stringify((nhs?.projects ?? []).map((p) => p.buildingType).slice(0, 4))
+  );
+  // The advisory kinds were deliberately excluded from the queue.
+  check(
+    'no surveys or maintenance among them',
+    !(nhs?.projects ?? []).some((p) => /survey|maintenance/i.test(p.buildingType ?? '')),
+    JSON.stringify((nhs?.projects ?? []).map((p) => p.buildingType).filter((b) => /survey|maintenance/i.test(b ?? '')))
+  );
+
+  const bySource = payload(await send('tools/call', { name: 'search_projects', arguments: { source: 'find_a_tender_uk', limit: 5 } }));
+  check('source filter holds', (bySource?.projects ?? []).every((p) => p.source === 'find_a_tender_uk'));
+
+  const rich = payload(await send('tools/call', { name: 'search_projects', arguments: { minValue: 1_000_000, limit: 5 } }));
+  check('minValue filter holds', (rich?.projects ?? []).every((p) => (p.value ?? 0) >= 1_000_000));
+}
+
 console.log('\nErrors are structured, not opaque');
 {
   const bad = await send('tools/call', { name: 'get_project', arguments: {} });
@@ -216,6 +256,8 @@ console.log('\nErrors are structured, not opaque');
   check('an unknown ref says not_found', ghost?.code === 'not_found', JSON.stringify(ghost));
   const who = payload(await send('tools/call', { name: 'search_projects', arguments: { assignee: 'Nobody McGhost' } }));
   check('an unknown assignee lists the real ones', who?.code === 'assignee_not_found' && Array.isArray(who?.details?.available), JSON.stringify(who)?.slice(0, 160));
+  const acct = payload(await send('tools/call', { name: 'get_account', arguments: { accountKey: 'no-such-account-key' } }));
+  check('an unknown account says not_found', acct?.code === 'not_found', JSON.stringify(acct)?.slice(0, 140));
 }
 
 console.log('\nThe protocol channel stayed clean');

@@ -29,8 +29,11 @@ import { z } from 'zod';
 
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { getRoster } from '@/lib/assignmentStore';
-import { getHandoverByPerson, getExportRuns } from '@/lib/queries';
+import { getHandoverByPerson, getExportRuns, getSourceStats, getAccountDetail } from '@/lib/queries';
 import { getEnrichmentPolicy } from '@/lib/policies';
+import { getIngestionRuns } from '@/lib/sources/runs';
+import { getAllSourceConfigs } from '@/lib/sources/config';
+import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import { renderRecordBrief } from '@/lib/export/recordBrief';
 import { normalisePhase, PROJECT_PHASES } from '@/lib/phase';
 import { partyLabel } from '@/lib/semantics';
@@ -107,10 +110,16 @@ server.registerTool(
       assignee: z.string().optional().describe('Roster member name; matched loosely'),
       exported: z.boolean().optional().describe('true = already sent to Apollo, false = not yet'),
       hasContact: z.boolean().optional().describe('true = has an email or phone on file'),
+      source: z.string().optional().describe('source_key, e.g. find_a_tender_uk, gem_energy_tracker, nyc_dob_permits'),
+      buildingType: z
+        .string()
+        .optional()
+        .describe('Substring of building_type. "Healthcare" finds the NHS construction leads; "Healthcare — refurbishment" narrows to one kind.'),
+      minValue: z.number().optional().describe('Minimum estimated_value, in whatever currency the record carries'),
       limit: z.number().int().min(1).max(200).default(25),
     },
   },
-  async ({ query, bu, vertical, phase, band, assignee, exported, hasContact, limit = 25 }) => {
+  async ({ query, bu, vertical, phase, band, assignee, exported, hasContact, source, buildingType, minValue, limit = 25 }) => {
     try {
       let assigneeId = null;
       if (assignee?.trim()) {
@@ -132,7 +141,7 @@ server.registerTool(
       let q = s
         .from('canonical_projects')
         .select(
-          'id, ref_code, canonical_name, company_name_raw, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at'
+          'id, ref_code, canonical_name, company_name_raw, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, estimated_value_currency, building_type, source_key, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at'
         );
       if (bu) q = q.eq('bu', bu);
       if (vertical) q = q.eq('vertical', vertical);
@@ -141,6 +150,9 @@ server.registerTool(
       if (exported === true) q = q.not('apollo_exported_at', 'is', null);
       if (exported === false) q = q.is('apollo_exported_at', null);
       if (hasContact === true) q = q.or('contact_email.not.is.null,contact_phone.not.is.null');
+      if (source?.trim()) q = q.eq('source_key', source.trim());
+      if (buildingType?.trim()) q = q.ilike('building_type', `%${buildingType.trim()}%`);
+      if (minValue != null) q = q.gte('estimated_value', minValue);
       if (query?.trim()) {
         const like = `%${query.trim()}%`;
         q = q.or(`canonical_name.ilike.${like},company_name_raw.ilike.${like}`);
@@ -176,6 +188,9 @@ server.registerTool(
           band: r.priority_band,
           score: r.priority_score,
           value: r.estimated_value,
+          currency: r.estimated_value_currency,
+          buildingType: r.building_type,
+          source: r.source_key,
           location: [r.city, r.state_province, r.country].filter(Boolean).join(', ') || null,
           contacts: (Array.isArray(r.additional_contacts) ? r.additional_contacts.length : 0) + (r.contact_name ? 1 : 0),
           reachable: Boolean(r.contact_email || r.contact_phone),
@@ -385,6 +400,136 @@ server.registerTool(
 
 // ---------------------------------------------------------------------------
 
+server.registerTool(
+  'list_sources',
+  {
+    title: 'Where the data comes from',
+    description:
+      'Every source the tool can pull from, with how many records it has actually contributed, how complete they are, when it last delivered, and whether it is switched on. Use this to answer "why do we have no leads in X" before assuming the pipeline is broken.',
+    inputSchema: {
+      withRecordsOnly: z.boolean().default(false).describe('Only sources that have contributed at least one record'),
+    },
+  },
+  async ({ withRecordsOnly = false }) => {
+    try {
+      // Catalog, live counts and per-source config are three different tables;
+      // a source is only "working" if all three agree, which is the point.
+      const [stats, cfg] = await Promise.all([getSourceStats(), getAllSourceConfigs()]);
+      const rows = SOURCE_CATALOG.map((c) => {
+        const s = stats[c.sourceKey];
+        const conf = c.slug ? cfg.configs[c.slug] : undefined;
+        return {
+          name: c.name,
+          sourceKey: c.sourceKey,
+          slug: c.slug ?? null,
+          category: c.category,
+          coverage: c.coverage,
+          auth: c.auth,
+          records: s?.count ?? 0,
+          avgCompleteness: s?.avgCompleteness ?? null,
+          lastIngested: s?.lastIngested ?? null,
+          enabled: conf?.isEnabled ?? null,
+          schedule: conf?.scheduleCron ?? null,
+          maxRecordsPerRun: conf?.maxRecordsPerRun ?? null,
+        };
+      })
+        .filter((r) => !withRecordsOnly || r.records > 0)
+        .sort((a, b) => b.records - a.records);
+
+      return ok({
+        count: rows.length,
+        totalRecords: rows.reduce((n, r) => n + r.records, 0),
+        configTableMissing: cfg.tableMissing,
+        sources: rows,
+      });
+    } catch (err) {
+      return fail('unexpected', err instanceof Error ? err.message : String(err));
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+
+server.registerTool(
+  'list_ingestion_runs',
+  {
+    title: 'Recent source pulls',
+    description:
+      'History of fetches FROM sources — distinct from list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
+    inputSchema: {
+      source: z.string().optional().describe('Slug, e.g. find-a-tender, gem, nyc-permits'),
+      limit: z.number().int().min(1).max(100).default(15),
+    },
+  },
+  async ({ source, limit = 15 }) => {
+    try {
+      const { runs, tableMissing } = await getIngestionRuns({ slug: source, limit });
+      if (tableMissing) return fail('migration_required', 'ingestion_runs is missing — run the source-runs migration.');
+      return ok({
+        count: runs.length,
+        runs: runs.map((r) => ({
+          startedAt: r.startedAt,
+          source: r.slug,
+          trigger: r.trigger,
+          status: r.status,
+          fetched: r.fetched,
+          inserted: r.inserted,
+          updated: r.updated,
+          duplicates: r.duplicates,
+          failed: r.failed,
+          durationMs: r.durationMs,
+          error: r.error,
+          params: r.params,
+        })),
+      });
+    } catch (err) {
+      return fail('unexpected', err instanceof Error ? err.message : String(err));
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+
+server.registerTool(
+  'get_account',
+  {
+    title: 'One company and every project it touches',
+    description:
+      'A company-level view rather than a per-project one: the account record, its enrichment, and every project linked to it. This is the view for "what else is this contractor doing" before a call.',
+    inputSchema: { accountKey: z.string().describe('The normalised account_key, as returned on a project') },
+  },
+  async ({ accountKey }) => {
+    try {
+      const d = await getAccountDetail(accountKey);
+      if (!d.view && !d.account && d.projectCount === 0) {
+        return fail('not_found', `No account for key "${accountKey}".`);
+      }
+      return ok({
+        accountKey,
+        name: d.view?.company_name_raw ?? d.account?.company_name_raw ?? null,
+        domain: d.view?.company_domain ?? null,
+        projectCount: d.projectCount,
+        enrichment: d.enrichment
+          ? { summary: d.enrichment.summary ?? null, industry: d.enrichment.industry ?? null }
+          : null,
+        projects: d.projects.map((p) => ({
+          ref: p.ref_code,
+          name: p.canonical_name,
+          phase: normalisePhase(p.current_phase),
+          buildingType: p.building_type,
+          value: p.estimated_value,
+          currency: p.estimated_value_currency,
+          exportedAt: p.apollo_exported_at,
+        })),
+      });
+    } catch (err) {
+      return fail('unexpected', err instanceof Error ? err.message : String(err));
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
-log('gtm-radar MCP server ready — 6 read-only tools');
+log('gtm-radar MCP server ready — 9 read-only tools');

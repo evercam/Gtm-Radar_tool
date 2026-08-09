@@ -3,7 +3,7 @@
 An AI assistant can query this tool's pipeline directly, instead of somebody
 opening a SQL client or re-deriving the export rules by hand.
 
-Six read-only tools, over stdio, using your own `.env.local`. No new service to
+Nine read-only tools, over stdio, using your own `.env.local`. No new service to
 run and no new credential — if you can already run the scripts in this repo, you
 can run this.
 
@@ -34,10 +34,21 @@ and everything in `npm test` is pure and offline.
 | `list_export_runs` | When we last sent to Apollo, what scope, and the created/existing/failed counts |
 | `list_assignees` | The roster, quotas, and the scope that decides who gets what |
 | `summarise_pipeline` | Counts across the whole table by phase, band, vertical, BU or party |
+| `list_sources` | Where the data comes from — records contributed, completeness, last delivery, on/off |
+| `list_ingestion_runs` | Pulls **from** sources, with the error when one failed (not the same as export runs) |
+| `get_account` | One company and every project linked to it — "what else is this contractor doing" |
 
 Filters on `search_projects` combine with AND. `phase` uses the normalised
 eleven-value vocabulary from `src/lib/phase.ts`, not the 117 raw source spellings
 — but each row returns `phaseRaw` too, so you can see what the feed actually said.
+
+`buildingType` is a substring match, which is how you reach the NHS work:
+`"Healthcare"` for all of it, `"Healthcare — refurbishment"` for one kind. See
+[nhs-health-infrastructure.md](nhs-health-infrastructure.md).
+
+Two run histories exist and they answer different questions. `list_ingestion_runs`
+is what we fetched **from** a source; `list_export_runs` is what we sent **to**
+Apollo. Reaching for the wrong one is the easiest mistake to make here.
 
 ## Why it is read-only
 
