@@ -179,8 +179,27 @@ export async function POST(request: NextRequest) {
   return rpcError(id, -32601, `Method "${method}" is not supported.`);
 }
 
-/** A browser hitting the URL should be told what it is, not 405. */
-export async function GET() {
+/**
+ * GET means two different things here, and they need different answers.
+ *
+ * An MCP client opens GET with `Accept: text/event-stream` to subscribe to
+ * server-initiated messages. This server has none — every method it supports is
+ * one request and one response — and the transport spec says a server that does
+ * not offer that stream must answer 405. Returning a JSON body with 200 instead,
+ * which is what it did, leaves a client waiting for events on a stream that will
+ * never produce any.
+ *
+ * A person pasting the URL into a browser wants to know what they have found, so
+ * that case still gets the descriptor.
+ */
+export async function GET(request: NextRequest) {
+  if (request.headers.get('accept')?.includes('text/event-stream')) {
+    return new NextResponse('This server has no server-initiated stream; POST JSON-RPC requests instead.', {
+      status: 405,
+      headers: { Allow: 'POST' },
+    });
+  }
+
   return NextResponse.json({
     name: 'gtm-radar',
     transport: 'JSON-RPC 2.0 over POST',

@@ -19,6 +19,21 @@ function Term({ children }: { children: React.ReactNode }) {
   return <span className="text-foreground font-semibold">{children}</span>;
 }
 
+/**
+ * A block somebody is going to copy.
+ *
+ * Scrolls inside itself rather than widening the page: these lines are long, and
+ * a config that forces the whole article sideways on a laptop is worse than one
+ * that scrolls in place.
+ */
+function Snippet({ children }: { children: string }) {
+  return (
+    <pre className="border-border-base bg-surface-raised text-body mt-2 overflow-x-auto rounded-lg border px-3 py-2 text-[11px] leading-relaxed">
+      <code>{children}</code>
+    </pre>
+  );
+}
+
 /** Plain-language questions, in the order somebody would think of them. */
 const ASKS: [string, string][] = [
   ['search_projects', '“P1 pre-construction jobs in the USA that Anas holds and we haven’t sent yet”'],
@@ -62,18 +77,92 @@ export default function McpAccess() {
           </p>
         </HelpToggle>
 
-        <HelpToggle question="How do I connect?">
+        <HelpToggle question="How do I set it up?">
           <p>
-            <Term>From this app, over the internet.</Term> Create a token in <em>Settings → MCP access tokens</em>, then
-            point any MCP client — Claude Desktop, an agent, a script — at{' '}
-            <code className="text-[11px]">POST /api/mcp</code> with{' '}
-            <code className="text-[11px]">Authorization: Bearer &lt;token&gt;</code>. Nothing to install.
+            Two ways in, and which you want depends on whether you have the code checked out.
           </p>
+
+          <p className="mt-2">
+            <Term>1 — From this app, with a token.</Term> Nothing to install; works from anywhere.
+          </p>
+          <ol className="mt-1 space-y-1 pl-4" style={{ listStyle: 'decimal' }}>
+            <li>
+              Open <em>Settings → MCP access tokens</em>. You need the <Term>Manage credentials</Term> permission.
+            </li>
+            <li>
+              Give it a name you will recognise later (“Claude Desktop”, “reporting script”) and pick the{' '}
+              <Term>role</Term> it should read as. Start with the narrowest role that answers your questions.
+            </li>
+            <li>
+              Copy the token immediately. It is shown once and stored only as a hash — nobody, including an admin, can
+              read it back.
+            </li>
+            <li>
+              Point your client at the endpoint below, sending the token as a bearer header.
+            </li>
+          </ol>
+          <Snippet>{`POST https://<your-app>/api/mcp
+Authorization: Bearer gtm_…
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}`}</Snippet>
           <p>
-            <Term>From a checkout, on your own machine.</Term> The repository registers a local server in{' '}
-            <code className="text-[11px]">.mcp.json</code>, so an agent working in the project picks it up with no token
-            and no configuration — it uses your own <code className="text-[11px]">.env.local</code>.
+            That is the whole protocol: JSON-RPC 2.0 over POST, one request and one response. Any MCP client that speaks
+            it will work, and so will <code className="text-[11px]">curl</code> if you just want to check something once.
           </p>
+
+          <p className="mt-3">
+            <Term>2 — From a checkout, with no token at all.</Term> The repository already registers a local server in{' '}
+            <code className="text-[11px]">.mcp.json</code>, so an agent working inside the project picks it up on its
+            own. It reads your own <code className="text-[11px]">.env.local</code>, so there is no second credential to
+            create or leak.
+          </p>
+          <Snippet>{`{
+  "mcpServers": {
+    "gtm-radar": {
+      "command": "node",
+      "args": ["--env-file=.env.local", "--experimental-transform-types",
+               "--no-warnings", "--import", "./scripts/lib/register-alias.mjs",
+               "scripts/mcp-server.mjs"]
+    }
+  }
+}`}</Snippet>
+          <p>
+            To check it by hand: <code className="text-[11px]">npm run mcp</code> starts it and it waits on standard
+            input, which looks like nothing happening and is correct.{' '}
+            <code className="text-[11px]">npm run test:mcp</code> drives it end to end and tells you what it found.
+          </p>
+        </HelpToggle>
+
+        <HelpToggle question="It will not connect. What should I check?">
+          <ul className="space-y-1">
+            <li>
+              <Term>401, “send an Authorization: Bearer token”</Term> — the header is missing or malformed. It must read{' '}
+              <code className="text-[11px]">Bearer gtm_…</code>, with the word Bearer.
+            </li>
+            <li>
+              <Term>401, “not valid, or has been revoked”</Term> — the token was revoked, or is from another workspace.
+              Tokens cannot be recovered; issue a new one.
+            </li>
+            <li>
+              <Term>The client connects but lists no tools</Term> — the token’s role holds none of the permissions the
+              tools need. Widen the role, or issue the token against a broader one.
+            </li>
+            <li>
+              <Term>A tool answers “forbidden”</Term> — that specific tool needs a permission the role lacks; the error
+              names which one.
+            </li>
+            <li>
+              <Term>The client waits forever after connecting</Term> — it is expecting a server-initiated event stream.
+              This server has none, and answers <code className="text-[11px]">405</code> to that request, which a
+              conformant client treats as “no stream, carry on”.
+            </li>
+            <li>
+              <Term>The local server exits immediately</Term> — it was started without{' '}
+              <code className="text-[11px]">--env-file=.env.local</code>, so it has no database credentials. It says so
+              on standard error.
+            </li>
+          </ul>
         </HelpToggle>
 
         <HelpToggle question="What can a token see?">
