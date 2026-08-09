@@ -20,6 +20,7 @@ import {
   constructionDiveAdapter,
 } from './rss-news';
 import { gemAdapter } from './gem';
+import { newsSearchAdapter } from './news-search';
 import type { SourceAdapter } from './types';
 
 /**
@@ -51,6 +52,7 @@ export const LIVE_ADAPTERS: Record<string, SourceAdapter> = {
   'mining-com': miningComAdapter,
   'construction-dive': constructionDiveAdapter,
   gem: gemAdapter,
+  'news-search': newsSearchAdapter,
 };
 
 export function getLiveAdapter(source: string): SourceAdapter | null {

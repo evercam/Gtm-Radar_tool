@@ -41,6 +41,14 @@ export const SOURCE_CATALOG: CatalogSource[] = [
     coverage: 'USA',
     auth: 'keyed',
   },
+  {
+    name: 'Construction News (ICP hunt)',
+    sourceKey: 'news_search',
+    slug: 'news-search',
+    category: 'News & Signals',
+    coverage: 'USA / UK',
+    auth: 'keyless',
+  },
   // Public procurement
   { name: 'SAM.gov', sourceKey: 'sam_gov', slug: 'sam-gov', category: 'Procurement', coverage: 'USA', auth: 'keyed' },
   {

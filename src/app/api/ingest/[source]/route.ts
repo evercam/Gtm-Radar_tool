@@ -48,6 +48,7 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   'mining-com': 'mining_com',
   'construction-dive': 'construction_dive',
   gem: 'gem_energy_tracker',
+  'news-search': 'news_search',
 };
 
 /**
@@ -115,6 +116,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
     postcodes?: string[];
     sectors?: string[];
     regions?: string[];
+    verticals?: string[];
     constructionOnly?: boolean;
     healthInfraOnly?: boolean;
     stage?: 'planning' | 'tender' | 'award';
@@ -173,6 +175,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       postcodes: params.postcodes,
       sectors: params.sectors,
       regions: params.regions,
+      verticals: params.verticals,
       constructionOnly: params.constructionOnly,
       healthInfraOnly: params.healthInfraOnly,
       stage: params.stage,

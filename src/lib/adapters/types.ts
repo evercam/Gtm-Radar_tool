@@ -124,6 +124,14 @@ export interface AdapterFetchParams {
   sectors?: string[];
   /** Glenigan only: substring match against town/county/region. */
   regions?: string[];
+  /**
+   * news-search only: which ICP hunts to run, by icp_code or by vertical.
+   *
+   * Reuses the saved-query UI's existing vertical field rather than adding a
+   * parameter nobody can set — asking for "just the data-centre owners" is the
+   * same intent expressed either way. Omitted means every ICP.
+   */
+  verticals?: string[];
   /** SEC EDGAR only: filing form types (e.g. ["8-K","10-K"]) — server-side `forms` param. */
   forms?: string[];
   /**

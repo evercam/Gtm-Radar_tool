@@ -209,7 +209,21 @@ function makeRssAdapter(cfg: RssFeedConfig): SourceAdapter {
         {
           headers: {
             Accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8',
-            'User-Agent': 'EvercamSourceHub/1.0',
+            /*
+              Mozilla-prefixed, and it has to be.
+
+              `EvercamSourceHub/1.0` is the honest thing to send and mining.com
+              answers it with HTTP 403 — verified 2026-08-09, where the same URL
+              returns 200 for a Mozilla-prefixed agent and 403 for curl's. Bot
+              protection in front of these publishers rejects anything that does
+              not look like a browser, so a bare product token silently killed one
+              feed and would eventually kill others.
+
+              This still identifies us and carries a contact address, which is
+              what the polite convention actually asks for — it is the same string
+              the OCDS adapters have always sent.
+            */
+            'User-Agent': 'Mozilla/5.0 Evercam Source Hub research@evercam.io',
           },
         },
         { timeoutMs: 20_000 }
