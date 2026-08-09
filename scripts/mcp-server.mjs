@@ -141,7 +141,7 @@ server.registerTool(
       let q = s
         .from('canonical_projects')
         .select(
-          'id, ref_code, canonical_name, company_name_raw, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, estimated_value_currency, building_type, source_key, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at'
+          'id, ref_code, canonical_name, company_name_raw, account_key, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, estimated_value_currency, building_type, source_key, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at'
         );
       if (bu) q = q.eq('bu', bu);
       if (vertical) q = q.eq('vertical', vertical);
@@ -180,6 +180,9 @@ server.registerTool(
           ref: r.ref_code,
           name: r.canonical_name,
           company: r.company_name_raw,
+          // The handle get_account takes. Without it returned here, that tool was
+          // unreachable — nothing else in the server ever produced an account key.
+          accountKey: r.account_key,
           party: partyLabel(r.icp_code),
           bu: r.bu,
           vertical: r.vertical,
@@ -238,6 +241,7 @@ server.registerTool(
         assignedTo: roster.find((x) => x.id === r.assignee_id)?.name ?? null,
         exportedAt: r.apollo_exported_at,
         apolloContactId: r.apollo_contact_id,
+        accountKey: r.account_key,
         // The same text the export writes into Apollo, so both agree by construction.
         brief: renderRecordBrief(r, r.contact_email),
       });

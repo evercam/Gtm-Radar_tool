@@ -260,6 +260,28 @@ console.log('\nErrors are structured, not opaque');
   check('an unknown account says not_found', acct?.code === 'not_found', JSON.stringify(acct)?.slice(0, 140));
 }
 
+console.log('\nEvery tool is reachable from another tool');
+{
+  /*
+    get_account takes an accountKey, and for a while nothing in this server ever
+    RETURNED one — so an agent could see the tool, read its schema, and have no
+    way to obtain a valid argument for it. A tool nobody can call is not a tool.
+
+    This asserts the handle round-trips: search hands out an accountKey, and
+    get_account accepts it.
+  */
+  const withKey = payload(
+    await send('tools/call', { name: 'search_projects', arguments: { hasContact: true, limit: 60 } })
+  );
+  const key = (withKey?.projects ?? []).map((p) => p.accountKey).find(Boolean);
+  check('search_projects hands out an accountKey', Boolean(key), 'no project in the sample carried one');
+  if (key) {
+    const linked = payload(await send('tools/call', { name: 'get_account', arguments: { accountKey: key } }));
+    check('and get_account accepts it', linked?.accountKey === key, JSON.stringify(linked)?.slice(0, 160));
+    check('returning that account’s projects', Array.isArray(linked?.projects), JSON.stringify(linked)?.slice(0, 140));
+  }
+}
+
 console.log('\nThe protocol channel stayed clean');
 {
   check('nothing non-JSON leaked onto stdout', !/non-JSON on stdout/.test(JSON.stringify([...pending.keys()])) && stdout.trim() === '', JSON.stringify(stdout.slice(0, 160)));
