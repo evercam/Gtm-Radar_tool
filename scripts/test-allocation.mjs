@@ -168,7 +168,16 @@ group('Scope is a hard filter, preference is not');
   const leads = [lead('coal'), lead('solar')];
   const scoped = planAllocation(leads, [rule], [user({ verticals: ['solar'] })], DEFAULT_ALLOCATION);
   check('a lead outside scope is never assigned', scoped.assignments.length === 1);
-  check('and is reported as having no owner', scoped.atCapacity === 1, String(scoped.atCapacity));
+  /*
+    Reported as NO COVERAGE, not as at-capacity.
+
+    This asserted atCapacity, which was the bug: the owner's quota is untouched
+    and their scope simply excludes coal. The two were one number, and an
+    operator reading "at capacity" goes and raises a quota that was never the
+    constraint.
+  */
+  check('and is reported as having no eligible owner', scoped.noCoverage === 1, String(scoped.noCoverage));
+  check('not as an owner at capacity', scoped.atCapacity === 0, String(scoped.atCapacity));
 }
 
 group('The report reconciles with what happened');
@@ -201,6 +210,33 @@ check('a non-numeric share is dropped', Object.keys(mergeAllocationPolicy({ shar
 check('NaN daily cap becomes no cap', mergeAllocationPolicy({ dailyCap: NaN }).dailyCap === null);
 check('a zero daily cap becomes no cap', mergeAllocationPolicy({ dailyCap: 0 }).dailyCap === null);
 check('the defaults survive a merge', JSON.stringify(mergeAllocationPolicy(DEFAULT_ALLOCATION)) === JSON.stringify(DEFAULT_ALLOCATION));
+
+group('No eligible owner is not the same as at capacity');
+{
+  /*
+    These used to be one number, and they point at opposite fixes: capacity is
+    solved by raising a quota, coverage only by activating or re-scoping
+    somebody. Live, all 276 NHS leads reported as "at capacity" when the single
+    active assignee covers `usa` and every one of those leads is `uk` — raising
+    quotas would have changed nothing, and that is where an operator was sent.
+  */
+  const ukLead = lead('procurement', 80, { bu: 'uk' });
+
+  const r1 = planAllocation([ukLead], [], [user({ bu: ['usa'], dailyQuota: 10 })], DEFAULT_ALLOCATION);
+  check('a lead nobody covers is noCoverage', r1.noCoverage === 1, JSON.stringify({ cap: r1.atCapacity, cov: r1.noCoverage }));
+  check('and is not counted as at capacity', r1.atCapacity === 0);
+
+  const r2 = planAllocation([ukLead], [], [user({ bu: ['uk'], dailyQuota: 0 })], DEFAULT_ALLOCATION);
+  check('a lead whose only owner is full is atCapacity', r2.atCapacity === 1, JSON.stringify({ cap: r2.atCapacity, cov: r2.noCoverage }));
+  check('and is not counted as no-coverage', r2.noCoverage === 0);
+
+  const r3 = planAllocation([ukLead], [], [user({ bu: ['uk'], dailyQuota: 5 })], DEFAULT_ALLOCATION);
+  check('a covered lead with room is simply assigned', r3.assignments.length === 1 && r3.noCoverage === 0 && r3.atCapacity === 0);
+
+  // An inactive assignee covers nobody, however wide their scope.
+  const r4 = planAllocation([ukLead], [], [user({ bu: ['uk'], dailyQuota: 5, isActive: false })], DEFAULT_ALLOCATION);
+  check('an inactive owner reads as no coverage', r4.noCoverage === 1 && r4.atCapacity === 0, JSON.stringify({ cap: r4.atCapacity, cov: r4.noCoverage }));
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

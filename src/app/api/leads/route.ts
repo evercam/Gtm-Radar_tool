@@ -159,10 +159,14 @@ export async function POST(request: NextRequest) {
       message:
         `Assigned ${applied} lead${applied === 1 ? '' : 's'}` +
         `${result.atCapacity ? `, ${result.atCapacity} held (owners at quota)` : ''}` +
+        // Named separately: raising a quota fixes the first and does nothing for
+        // the second, which needs somebody activated or re-scoped.
+        `${result.noCoverage ? `, ${result.noCoverage} with no eligible owner (no active assignee covers their BU, vertical or region)` : ''}` +
         `${result.heldForMix ? `, ${result.heldForMix} held to keep the mix` : ''}` +
         `${result.unassigned ? `, ${result.unassigned} matched no rule` : ''}.`,
       assigned: applied,
       atCapacity: result.atCapacity,
+      noCoverage: result.noCoverage,
       unassigned: result.unassigned,
       heldForMix: result.heldForMix,
       buckets: result.buckets,

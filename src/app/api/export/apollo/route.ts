@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { checkPermission } from '@/lib/auth/session';
+import { laneChannel as channelFor, personReachable } from '@/lib/export/reachability';
 import { getEnrichmentPolicy, getExportFieldPolicy } from '@/lib/policies';
 import { resolveFieldMap } from '@/lib/export/fieldPolicy';
 import { renderRecordBrief } from '@/lib/export/recordBrief';
@@ -425,23 +426,9 @@ export async function POST(request: NextRequest) {
       'any', which is the permissive reading — the alternative is silently
       dropping a lead because nobody has written a rule for its lane yet.
     */
-    const laneChannel = policy.channelRules[String(r.stage ?? '')] ?? 'any';
-    const reachable = (person: { email?: string | null; phone?: string | null }): boolean => {
-      const hasEmail = Boolean(person.email);
-      const hasPhone = Boolean(person.phone);
-      switch (laneChannel) {
-        case 'email':
-          return hasEmail;
-        case 'phone':
-          return hasPhone;
-        case 'both':
-          return hasEmail && hasPhone;
-        case 'none':
-          return true;
-        default:
-          return hasEmail || hasPhone;
-      }
-    };
+    const laneChannel = channelFor(policy.channelRules, r.stage);
+    const reachable = (person: { email?: string | null; phone?: string | null }): boolean =>
+      personReachable(laneChannel, person);
 
     for (const person of committee) {
       /*

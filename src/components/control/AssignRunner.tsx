@@ -10,6 +10,8 @@ interface AssignResponse {
   message: string;
   assigned?: number;
   atCapacity?: number;
+  /** Nobody's scope covers them — a different fix from a quota. */
+  noCoverage?: number;
   unassigned?: number;
   candidates?: number;
 }

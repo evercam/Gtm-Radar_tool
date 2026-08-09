@@ -4,6 +4,7 @@ import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
 import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
+import { recordReachable } from '@/lib/export/reachability';
 import { arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
@@ -1487,7 +1488,7 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
     for (let page = 0; page < 200; page += 1) {
       const { data, error } = await service
         .from('canonical_projects')
-        .select('assignee_id, apollo_exported_at, contact_email, email_verified, do_not_contact, status')
+        .select('assignee_id, apollo_exported_at, contact_name, contact_email, contact_phone, additional_contacts, company_name_raw, stage, email_verified, do_not_contact, status')
         .not('assignee_id', 'is', null)
         // Total order, so each range is a stable slice rather than an arbitrary one.
         .order('id', { ascending: true })
@@ -1528,7 +1529,17 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
       // Order matters: each lead is counted under its FIRST blocking reason, so
       // the columns sum to the book rather than double-counting it.
       if (l.do_not_contact) row.doNotContact += 1;
-      else if (!l.contact_email) row.waitingOnContact += 1;
+      /*
+        Reachability comes from the EXPORT's own rule, not from "has an email".
+
+        This asked whether contact_email was set, and the export asks the policy's
+        channelRules what the lead's lane needs — with act_now on 'phone', a
+        number is enough — and it counts the committee as well as the primary
+        contact. So this page reported 96 leads waiting and 0 ready while the
+        export would have sent 41 of them, and a rep was told their whole book was
+        stuck. Shared helper now, so the two cannot drift apart again.
+      */
+      else if (!recordReachable(l as never, policy.channelRules)) row.waitingOnContact += 1;
       else if (!EXPORTABLE.has(String(l.status))) row.waitingOnContact += 1;
       else if (requireVerified && l.email_verified !== true) row.blockedUnverified += 1;
       else row.ready += 1;

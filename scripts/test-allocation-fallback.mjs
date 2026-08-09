@@ -80,7 +80,14 @@ console.log('\nScope still binds');
   // The only person on the roster covers a different BU entirely.
   const r = planAllocation([lead({ bu: 'usa' })], [], [user({ bu: ['uk'] })]);
   t('a lead outside every scope is not forced on anyone', r.assignments.length === 0);
-  t('it is held, not silently dropped', r.atCapacity === 1, `atCapacity=${r.atCapacity}`);
+  /*
+    Held and named for the right reason. This asserted atCapacity, which conflated
+    "nobody's scope covers this" with "everybody who covers it is full" — opposite
+    fixes, and the first sends an operator to raise a quota that was never the
+    constraint.
+  */
+  t('it is held, not silently dropped', r.noCoverage === 1, `noCoverage=${r.noCoverage}`);
+  t('and the quota is not blamed for it', r.atCapacity === 0, `atCapacity=${r.atCapacity}`);
 }
 
 console.log('\nQuota still binds');

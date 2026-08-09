@@ -120,7 +120,16 @@ console.log('\nWhen genuinely nobody can take it, it is still reported honestly'
   const alex = person('alex', { verticals: ['solar'] });
   const r = planAllocation([lead('L1')], [narrowRule], [alex]);
   check('nothing is assigned', r.assignments.length === 0);
-  check('and it is counted, not silently lost', r.atCapacity === 1, JSON.stringify({ atCapacity: r.atCapacity, unassigned: r.unassigned }));
+  /*
+    Counted as no-coverage: Alex's scope is solar and the lead is not, so his
+    quota is irrelevant. This asserted atCapacity, back when the two were one
+    number and an operator was pointed at the wrong lever.
+  */
+  check(
+    'and it is counted, not silently lost',
+    r.noCoverage === 1,
+    JSON.stringify({ atCapacity: r.atCapacity, noCoverage: r.noCoverage, unassigned: r.unassigned })
+  );
 }
 
 console.log('\nA lead matching no rule at all is still unassigned, not force-fed');

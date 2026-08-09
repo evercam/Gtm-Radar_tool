@@ -71,8 +71,20 @@ export interface BucketReport {
 
 export interface AllocationResult {
   assignments: Assignment[];
-  /** Matched a rule but every eligible owner was at quota. */
+  /** Matched a rule, somebody's scope covers it, but they are all at quota. */
   atCapacity: number;
+  /**
+   * Matched a rule, and NOBODY's scope covers it — no active assignee works that
+   * business unit, vertical or region.
+   *
+   * Split out from `atCapacity`, which used to absorb both. They look identical
+   * in a total and point at opposite fixes: capacity is solved by raising a
+   * quota, coverage only by activating or re-scoping somebody. Live, all 276 NHS
+   * leads reported as "at capacity" when the real cause was that the single
+   * active assignee covers `usa` and every one of those leads is `uk` — raising
+   * quotas would have changed nothing.
+   */
+  noCoverage: number;
   /** Matched no rule at all. */
   unassigned: number;
   /** Held back because their bucket had already taken its share. */
@@ -223,6 +235,7 @@ export function planAllocation(
   const assignments: Assignment[] = [];
   const deferred: AssignableLead[] = [];
   let atCapacity = 0;
+  let noCoverage = 0;
   let unassigned = 0;
   let heldForMix = 0;
 
@@ -247,7 +260,7 @@ export function planAllocation(
             lead
           );
 
-  const give = (lead: AssignableLead): 'assigned' | 'no-owner' => {
+  const give = (lead: AssignableLead): 'assigned' | 'at-capacity' | 'no-coverage' => {
     /*
       EVERY matching rule is tried, in order — not just the first.
 
@@ -276,7 +289,16 @@ export function planAllocation(
       }
     }
 
-    if (!target || !rule) return 'no-owner';
+    if (!target || !rule) {
+      /*
+        WHY nobody took it, not merely that nobody did.
+
+        `userCoversLead` ignores quota, so asking it separately distinguishes
+        "everyone who could take this is full" from "nobody works this kind of
+        lead at all". The two send an operator to different levers.
+      */
+      return pool.some((u) => userCoversLead(u, lead)) ? 'at-capacity' : 'no-coverage';
+    }
     target.assignedToday += 1;
     const b = bucketOf(lead, policy.dimension);
     taken.set(b, (taken.get(b) ?? 0) + 1);
@@ -302,13 +324,17 @@ export function planAllocation(
       }
     }
 
-    if (give(lead) === 'no-owner') atCapacity += 1;
+    const outcome = give(lead);
+    if (outcome === 'at-capacity') atCapacity += 1;
+    else if (outcome === 'no-coverage') noCoverage += 1;
   }
 
   if (enforcing && policy.fillRemainder) {
     for (const lead of deferred) {
       if (policy.dailyCap !== null && assignments.length >= policy.dailyCap) break;
-      if (give(lead) === 'no-owner') atCapacity += 1;
+      const outcome = give(lead);
+      if (outcome === 'at-capacity') atCapacity += 1;
+      else if (outcome === 'no-coverage') noCoverage += 1;
     }
   } else {
     heldForMix = deferred.length;
@@ -325,7 +351,7 @@ export function planAllocation(
     }))
     .sort((a, b) => b.available - a.available);
 
-  return { assignments, atCapacity, unassigned, heldForMix, buckets };
+  return { assignments, atCapacity, noCoverage, unassigned, heldForMix, buckets };
 }
 
 /** Coerce a saved (possibly partial or stale) policy onto the defaults. */
