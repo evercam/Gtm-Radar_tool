@@ -34,6 +34,8 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   austender: 'austender',
   'contracts-finder': 'contracts_finder_uk',
   'public-contracts-scotland': 'public_contracts_scotland',
+  'neso-tec': 'neso_tec_register',
+  'neso-embedded': 'neso_embedded_register',
   ted: 'ted',
   'world-bank': 'world_bank',
   usaspending: 'usaspending_gov',

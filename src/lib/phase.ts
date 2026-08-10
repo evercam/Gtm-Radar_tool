@@ -94,6 +94,21 @@ const EXACT: Record<string, ProjectPhase> = {
   // news feeds
   announcement: 'Planned',
 
+  /*
+    NESO grid-connection registers (TEC, Embedded).
+
+    "Consents Approved" and "Under Construction/Commissioning" already resolved
+    through the rules, but the other three did not — and unmapped means a phase
+    of null, which is invisible to the timing score. Since timing is the heaviest
+    weight in scoring, a 2037 scoping project and a site breaking ground next
+    quarter would have looked identical.
+  */
+  scoping: 'Planned',
+  'awaiting consents': 'Permitting',
+  'consents approved': 'Approved',
+  'under construction/commissioning': 'Under construction',
+  built: 'Operating',
+
   // planning_ie — the decision outcomes that actually change a project's state
   'final grant': 'Approved',
   'final grant review': 'Approved',

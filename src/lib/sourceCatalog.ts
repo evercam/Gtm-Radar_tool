@@ -68,6 +68,22 @@ export const SOURCE_CATALOG: CatalogSource[] = [
     auth: 'keyless',
   },
   {
+    name: 'NESO TEC Register',
+    sourceKey: 'neso_tec_register',
+    slug: 'neso-tec',
+    category: 'Asset & energy trackers',
+    coverage: 'UK',
+    auth: 'keyless',
+  },
+  {
+    name: 'NESO Embedded Register',
+    sourceKey: 'neso_embedded_register',
+    slug: 'neso-embedded',
+    category: 'Asset & energy trackers',
+    coverage: 'UK',
+    auth: 'keyless',
+  },
+  {
     name: 'Public Contracts Scotland',
     sourceKey: 'public_contracts_scotland',
     slug: 'public-contracts-scotland',

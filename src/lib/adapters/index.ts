@@ -21,6 +21,7 @@ import {
 } from './rss-news';
 import { gemAdapter } from './gem';
 import { newsSearchAdapter } from './news-search';
+import { nesoTecAdapter, nesoEmbeddedAdapter } from './neso';
 import type { SourceAdapter } from './types';
 
 /**
@@ -54,6 +55,8 @@ export const LIVE_ADAPTERS: Record<string, SourceAdapter> = {
   'construction-dive': constructionDiveAdapter,
   gem: gemAdapter,
   'news-search': newsSearchAdapter,
+  'neso-tec': nesoTecAdapter,
+  'neso-embedded': nesoEmbeddedAdapter,
 };
 
 export function getLiveAdapter(source: string): SourceAdapter | null {
