@@ -68,6 +68,14 @@ export const SOURCE_CATALOG: CatalogSource[] = [
     auth: 'keyless',
   },
   {
+    name: 'Public Contracts Scotland',
+    sourceKey: 'public_contracts_scotland',
+    slug: 'public-contracts-scotland',
+    category: 'Procurement',
+    coverage: 'UK',
+    auth: 'keyless',
+  },
+  {
     name: 'AusTender',
     sourceKey: 'austender',
     slug: 'austender',

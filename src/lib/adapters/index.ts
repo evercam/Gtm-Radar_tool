@@ -3,7 +3,7 @@ import { gleniganAdapter } from './glenigan';
 import { constructConnectAdapter } from './construct-connect';
 import { samGovAdapter } from './sam-gov';
 import { secEdgarAdapter } from './sec-edgar';
-import { findATenderAdapter, austenderAdapter, contractsFinderAdapter } from './ocds';
+import { findATenderAdapter, austenderAdapter, contractsFinderAdapter, publicContractsScotlandAdapter } from './ocds';
 import { tedAdapter } from './ted';
 import { worldBankAdapter } from './world-bank';
 import { usaSpendingAdapter } from './usaspending';
@@ -37,6 +37,7 @@ export const LIVE_ADAPTERS: Record<string, SourceAdapter> = {
   'find-a-tender': findATenderAdapter,
   austender: austenderAdapter,
   'contracts-finder': contractsFinderAdapter,
+  'public-contracts-scotland': publicContractsScotlandAdapter,
   ted: tedAdapter,
   'world-bank': worldBankAdapter,
   usaspending: usaSpendingAdapter,

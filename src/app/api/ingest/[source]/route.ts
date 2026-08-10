@@ -33,6 +33,7 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   'find-a-tender': 'find_a_tender_uk',
   austender: 'austender',
   'contracts-finder': 'contracts_finder_uk',
+  'public-contracts-scotland': 'public_contracts_scotland',
   ted: 'ted',
   'world-bank': 'world_bank',
   usaspending: 'usaspending_gov',

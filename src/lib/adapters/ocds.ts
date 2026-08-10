@@ -146,6 +146,37 @@ export const OCDS_PUBLISHERS: OcdsPublisherConfig[] = [
     buildUrl: (from, to) => `https://api.tenders.gov.au/ocds/findByDates/contractPublished/${from}/${to}`,
   },
   {
+    /*
+      Public Contracts Scotland — OCDS 1.1, keyless, and the best contact data of
+      any feed here: all 27 releases in a live sample carried a named buyer with
+      an email AND a phone.
+
+      It is a ROLLING WINDOW, not an archive, and that is the thing to understand
+      before relying on it. `dateFrom`, `dateTo` and `page` are all accepted and
+      all IGNORED — verified 2026-08-10, where windows starting in January,
+      July and August each returned the identical 27 releases spanning five days.
+      There is no `links.next` either.
+
+      So it cannot be backfilled, and a deep pull is not possible however the
+      parameters are set. What makes it worth having is accumulation: the upsert
+      is keyed on ocid, so polling daily gathers history one day at a time
+      without duplicating anything. Scheduled accordingly, and `since`/`until`
+      are passed only for the day the publisher honours them.
+
+      Like the other UK feeds it publishes no CPV codes, so construction scoping
+      falls to the keyword fallback.
+    */
+    slug: 'public-contracts-scotland',
+    sourceKey: 'public_contracts_scotland',
+    icpCode: 'critical_infra_owner',
+    bu: 'uk',
+    countryCode: 'GB',
+    // Date-only is what the API was verified to accept.
+    fmtDate: (d) => d.toISOString().slice(0, 10),
+    buildUrl: (from, to) =>
+      `https://api.publiccontractsscotland.gov.uk/v1/Notices?dateFrom=${from}&dateTo=${to}`,
+  },
+  {
     // UK sub-threshold public contracts — rich buyer contactPoint (name + email
     // + phone), verified live. High lead-actionability.
     slug: 'contracts-finder',
@@ -521,6 +552,23 @@ function normalizeDate(value: string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
-export const findATenderAdapter = makeOcdsAdapter(OCDS_PUBLISHERS[0]);
-export const austenderAdapter = makeOcdsAdapter(OCDS_PUBLISHERS[1]);
-export const contractsFinderAdapter = makeOcdsAdapter(OCDS_PUBLISHERS[2]);
+/**
+ * By slug, never by index.
+ *
+ * These were `OCDS_PUBLISHERS[0]`, `[1]`, `[2]`, so inserting a publisher
+ * anywhere but the end silently repointed the adapters after it — adding Public
+ * Contracts Scotland in the middle turned `contractsFinderAdapter` into the
+ * Scottish one, with nothing to catch it. A slug lookup cannot do that, and it
+ * throws at import if a slug is renamed rather than exporting an adapter for the
+ * wrong publisher.
+ */
+function publisher(slug: string): OcdsPublisherConfig {
+  const found = OCDS_PUBLISHERS.find((p) => p.slug === slug);
+  if (!found) throw new Error(`No OCDS publisher configured for "${slug}".`);
+  return found;
+}
+
+export const findATenderAdapter = makeOcdsAdapter(publisher('find-a-tender'));
+export const austenderAdapter = makeOcdsAdapter(publisher('austender'));
+export const contractsFinderAdapter = makeOcdsAdapter(publisher('contracts-finder'));
+export const publicContractsScotlandAdapter = makeOcdsAdapter(publisher('public-contracts-scotland'));
