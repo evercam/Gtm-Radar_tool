@@ -192,5 +192,34 @@ console.log('\nThe vertical comes from the story when the story says so');
   eq('Kier awarded Leeds school construction contract', 'construction');
 }
 
+console.log('\nAustralia is a region, not "elsewhere"');
+{
+  /*
+    APAC is tested BEFORE the UK, because the two share city names. "Newcastle" is
+    a British city and an Australian one, so a state name or an ASX ticker decides
+    where a bare city cannot.
+
+    Australia also had to come OUT of the elsewhere list, where it was a hard
+    reject while only the USA and the UK were in scope.
+  */
+  check('Perth is APAC', extractRegion('Monadelphous secures construction contract with BHP, Perth') === 'apac');
+  check('South Australia is APAC', extractRegion("Laing O'Rourke AUKUS contract South Australia") === 'apac');
+  check('Sydney is APAC', extractRegion('Sydney metro station contract awarded') === 'apac');
+  check('an ASX ticker is APAC', extractRegion('Monadelphous Group (ASX:MND) awarded contract') === 'apac');
+  check('New Zealand counts as APAC', extractRegion('Auckland light rail contract awarded') === 'apac');
+
+  // The collision that makes the ordering matter.
+  check('Newcastle NSW is APAC', extractRegion('Newcastle NSW hospital contract awarded') === 'apac');
+  check('Newcastle upon Tyne is still UK', extractRegion('Newcastle upon Tyne hospital contract awarded') === 'uk');
+
+  // Still rejected: an AU-locale query returned every one of these.
+  check('Taiwan is still elsewhere', extractRegion('Taoyuan Brown Line construction starts') === null);
+  check('Canada is still elsewhere', extractRegion('Construction contract awarded for CancerCare Manitoba facility') === null);
+
+  const au = extractLead('Monadelphous secures major construction contract with BHP, Perth', '', TIER1);
+  check('a real Australian award becomes a lead', au.isLead && au.region === 'apac', JSON.stringify({ r: au.region, c: au.company }));
+  check('  and names the contractor', au.company === 'Monadelphous', String(au.company));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed > 0 ? 1 : 0;

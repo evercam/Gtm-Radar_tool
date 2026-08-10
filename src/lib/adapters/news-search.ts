@@ -87,10 +87,17 @@ interface NewsLead extends Record<string, unknown> {
   query: string;
 }
 
-const BU_BY_REGION: Record<NewsRegion, BusinessUnit> = { usa: 'usa', uk: 'uk' };
+const BU_BY_REGION: Record<NewsRegion, BusinessUnit> = { usa: 'usa', uk: 'uk', apac: 'apac' };
 const COUNTRY_BY_REGION: Record<NewsRegion, { name: string; code: string }> = {
   usa: { name: 'United States', code: 'US' },
   uk: { name: 'United Kingdom', code: 'GB' },
+  /*
+    AU rather than NZ, because the hint set covers both and Australia is the bulk
+    of it. A New Zealand project therefore lands as apac with an AU country code —
+    the business unit is right, the country is approximate, and that is better
+    than dropping the lead.
+  */
+  apac: { name: 'Australia', code: 'AU' },
 };
 
 /**
@@ -127,9 +134,9 @@ export const newsSearchAdapter: SourceAdapter = {
     const regions: NewsRegion[] = params.regions?.length
       ? (params.regions
           .map((r) => r.toLowerCase())
-          .filter((r): r is NewsRegion => r === 'usa' || r === 'uk') as NewsRegion[])
-      : ['usa', 'uk'];
-    const useRegions = regions.length > 0 ? regions : (['usa', 'uk'] as NewsRegion[]);
+          .filter((r): r is NewsRegion => r === 'usa' || r === 'uk' || r === 'apac') as NewsRegion[])
+      : ['usa', 'uk', 'apac'];
+    const useRegions = regions.length > 0 ? regions : (['usa', 'uk', 'apac'] as NewsRegion[]);
 
     const leads: NewsLead[] = [];
     const seen = new Set<string>();
@@ -193,6 +200,14 @@ export const newsSearchAdapter: SourceAdapter = {
             if (leads.length >= maxRecords) break outer;
             const verdict = extractLead(item.title, item.description, hunt);
             if (!verdict.isLead || !verdict.region || !verdict.company) continue;
+            /*
+              The region comes from the TEXT, not from the locale we asked — and a
+              locale is only a ranking hint, so an AU feed returns UK stories.
+              Asking for APAC and getting Bouygues in Overdale is not wrong data,
+              but it is not what was requested, so the result is filtered to the
+              regions the caller named.
+            */
+            if (!useRegions.includes(verdict.region)) continue;
 
             /*
               The same story is syndicated across outlets and surfaces under

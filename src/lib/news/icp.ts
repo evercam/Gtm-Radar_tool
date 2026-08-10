@@ -26,7 +26,7 @@
  * text, and anything that cannot be placed in the USA or the UK is dropped.
  */
 
-export type NewsRegion = 'usa' | 'uk';
+export type NewsRegion = 'usa' | 'uk' | 'apac';
 
 /** What kind of company we are hunting, and what to search for to find them. */
 export interface IcpHunt {
@@ -97,8 +97,14 @@ export const ICP_HUNTS: IcpHunt[] = [
 ];
 
 /** Google News search RSS for one query in one region. Keyless. */
+const LOCALES: Record<NewsRegion, { hl: string; gl: string; ceid: string }> = {
+  usa: { hl: 'en-US', gl: 'US', ceid: 'US:en' },
+  uk: { hl: 'en-GB', gl: 'GB', ceid: 'GB:en' },
+  apac: { hl: 'en-AU', gl: 'AU', ceid: 'AU:en' },
+};
+
 export function newsFeedUrl(query: string, region: NewsRegion): string {
-  const locale = region === 'usa' ? { hl: 'en-US', gl: 'US', ceid: 'US:en' } : { hl: 'en-GB', gl: 'GB', ceid: 'GB:en' };
+  const locale = LOCALES[region];
   const q = encodeURIComponent(query);
   return `https://news.google.com/rss/search?q=${q}&hl=${locale.hl}&gl=${locale.gl}&ceid=${locale.ceid}`;
 }
@@ -162,6 +168,16 @@ const NOT_A_PROJECT = [
 const US_HINT =
   /\b(U\.?S\.?A?\b|United States|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|Wisconsin|Wyoming|Atlanta|Boston|Chicago|Dallas|Denver|Houston|Miami|Phoenix|Seattle|Brooklyn|Manhattan)\b/i;
 
+/**
+ * Australia and New Zealand, which the roster covers as the `apac` business unit.
+ *
+ * Checked before ELSEWHERE for the same reason the UK is: an AU-locale query
+ * returned projects in Taiwan, Ontario, Manitoba and Gaza, so the locale is a
+ * ranking hint and the text is the only evidence.
+ */
+const APAC_HINT =
+  /\b(Australia|Australian|NSW|New South Wales|Victoria|Queensland|Tasmania|Northern Territory|Western Australia|South Australia|Sydney|Melbourne|Brisbane|Perth|Adelaide|Canberra|Hobart|Darwin|Newcastle NSW|Geelong|Gold Coast|Wollongong|Townsville|Cairns|New Zealand|Auckland|Wellington|Christchurch|ASX)\b/i;
+
 const UK_HINT =
   /\b(U\.?K\.?\b|United Kingdom|Britain|British|England|Scotland|Wales|Northern Ireland|London|Manchester|Birmingham|Leeds|Glasgow|Edinburgh|Bristol|Liverpool|Sheffield|Cardiff|Belfast|Newcastle|Nottingham|Southampton|Aberdeen|NHS|council)\b/i;
 
@@ -173,7 +189,7 @@ const UK_HINT =
  * "British" and would otherwise read as the UK.
  */
 const ELSEWHERE =
-  /\b(Saudi|UAE|Dubai|Abu Dhabi|Qatar|Kuwait|Oman|Bahrain|India|China|Japan|Singapore|Malaysia|Indonesia|Vietnam|Philippines|Australia|New Zealand|Canada|Mexico|Brazil|Chile|Nigeria|Kenya|Egypt|South Africa|Germany|France|Spain|Italy|Netherlands|Belgium|Poland|Sweden|Norway|Denmark|Finland|Ireland|Dublin|Virgin Islands|Puerto Rico|Guam)\b/i;
+  /\b(Saudi|UAE|Dubai|Abu Dhabi|Qatar|Kuwait|Oman|Bahrain|India|China|Japan|Singapore|Malaysia|Indonesia|Vietnam|Philippines|Canada|Mexico|Brazil|Chile|Nigeria|Kenya|Egypt|South Africa|Germany|France|Spain|Italy|Netherlands|Belgium|Poland|Sweden|Norway|Denmark|Finland|Ireland|Dublin|Virgin Islands|Puerto Rico|Guam)\b/i;
 
 /** Tier and party, when the text says so plainly. */
 const TIER1_HINT =
@@ -249,6 +265,15 @@ export function extractCompany(title: string): string | null {
   */
   if (/^(contractor|council|developer|builder|firm|company|client|group|team|construction)$/i.test(head)) return null;
   /*
+    The generic phrase, not just the generic word.
+
+    "Head contractor appointed for The Avenue, Coburg" and "Main works contractor
+    appointed for Bathurst Hospital" both name the ROLE and withhold the company —
+    a very common Australian headline form. Left in, enrichment would go and
+    research "Main works contractor".
+  */
+  if (/^(head|main|principal|managing|lead|preferred|successful)\s+(works\s+)?(contractor|builder|consultant)$/i.test(head)) return null;
+  /*
     A company name is short. A sentence is not.
 
     Headlines that do not lead with the actor produce a clause instead of a name
@@ -258,7 +283,7 @@ export function extractCompany(title: string): string | null {
   */
   if (head.split(/\s+/).length > 5) return null;
   // A clause gives itself away with a verb or a possessive.
-  if (/(are|is|was|were|has|have|will|would|could|says?|see|how|why|what|where)|'s\s/i.test(head)) return null;
+  if (/\b(are|is|was|were|has|have|will|would|could|says?|see|how|why|what|where)\b|'s\s/i.test(head)) return null;
   // A fragment with no capitalised word is a sentence, not a name.
   if (!/[A-Z]/.test(head)) return null;
   /*
@@ -277,6 +302,11 @@ export function extractCompany(title: string): string | null {
 /** Region, from the text — never from the feed's locale. */
 export function extractRegion(text: string): NewsRegion | null {
   if (ELSEWHERE.test(text)) return null;
+  /*
+    APAC first. "Newcastle" and "Victoria" exist in both Britain and Australia,
+    and an ASX ticker or a state name is decisive where a bare city name is not.
+  */
+  if (APAC_HINT.test(text)) return 'apac';
   if (UK_HINT.test(text)) return 'uk';
   if (US_HINT.test(text)) return 'usa';
   return null;
