@@ -1383,9 +1383,42 @@ export interface ExportRunRow {
  * run, and what did it send" could only be answered by re-running it. Apollo
  * itself cannot answer it — it emits no notification on contact creation.
  */
+/**
+ * How long an export may be `running` before it is presumed dead.
+ *
+ * The export route's own ceiling is 300 seconds and a full 500-contact send
+ * measured about four minutes, so nothing legitimate is still going after
+ * thirty. A row older than that is a process that was killed or lost its
+ * container somewhere the finishing write could not reach.
+ *
+ * The same fault as `ingestion_runs` had: a row is opened before the work
+ * starts so an interrupted send stays visible, and nothing ever closed the ones
+ * that never came back. One of mine sat there after a request was cut off
+ * mid-flight, indistinguishable on the page from a send in progress.
+ */
+const STALE_EXPORT_MS = 30 * 60 * 1000;
+
+async function reapStaleExportRuns(): Promise<void> {
+  try {
+    await getServiceSupabase()
+      .from('export_runs')
+      .update({
+        status: 'failed',
+        error: 'Interrupted — the process ended before the send could finish.',
+        finished_at: new Date().toISOString(),
+      })
+      .eq('status', 'running')
+      .lt('started_at', new Date(Date.now() - STALE_EXPORT_MS).toISOString());
+  } catch {
+    // Best-effort: a failed reap must not hide the history it was tidying.
+  }
+}
+
 export async function getExportRuns(limit = 50): Promise<{ rows: ExportRunRow[]; tableMissing: boolean }> {
   try {
     const service = getServiceSupabase();
+    // Never show a dead send as live.
+    await reapStaleExportRuns();
     const { data, error } = await service
       .from('export_runs')
       .select(
