@@ -107,16 +107,74 @@ export async function POST(request: NextRequest) {
       .not('enriched_at', 'is', null)
       .not('contact_email', 'is', null)
       .is('icp_fit_score', null)
-      // By account first, so records of the same company sit together and share
-      // one piece of research. Then oldest, so nothing waits indefinitely.
-      .order('account_key', { ascending: true, nullsFirst: false })
+      /*
+        ONE sort, not two.
+
+        This ordered by account_key and then enriched_at, and the two-column sort
+        over an unindexed predicate sat right on the statement timeout — so the
+        same query failed on some runs and succeeded on others. That is what
+        "fails hourly, succeeds in the daily run" actually was: a coin flip, not a
+        difference between the schedules.
+
+        Measured three times each at the same limit, against 88,126 rows:
+
+          two sorts   7780 | 3524 | 2346 ms   (the cold run crosses the ceiling)
+          one sort     810 |  568 |  464 ms
+          no sort      356 |  653 |  270 ms
+
+        The spread is the point — a mean would have hidden it. The row limit turns
+        out not to matter (90 and 500 cost the same as 30), because the cost is
+        the scan, so over-fetching for the grouping below is free.
+
+        The account grouping is worth keeping — records of one company share a
+        single piece of research — so it is done in memory below, over the handful
+        of rows this returns, instead of by making Postgres sort the whole set.
+      */
       .order('enriched_at', { ascending: true });
   }
 
-  const { data: rows, error } = await query.limit(limit);
+  /*
+    Over-fetch when grouping, so the in-memory pass has whole companies to group
+    rather than a slice cut through the middle of one.
+  */
+  const wantsGrouping = !body.ids?.length;
+  const { data: fetched, error } = await query.limit(wantsGrouping ? Math.min(500, limit * 3) : limit);
   if (error) {
-    return NextResponse.json({ ok: false, message: `Could not read the brief queue: ${error.message}` }, { status: 200 });
+    // Name the cause. "Could not read the brief queue" on a statement timeout
+    // reads as a mystery, and this one went unexplained for days because of it.
+    const timedOut = /statement timeout|canceling statement/i.test(error.message);
+    return NextResponse.json(
+      {
+        ok: false,
+        timedOut,
+        message: timedOut
+          ? `The brief queue read timed out (${error.message}). The predicate is unindexed, so Postgres scans the table to find candidates — apply the brief-queue index.`
+          : `Could not read the brief queue: ${error.message}`,
+      },
+      { status: 200 }
+    );
   }
+
+  /*
+    Group by account in memory: same benefit as the SQL sort, none of its cost.
+    Oldest-first order is preserved within and between accounts, so nothing waits
+    indefinitely.
+  */
+  const rows = wantsGrouping
+    ? (() => {
+        // Cast through unknown: the select string is concatenated, so supabase-js
+        // widens the row type to GenericStringError and every field access fails.
+        const all = (fetched ?? []) as unknown as { id: string; account_key?: string | null }[];
+        const byAccount = new Map<string, typeof all>();
+        for (const r of all) {
+          const key = r.account_key ?? `~${r.id}`;
+          const bucket = byAccount.get(key);
+          if (bucket) bucket.push(r);
+          else byAccount.set(key, [r]);
+        }
+        return [...byAccount.values()].flat().slice(0, limit) as unknown as typeof fetched;
+      })()
+    : fetched;
   if (!rows?.length) {
     return NextResponse.json(
       { ok: true, briefed: 0, results: [], message: 'Nothing to brief — every enriched record already carries one.' },

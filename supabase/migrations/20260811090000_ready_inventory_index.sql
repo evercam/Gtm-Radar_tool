@@ -34,3 +34,22 @@ create index if not exists idx_projects_assignable
   where assignee_id is null
     and apollo_exported_at is null
     and do_not_contact = false;
+
+-- The brief queue, which had the same fault in a sharper form.
+--
+-- /api/enrich/brief looks for enriched, reachable records that carry no
+-- icp_fit_score yet. Unindexed, that predicate makes Postgres scan the table to
+-- discover the answer — and because the route also sorted by account_key AND
+-- enriched_at, the two-column sort over the scanned set ran 7780 | 3524 | 2346 ms
+-- across three attempts against 88,126 rows — straddling the statement timeout.
+-- The same query therefore failed on some runs and succeeded on others, which is
+-- what "fails hourly but works in the daily job" actually was: a coin flip.
+--
+-- The route now does one sort and groups by account in memory, which measured
+-- 810 | 568 | 464 ms — comfortably under the ceiling on its own. This index
+-- removes the remaining scan, so it becomes fast rather than merely surviving.
+create index if not exists idx_projects_brief_queue
+  on canonical_projects (enriched_at, account_key)
+  where icp_fit_score is null
+    and enriched_at is not null
+    and contact_email is not null;
