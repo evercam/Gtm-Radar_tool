@@ -65,6 +65,7 @@ export const SOURCE_SLUGS: Record<string, SourceSlugInfo> = {
   gem: { sourceKey: 'gem_energy_tracker', keyless: true },
   'news-search': { sourceKey: 'news_search', keyless: true },
   'public-contracts-scotland': { sourceKey: 'public_contracts_scotland', keyless: true },
+  'calgary-permits': { sourceKey: 'calgary_building_permits', keyless: true },
   'neso-tec': { sourceKey: 'neso_tec_register', keyless: true },
   'neso-embedded': { sourceKey: 'neso_embedded_register', keyless: true },
 };

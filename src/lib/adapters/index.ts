@@ -8,7 +8,7 @@ import { tedAdapter } from './ted';
 import { worldBankAdapter } from './world-bank';
 import { usaSpendingAdapter } from './usaspending';
 import { planningIeAdapter } from './planning-ie';
-import { nycPermitsAdapter, chicagoPermitsAdapter } from './socrata-permits';
+import { nycPermitsAdapter, chicagoPermitsAdapter, calgaryPermitsAdapter } from './socrata-permits';
 import {
   dataCenterDynamicsAdapter,
   dataCenterKnowledgeAdapter,
@@ -45,6 +45,7 @@ export const LIVE_ADAPTERS: Record<string, SourceAdapter> = {
   'planning-ie': planningIeAdapter,
   'nyc-permits': nycPermitsAdapter,
   'chicago-permits': chicagoPermitsAdapter,
+  'calgary-permits': calgaryPermitsAdapter,
   'data-center-dynamics': dataCenterDynamicsAdapter,
   'data-center-knowledge': dataCenterKnowledgeAdapter,
   'semiconductor-digest': semiconductorDigestAdapter,

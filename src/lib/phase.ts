@@ -103,6 +103,23 @@ const EXACT: Record<string, ProjectPhase> = {
     weight in scoring, a 2037 scoping project and a site breaking ground next
     quarter would have looked identical.
   */
+  /*
+    Calgary building permits.
+
+    "Pre Backfill Phase" is the useful one and the least obvious: the foundation
+    is in and the hole is still open, which is the earliest point a camera is
+    worth anything. It is under construction, not planned.
+  */
+  'pre backfill phase': 'Under construction',
+  'pre board phase': 'Under construction',
+  'issued permit': 'Approved',
+  completed: 'Operating',
+  hold: 'On hold',
+  refused: 'Cancelled',
+  'pending plans review': 'Permitting',
+  'pending plans review assignment': 'Permitting',
+  new: 'Planned',
+
   scoping: 'Planned',
   'awaiting consents': 'Permitting',
   'consents approved': 'Approved',

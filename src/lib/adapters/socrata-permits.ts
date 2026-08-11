@@ -167,6 +167,52 @@ function extractChicago(raw: RawProjectRecord): ExtractedPermit {
 
 // ---- publisher registry -----------------------------------------------------
 
+/**
+ * Calgary building permits.
+ *
+ * Added because it passes the test the US candidates failed. Dallas publishes a
+ * contractor and a value and stopped updating in 2019 — max(issued_date) is
+ * 12/31/19 — and Seattle's permit dataset carries neither a company nor a cost.
+ * Calgary carries both, on 497,000 rows, current to the day: 64% name a
+ * contractor, 68% an applicant, 89% an estimated cost.
+ *
+ * `contractorname` first and `applicantname` second, because the contractor is
+ * who is actually on site. On a self-built house they are the same company.
+ */
+function extractCalgary(raw: RawProjectRecord): ExtractedPermit {
+  const r = raw as Record<string, unknown>;
+  const desc = str(r.description);
+  const permitClass = str(r.permitclassmapped) ?? str(r.permitclass);
+  const workClass = str(r.workclassmapped) ?? str(r.workclass);
+  const status = str(r.statuscurrent);
+  const applied = isoDay(r.applieddate);
+
+  return {
+    extId: str(r.permitnum) || '',
+    name: (desc && desc.slice(0, 200)) || joinNonEmpty([workClass, permitClass], ' ') || `Calgary permit ${str(r.permitnum) ?? ''}`.trim(),
+    description: joinNonEmpty([permitClass, workClass, desc, str(r.communityname)], ' · '),
+    buildingType: permitClass,
+    /* Canadian dollars — the register is a municipal one and publishes no currency. */
+    value: num(r.estprojectcost),
+    addressLine1: str(r.originaladdress) ?? str(r.locationaddresses),
+    city: 'Calgary',
+    state: 'AB',
+    latitude: num(r.latitude),
+    longitude: num(r.longitude),
+    filedDate: applied,
+    issuedDate: null,
+    startDate: null,
+    // The contractor is who is on site; the applicant is the fallback.
+    companyName: str(r.contractorname) ?? str(r.applicantname),
+    contactName: null,
+    contactPhone: null,
+    // Passed through verbatim so lib/phase decides — "Pre Backfill Phase" means
+    // the foundation is in and the hole is open, which is under construction.
+    currentPhase: status,
+    url: null,
+  };
+}
+
 export const SOCRATA_PERMIT_PUBLISHERS: SocrataPermitConfig[] = [
   {
     slug: 'nyc-permits',
@@ -189,6 +235,19 @@ export const SOCRATA_PERMIT_PUBLISHERS: SocrataPermitConfig[] = [
     datasetId: 'ydr8-5enu',
     dateField: 'issue_date',
     extract: extractChicago,
+  },
+  {
+    slug: 'calgary-permits',
+    sourceKey: 'calgary_building_permits',
+    icpCode: 'tier2_gc',
+    // Canada has no business unit of its own, so it sits in export like every
+    // other market outside the four named ones.
+    bu: 'export',
+    countryCode: 'CA',
+    host: 'data.calgary.ca',
+    datasetId: 'c2es-76ed',
+    dateField: 'applieddate',
+    extract: extractCalgary,
   },
 ];
 
@@ -347,5 +406,19 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
   };
 }
 
-export const nycPermitsAdapter = makeSocrataAdapter(SOCRATA_PERMIT_PUBLISHERS[0]);
-export const chicagoPermitsAdapter = makeSocrataAdapter(SOCRATA_PERMIT_PUBLISHERS[1]);
+/**
+ * By slug, never by index — the same trap the OCDS list already sprang once.
+ *
+ * These were `[0]` and `[1]`, so inserting a city anywhere but the end silently
+ * repointed the adapters after it: Chicago's export would have started returning
+ * Calgary's data under Chicago's source_key, with nothing to catch it.
+ */
+function publisher(slug: string): SocrataPermitConfig {
+  const found = SOCRATA_PERMIT_PUBLISHERS.find((p) => p.slug === slug);
+  if (!found) throw new Error(`No Socrata permit publisher configured for "${slug}".`);
+  return found;
+}
+
+export const nycPermitsAdapter = makeSocrataAdapter(publisher('nyc-permits'));
+export const chicagoPermitsAdapter = makeSocrataAdapter(publisher('chicago-permits'));
+export const calgaryPermitsAdapter = makeSocrataAdapter(publisher('calgary-permits'));

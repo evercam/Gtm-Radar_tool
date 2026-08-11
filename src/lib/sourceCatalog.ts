@@ -68,6 +68,14 @@ export const SOURCE_CATALOG: CatalogSource[] = [
     auth: 'keyless',
   },
   {
+    name: 'Calgary Building Permits',
+    sourceKey: 'calgary_building_permits',
+    slug: 'calgary-permits',
+    category: 'Permits & planning',
+    coverage: 'Export',
+    auth: 'keyless',
+  },
+  {
     name: 'NESO TEC Register',
     sourceKey: 'neso_tec_register',
     slug: 'neso-tec',

@@ -42,6 +42,7 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
   'planning-ie': 'planning_ie',
   'nyc-permits': 'nyc_dob_permits',
   'chicago-permits': 'chicago_building_permits',
+  'calgary-permits': 'calgary_building_permits',
   'data-center-dynamics': 'data_center_dynamics',
   'data-center-knowledge': 'data_center_knowledge',
   'semiconductor-digest': 'semiconductor_digest',
