@@ -28,13 +28,22 @@ export interface AssigneeCover {
   assigneeId: string;
   name: string;
   dailyQuota: number;
-  /** Ready to export now: assigned to them, reachable, not yet sent. */
-  ready: number;
+  /**
+   * Reachable, unassigned leads whose scope this person covers — what could be
+   * given to them tomorrow.
+   *
+   * NOT assigned-but-unsent work, which is what this measured first and which
+   * cannot accumulate: assignment is capped at the daily quota and the daily job
+   * exports in the same pass, so the drain matches the fill and the buffer is
+   * always about zero. Stock in scope is the quantity that actually protects a
+   * desk, and it is the same number the enrichment planner already works from.
+   */
+  covered: number;
   /** What three days of their own draw comes to. */
   target: number;
   /** How many more they need. Zero when covered. */
   deficit: number;
-  /** ready / dailyQuota, one decimal. Infinity is reported as null. */
+  /** covered / dailyQuota, one decimal. */
   daysOfCover: number | null;
   short: boolean;
 }
@@ -54,7 +63,7 @@ export interface CoverInput {
   assigneeId: string;
   name: string;
   dailyQuota: number;
-  ready: number;
+  covered: number;
   isActive: boolean;
 }
 
@@ -76,15 +85,15 @@ export function planSupply(input: CoverInput[], minDays: number = MIN_DAYS_OF_CO
     .filter((p) => p.isActive && p.dailyQuota > 0)
     .map((p) => {
       const target = p.dailyQuota * days;
-      const deficit = Math.max(0, target - p.ready);
+      const deficit = Math.max(0, target - p.covered);
       return {
         assigneeId: p.assigneeId,
         name: p.name,
         dailyQuota: p.dailyQuota,
-        ready: p.ready,
+        covered: p.covered,
         target,
         deficit,
-        daysOfCover: Math.round((p.ready / p.dailyQuota) * 10) / 10,
+        daysOfCover: Math.round((p.covered / p.dailyQuota) * 10) / 10,
         short: deficit > 0,
       };
     })
@@ -104,11 +113,10 @@ export function planSupply(input: CoverInput[], minDays: number = MIN_DAYS_OF_CO
 /**
  * How many leads enrichment should be asked to produce.
  *
- * The shortfall is in READY leads — assigned and reachable — and enrichment
- * produces neither of those directly: it makes a record contactable, and
- * assignment then has to pick it up. So the ask is inflated to allow for the
- * records enrichment will touch that never become anybody's ready lead, because
- * no contact was found or because nobody's scope covers them.
+ * The shortfall is in reachable, in-scope stock, and enrichment does not produce
+ * that one-for-one: it makes a record contactable, and some of what it touches
+ * lands outside every scope or yields no contact at all. So the ask is inflated to
+ * allow for what will not count.
  *
  * `wastage` is that allowance, not a safety margin for its own sake. At 0.5,
  * asking for 100 ready leads enriches 150.

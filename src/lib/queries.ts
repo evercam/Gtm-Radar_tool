@@ -6,6 +6,7 @@ import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type Prior
 import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
 import { recordReachable } from '@/lib/export/reachability';
 import { planSupply, type SupplyPlan } from '@/lib/supply';
+import { getDemandPlan } from '@/lib/enrich/demand';
 import { arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
@@ -1687,15 +1688,44 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
       .filter((r) => r.isActive || r.received > 0 || r.ready > 0 || r.waitingOnContact > 0)
       .sort((a, b) => b.received + b.ready - (a.received + a.ready) || a.name.localeCompare(b.name));
 
-    const supply = planSupply(
-      rows.map((r) => ({
-        assigneeId: r.assigneeId,
-        name: r.name,
-        dailyQuota: r.dailyQuota,
-        ready: r.ready,
-        isActive: r.isActive,
-      }))
-    );
+    /*
+      Cover is measured from stock IN SCOPE, not from assigned-but-unsent work.
+
+      The first version used `ready` — assigned, reachable, not yet exported — and
+      that quantity cannot accumulate: assignment is capped at the daily quota and
+      the daily job exports in the same pass, so the drain equals the fill and
+      every desk reads as roughly zero days forever. What protects a desk is how
+      much reachable stock exists that this person could be given, which is the
+      number the enrichment planner already computes as `covered`.
+
+      Read from getDemandPlan rather than recomputed, so there is one definition
+      of it. This page has already been through what happens when two parts of the
+      app measure the same word differently.
+    */
+    let supply = planSupply([]);
+    try {
+      const demand = await getDemandPlan(policy.monthlyReadyTarget);
+      /*
+        A read that failed is not a measurement of zero. Presenting it as one
+        reports every desk as empty when they may be full, which is how somebody
+        ends up authorising enrichment spend against a number nobody took.
+      */
+      if (demand.inventoryUnavailable) throw new Error(demand.inventoryUnavailable);
+      const byId = new Map(demand.people.map((d) => [d.id, d]));
+      supply = planSupply(
+        rows.map((r) => ({
+          assigneeId: r.assigneeId,
+          name: r.name,
+          dailyQuota: r.dailyQuota,
+          // Absent from the demand plan means inactive or zero-quota, and
+          // planSupply drops those anyway.
+          covered: byId.get(r.assigneeId)?.covered ?? 0,
+          isActive: r.isActive,
+        }))
+      );
+    } catch {
+      // A supply figure we could not measure is better absent than invented.
+    }
 
     return { rows, supply, unrostered, requireVerified, tableMissing: false };
   } catch {

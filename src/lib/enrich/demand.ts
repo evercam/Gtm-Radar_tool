@@ -61,6 +61,13 @@ export interface PersonDemand {
 }
 
 export interface DemandPlan {
+  /**
+   * Set when the ready-inventory read failed, e.g. a statement timeout.
+   *
+   * Every `covered` is then a floor rather than a measurement, and a caller that
+   * presents them as fact is reporting empty desks that may be full.
+   */
+  inventoryUnavailable?: string | null;
   people: PersonDemand[];
   /** Sum of every person's target. */
   totalTarget: number;
@@ -101,35 +108,54 @@ function toAssignable(row: Record<string, unknown>): AssignableUser {
  * and export has not consumed — the same definition `getBufferState` uses, so
  * the two cannot disagree about what "ready" means.
  */
-async function readyInventory(): Promise<AssignableLead[]> {
+/**
+ * Every enriched, reachable, unexported lead — the stock available to be given out.
+ *
+ * Keyset pagination on `id`, not `.range()`. Offset paging re-walks everything it
+ * has already skipped, so page fifty pays for the previous forty-nine thousand
+ * rows; `id > last` costs the same on every page.
+ *
+ * `unavailable` matters as much as the rows. This used to log a warning and return
+ * an empty array, and an empty array is indistinguishable from "there is no
+ * stock" — so a read that timed out reported every desk as maximally short and the
+ * enrichment planner split its slots against a measurement that was never taken.
+ * A number we could not measure has to say so.
+ */
+async function readyInventory(): Promise<{ rows: AssignableLead[]; unavailable: string | null }> {
   const service = getServiceSupabase();
   const out: AssignableLead[] = [];
   const PAGE = 1000;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await service
+  let after = '';
+
+  for (let guard = 0; guard < 200; guard += 1) {
+    let q = service
       .from('canonical_projects')
       .select('id, bu, vertical, country, priority_band, priority_score, stage, contact_status, owner_user_id')
       .not('enriched_at', 'is', null)
       .not('contact_email', 'is', null)
       .is('apollo_exported_at', null)
       .eq('do_not_contact', false)
-      // Ordered, because an unordered .range() walk repeats and skips rows — which
-      // here would miscount somebody's cover and send us producing leads they
-      // already have.
-      .order('id')
-      .range(from, from + PAGE - 1);
+      // A total order is required either way, or a page boundary repeats and skips
+      // rows — which here would miscount somebody's cover.
+      .order('id', { ascending: true })
+      .limit(PAGE);
+    if (after) q = q.gt('id', after);
+
+    const { data, error } = await q;
     if (error) {
-      console.warn(`Could not read ready inventory: ${error.message}`);
-      break;
+      return { rows: out, unavailable: error.message };
     }
-    out.push(...((data ?? []) as unknown as AssignableLead[]));
-    if (!data || data.length < PAGE) break;
+    const batch = (data ?? []) as unknown as AssignableLead[];
+    if (batch.length === 0) break;
+    out.push(...batch);
+    after = String(batch[batch.length - 1].id);
+    if (batch.length < PAGE) break;
   }
-  return out;
+  return { rows: out, unavailable: null };
 }
 
 export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandPlan> {
-  const empty: DemandPlan = { people: [], totalTarget: 0, totalDeficit: 0, unfillable: [] };
+  const empty: DemandPlan = { people: [], totalTarget: 0, totalDeficit: 0, unfillable: [], inventoryUnavailable: null };
   if (!isSupabaseServiceConfigured()) return empty;
 
   const service = getServiceSupabase();
@@ -145,7 +171,7 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
   const roster = (rows ?? []).map((r) => toAssignable(r as Record<string, unknown>)).filter((u) => u.dailyQuota > 0);
   if (roster.length === 0) return empty;
 
-  const inventory = await readyInventory();
+  const { rows: inventory, unavailable } = await readyInventory();
 
   // Each person's share of the month's production, weighted by their quota. Five
   // people on fifty a day split 7,200 evenly at 1,440 each; a sixth joining or a
@@ -171,6 +197,7 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
   });
 
   return {
+    inventoryUnavailable: unavailable,
     people,
     totalTarget: people.reduce((n, p) => n + p.target, 0),
     totalDeficit: people.reduce((n, p) => n + p.deficit, 0),

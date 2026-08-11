@@ -30,7 +30,7 @@ const check = (n, c, d) => {
   }
 };
 
-const p = (name, dailyQuota, ready, isActive = true) => ({ assigneeId: name, name, dailyQuota, ready, isActive });
+const p = (name, dailyQuota, covered, isActive = true) => ({ assigneeId: name, name, dailyQuota, covered, isActive });
 
 console.log('The floor is three days of that person’s own draw');
 {
@@ -53,10 +53,10 @@ console.log('\nCover is measured, not assumed');
 {
   const plan = planSupply([p('Full', 25, 100), p('Exact', 25, 75), p('Thin', 25, 30), p('Empty', 25, 0)]);
   const by = Object.fromEntries(plan.people.map((x) => [x.name, x]));
-  check('100 ready on a 25 draw is 4 days', by.Full.daysOfCover === 4);
+  check('100 in scope on a 25 draw is 4 days', by.Full.daysOfCover === 4);
   check('and is not short', !by.Full.short && by.Full.deficit === 0);
   check('exactly 75 is covered, not short', !by.Exact.short, `deficit ${by.Exact.deficit}`);
-  check('30 ready is 1.2 days', by.Thin.daysOfCover === 1.2, String(by.Thin.daysOfCover));
+  check('30 in scope is 1.2 days', by.Thin.daysOfCover === 1.2, String(by.Thin.daysOfCover));
   check('and needs 45 more', by.Thin.deficit === 45, String(by.Thin.deficit));
   check('an empty desk needs the full 75', by.Empty.deficit === 75);
   check('two people are short', plan.shortCount === 2, String(plan.shortCount));
