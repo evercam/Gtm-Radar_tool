@@ -12,6 +12,7 @@
 
 import { NAV_SECTIONS, CONTROL_TABS, ADMIN_TABS } from '../src/lib/nav.ts';
 import { permissionForPath, ROUTE_PERMISSIONS, ROLE_PERMISSIONS, can } from '../src/lib/auth/roles.ts';
+import { KNOWN_PERMISSIONS } from '@/lib/auth/roles';
 
 let passed = 0, failed = 0;
 const check = (n, c, d) => { if (c) { passed++; console.log(`  PASS ${n}`); } else { failed++; console.log(`  FAIL ${n}${d ? ' — ' + d : ''}`); } };
@@ -87,11 +88,21 @@ group('A page is not offered from two different areas');
 
 group('Permissions are named, not invented');
 {
-  const KNOWN = new Set([
-    'leads.view.own', 'leads.view.all', 'leads.qualify', 'leads.transfer', 'leads.reassign', 'leads.export',
-    'kpi.view', 'kpi.view.team', 'control.access', 'sources.run', 'sources.ingest', 'enrichment.run',
-    'scoring.edit', 'routing.edit', 'settings.manage', 'credentials.manage', 'users.manage',
-  ]);
+  /*
+    Imported, not retyped.
+
+    This was a hardcoded copy of the seventeen permissions, which made the test
+    fail every time a permission was legitimately ADDED — it was asserting that
+    the list had not changed rather than that the nav only names real
+    permissions. Adding 'logs.view' to the type, the catalogue and the role
+    bundles left this copy behind and the suite went red for a change that was
+    entirely correct.
+
+    A duplicated constant that has to be edited in two places to stay true is
+    the same fault as the positional array exports elsewhere in this repo: it
+    passes until somebody inserts something.
+  */
+  const KNOWN = new Set(KNOWN_PERMISSIONS);
   const used = [...allItems, ...CONTROL_TABS, ...ADMIN_TABS].map((i) => i.permission).filter(Boolean);
   const unknown = used.filter((p) => !KNOWN.has(p));
   check('every permission referenced exists', unknown.length === 0, unknown.join(', '));

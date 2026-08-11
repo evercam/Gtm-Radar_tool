@@ -34,7 +34,8 @@ export type Permission =
   | 'routing.edit'
   | 'settings.manage'
   | 'credentials.manage'
-  | 'users.manage';
+  | 'users.manage'
+  | 'logs.view';
 
 /**
  * The permissions the code enforces, as data.
@@ -61,6 +62,7 @@ export const KNOWN_PERMISSIONS: readonly Permission[] = [
   'settings.manage',
   'credentials.manage',
   'users.manage',
+  'logs.view',
 ] as const;
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -81,6 +83,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   'settings.manage': 'Manage settings',
   'credentials.manage': 'Manage credentials',
   'users.manage': 'Manage users',
+  'logs.view': 'Read the activity log',
 };
 
 /**
@@ -117,6 +120,9 @@ export const BUILT_IN_ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'enrichment.run',
     'scoring.edit',
     'routing.edit',
+    // The person who notices a job has stopped is the one running the team, so
+    // this is not held back for admins.
+    'logs.view',
   ],
   admin: [...KNOWN_PERMISSIONS],
 };
@@ -207,6 +213,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
     turned away exactly the people the page admits: the sidebar offered them
     "Export History" and clicking it redirected to /?denied=1.
   */
+  { prefix: '/control/logs', permission: 'logs.view' },
   { prefix: '/control/exports', permission: 'leads.export' },
   { prefix: '/control', permission: 'control.access' },
 ];

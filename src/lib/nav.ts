@@ -11,6 +11,7 @@ import {
   Satellite,
   Settings2,
   History,
+  ScrollText,
   type LucideIcon,
 } from 'lucide-react';
 import type { Permission } from '@/lib/auth/roles';
@@ -105,6 +106,7 @@ export const CONTROL_TABS: NavItem[] = [
   // Last, because it is the only tab you read rather than operate — and the one
   // you open after a send, not before.
   { label: 'Export History', href: '/control/exports', icon: History, permission: 'leads.export' },
+  { label: 'Activity Log', href: '/control/logs', icon: ScrollText, permission: 'logs.view' },
 ];
 
 /** Tabs across the top of every Administration page. */

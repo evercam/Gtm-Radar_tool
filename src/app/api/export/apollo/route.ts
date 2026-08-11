@@ -13,6 +13,7 @@ import { normalisePhase } from '@/lib/phase';
 import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
 import { notifyExportFinished } from '@/lib/notify/cliq';
+import { logEventAsync } from '@/lib/observability/events';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -840,6 +841,33 @@ export async function POST(request: NextRequest) {
   const complete = unsentContacts === 0 && leadsLeft === 0 && !stoppedEarly;
 
   const durationMs = Date.now() - startedAtMs;
+
+  /*
+    Logged on `complete`, not on `ok`.
+
+    A run that sent 393 of 548 contacts returned ok:true and read identically to
+    one that finished — that is what made the truncation invisible. `ok` means
+    "nothing threw"; `complete` means "there is nothing left". The log records
+    the second, so a string of incomplete-but-successful runs is countable
+    instead of being something you happen to notice.
+  */
+  logEventAsync({
+    kind: 'export',
+    name: 'apollo',
+    ok: complete,
+    durationMs,
+    detail: {
+      created,
+      sentContacts,
+      unsentContacts,
+      leadsLeft,
+      batchesSent,
+      batches: batches.length,
+      stoppedEarly,
+      eligibleTotal,
+    },
+  });
+
   if (runId) {
     try {
       await service

@@ -10,6 +10,7 @@ import { getDemandPlan } from '@/lib/enrich/demand';
 import { arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
+import { logEventAsync } from '@/lib/observability/events';
 
 /** A–E, taken from the tier ranges so the two cannot drift apart. */
 const COMPLETENESS_TIERS = COMPLETENESS_TIER_RANGES.map((r) => r.code);
@@ -1005,6 +1006,7 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
     statement timeout. So: bounded concurrency, and a failure is RECORDED rather
     than folded into the number.
   */
+  const rollupStartedAt = Date.now();
   let failedCounts = 0;
 
   const countWhere = async (filters: CountFilter[] = []): Promise<number | null> => {
@@ -1094,6 +1096,23 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
   })();
 
   const tiered = tierCounts.reduce((sum, t) => sum + t.count, 0);
+
+  /*
+    Recorded because this is where the dashboard's zeros came from, and a
+    console.warn was not enough to find it: the failure had already rolled off
+    the log stream by the time anyone asked why the card said nothing.
+
+    Logged on a slow success too, not just on failure — the counts timing out is
+    the failure mode, so the duration creeping towards the statement timeout is
+    the warning that it is about to come back.
+  */
+  logEventAsync({
+    kind: 'query',
+    name: 'disposition_rollup',
+    ok: failedCounts === 0,
+    durationMs: Date.now() - rollupStartedAt,
+    detail: { failedCounts, total: total ?? 0, tierA: tierCounts.find((t) => t.tier === 'A')?.count, routingMissing },
+  });
 
   return {
     total: total ?? 0,

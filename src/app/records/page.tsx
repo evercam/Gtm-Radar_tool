@@ -25,6 +25,7 @@ import { Badge, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import RecordDrawer from '@/components/RecordDrawer';
 import RecordDetail from '@/components/RecordDetail';
+import { logEventAsync } from '@/lib/observability/events';
 
 export const dynamic = 'force-dynamic';
 
@@ -142,6 +143,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
 
   let rows: RecordRow[] = [];
   let total = 0;
+  const queryStartedAt = Date.now();
   try {
     const res = await getRecords({
       page,
@@ -165,7 +167,57 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     });
     rows = res.rows;
     total = res.total;
+    /*
+      Which filters people actually use, and what they got back.
+
+      The reason to record this rather than just the failures: a filter
+      combination that returns nothing looks the same to the operator as a bug,
+      and the two are told apart by whether the same combination has ever
+      returned rows. Without a record there is nothing to compare against, so
+      "the tool shows no leads" is unanswerable.
+
+      Only the filters that were set are stored — unset keys are dropped by the
+      sanitiser, so the event shows what was chosen rather than the whole filter
+      vocabulary with nulls in it.
+    */
+    logEventAsync({
+      kind: 'filter',
+      name: 'records.list',
+      durationMs: Date.now() - queryStartedAt,
+      actor: user.email,
+      detail: {
+        page,
+        sort,
+        total,
+        returned: rows.length,
+        mine,
+        source,
+        bu,
+        vertical,
+        type: recordType,
+        contact: contactStatus,
+        route,
+        stage,
+        band,
+        status,
+        tier: completenessTier,
+        owner_group: ownerGroup,
+        unassigned: unassigned || undefined,
+        archived: includeExported || undefined,
+        // The search term is redacted for contact shapes on the way in, so a
+        // colleague pasting an email into the box does not put it in the log.
+        q: search,
+      },
+    });
   } catch (err) {
+    logEventAsync({
+      kind: 'filter',
+      name: 'records.list',
+      ok: false,
+      durationMs: Date.now() - queryStartedAt,
+      actor: user.email,
+      detail: { page, sort, error: err instanceof Error ? err.message : String(err) },
+    });
     return (
       <div className="mx-auto max-w-7xl px-6 py-16">
         <SupabaseNotConfigured detail={err instanceof Error ? err.message : String(err)} />

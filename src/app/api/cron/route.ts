@@ -4,6 +4,7 @@ import { getAllSourceConfigs, canRun } from '@/lib/sources/config';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { isCronSecret } from '@/lib/auth/cronSecret';
 import { isDue } from '@/lib/cron';
+import { logEventAsync } from '@/lib/observability/events';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -208,6 +209,56 @@ export async function POST(request: NextRequest) {
   if (job === 'export' || job === 'daily') {
     const { config: policy } = await getEnrichmentPolicy();
     results.push(await callInternal(request, '/api/export/apollo', { limit: policy.apolloBatchSize }));
+  }
+
+  /*
+    Each step as its own event, alongside the single cron_runs row.
+
+    cron_runs stores the whole `results` array in one jsonb column, which records
+    that the daily job failed but makes "which step, and how often" a question
+    you answer by reading JSON by eye. One row per step means a step that fails
+    intermittently — the brief queue's coin-flip timeout was exactly this — shows
+    up as a count rather than as something you have to notice.
+
+    No actor: scheduled work has no user.
+  */
+  for (const r of results) {
+    logEventAsync({
+      kind: 'cron',
+      // `${job}.${r.job}` rather than just r.job: the same step runs both on its
+      // own schedule and inside `daily`, and the brief queue failing hourly while
+      // succeeding daily was the whole shape of that bug. Collapsing the two
+      // would have hidden it.
+      name: `${job}.${r.job}`,
+      ok: r.ok,
+      detail: { message: r.message, detail: r.detail },
+    });
+  }
+
+  /*
+    Retention, here because the daily job is the only thing that runs reliably
+    and unattended. app_events takes a row per notable event, so without this it
+    grows without bound and a log that fills the database is a worse problem than
+    the one it was added to solve.
+
+    Only on `daily` — running it on every 15-minute tick would be 96 pointless
+    deletes a day against a table that gains rows slowly.
+  */
+  if (job === 'daily') {
+    try {
+      const { data: pruned } = await getServiceSupabase().rpc('prune_app_events');
+      if (typeof pruned === 'number' && pruned > 0) {
+        logEventAsync({ kind: 'cron', name: 'daily.prune_events', ok: true, detail: { removed: pruned } });
+      }
+    } catch (err) {
+      // Best-effort: a failed prune must not fail the day's run.
+      logEventAsync({
+        kind: 'cron',
+        name: 'daily.prune_events',
+        ok: false,
+        detail: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
   }
 
   // Record the run so a silent scheduler failure is visible rather than just
