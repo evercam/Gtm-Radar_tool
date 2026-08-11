@@ -166,6 +166,33 @@ export async function POST(request: NextRequest) {
   if (body.bu) query = query.eq('bu', body.bu);
   if (assigneeFilter) query = query.eq('assignee_id', assigneeFilter.id);
 
+  /*
+    How many were eligible in total, not just how many this run took.
+
+    `.limit(limit)` silently leaves the rest, and the response reported only what
+    it processed — so a run that sent a third of the queue read exactly like one
+    that finished it. The daily cron does catch up, but nobody could tell from the
+    message whether the job was done.
+
+    A head count, so it costs a count and not a second fetch. Null means the count
+    itself failed, and that is reported as unknown rather than as zero.
+  */
+  const eligibleTotal = await (async (): Promise<number | null> => {
+    let c = service
+      .from('canonical_projects')
+      .select('id', { count: 'exact', head: true })
+      .is('apollo_exported_at', null)
+      .not('assignee_id', 'is', null)
+      .eq('do_not_contact', false)
+      .or('contact_email.not.is.null,contact_phone.not.is.null,additional_contacts.neq.[]')
+      .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']);
+    if (requireVerified) c = c.eq('email_verified', true);
+    if (body.bu) c = c.eq('bu', body.bu);
+    if (assigneeFilter) c = c.eq('assignee_id', assigneeFilter.id);
+    const { count, error } = await c;
+    return error ? null : (count ?? 0);
+  })();
+
   const { data, error } = await query;
   if (error) {
     const hint = /does not exist|schema cache/i.test(error.message) ? ' Run the apollo_export migration first.' : '';
@@ -685,10 +712,18 @@ export async function POST(request: NextRequest) {
       message:
         `${contacts.length} contact${contacts.length === 1 ? '' : 's'}` +
         (assigneeFilter ? ` for ${assigneeFilter.name}` : '') +
-        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}`,
+        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
+        // The dry run has to warn about the cap too, or it promises a complete
+        // send that the real run will not deliver.
+        (eligibleTotal != null && eligibleTotal > rows.length
+          ? ` ${eligibleTotal - rows.length} more lead(s) are eligible beyond this run's cap of ${limit}.`
+          : ''),
       assignee: assigneeFilter?.name ?? null,
       requested: contacts.length,
       batches: chunk(contacts).length,
+      eligibleTotal,
+      leadsFetched: rows.length,
+      leadsLeft: eligibleTotal == null ? 0 : Math.max(0, eligibleTotal - rows.length),
       fields: fieldReport,
       unreachable: unreachable.slice(0, 20),
       unreachableCount: unreachable.length,
@@ -753,8 +788,12 @@ export async function POST(request: NextRequest) {
   const allResults = [];
   const batches = chunk(contacts);
 
+  let batchesSent = 0;
+  let stoppedEarly: string | null = null;
+
   for (const batch of batches) {
     const outcome = await exportBatchWithRetry(batch, { dedupe: true });
+    batchesSent += 1;
     enriched += outcome.enriched ?? 0;
     enrichFailed += outcome.enrichFailed ?? 0;
 
@@ -782,8 +821,23 @@ export async function POST(request: NextRequest) {
 
     // A hard failure (bad key, rejected payload) will repeat on every
     // remaining batch — stop rather than burning the whole queue against it.
-    if (!outcome.ok && !outcome.retryable) break;
+    if (!outcome.ok && !outcome.retryable) {
+      // RECORDED, not just done. Breaking here left the remaining batches unsent
+      // while the response still read as a completed run.
+      stoppedEarly = outcome.message ?? 'A batch failed in a way that would repeat.';
+      break;
+    }
   }
+
+  /*
+    Sent versus built, and fetched versus eligible — the two places work goes
+    missing quietly.
+  */
+  const sentContacts = batches.slice(0, batchesSent).reduce((n, b) => n + b.length, 0);
+  const unsentContacts = contacts.length - sentContacts;
+  // Null eligibleTotal means the count failed; unknown is not zero.
+  const leadsLeft = eligibleTotal == null ? 0 : Math.max(0, eligibleTotal - rows.length);
+  const complete = unsentContacts === 0 && leadsLeft === 0 && !stoppedEarly;
 
   const durationMs = Date.now() - startedAtMs;
   if (runId) {
@@ -839,8 +893,37 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     // Same guard as the run row: an empty send is not a failed one.
     ok: failed === 0 || failed < contacts.length,
+    /*
+      `complete` is the field a caller should branch on. `ok` has always meant
+      "did the sends that ran succeed", which is a different question from "is
+      there work left", and conflating them is what made a truncated run look
+      finished.
+    */
+    complete,
+    sent: sentContacts,
+    unsent: unsentContacts,
+    eligibleTotal,
+    leadsFetched: rows.length,
+    leadsLeft,
+    stoppedEarly,
+    batchesSent,
     message:
-      `Sent ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
+      `Sent ${sentContacts} of ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
+      /*
+        What was NOT done, in the same breath as what was.
+
+        A run that stopped a third of the way through read exactly like one that
+        finished: same shape of message, same ok:true. The cron did catch up, so
+        nothing was lost — but "Sent 393 to Apollo" while 155 contacts sat unsent
+        is a partial result presented as a complete one, and there was no way to
+        tell them apart.
+      */
+      (unsentContacts > 0
+        ? ` ${unsentContacts} contact(s) in this run were NOT sent${stoppedEarly ? ` — stopped early: ${stoppedEarly}` : ''}.`
+        : '') +
+      (leadsLeft > 0
+        ? ` ${leadsLeft} more lead(s) are still eligible and were not fetched — this run was capped at ${limit}. Run again or raise the limit.`
+        : '') +
       // Owner and list are what make a contact somebody's to call. If they did
       // not stick, the export "succeeded" into an unassigned pile.
       (enrichFailed ? ` ${enrichFailed} could not be assigned an owner or list.` : '') +
