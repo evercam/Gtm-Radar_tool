@@ -936,6 +936,18 @@ export interface DispositionRollup {
   byTier: { tier: string; count: number }[];
   /** Records a source gave no tier for. */
   untiered: number;
+  /**
+   * True when at least one count came back as an error rather than a number.
+   *
+   * This is what "data completeness shows 0" actually was. `countWhere` returns
+   * null on failure and every caller writes `?? 0`, so a count that timed out
+   * rendered as a real zero — indistinguishable from "no rows match". The tier
+   * figures were 209 for A and 1,837 for P1 the whole time; the reads were
+   * failing, not the data. A partial answer has to say so.
+   */
+  partial: boolean;
+  /** How many of the counts failed, for the caller that wants to say. */
+  failedCounts: number;
   /** True when the routing columns migration has not been applied. */
   routingMissing: boolean;
 }
@@ -979,67 +991,107 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
    * that were worse than the problem.
    */
   type CountFilter = { column: string; op: 'eq' } & { value: string } | { column: string; op: 'notNull' };
+  /*
+    Every count that failed used to become a zero.
+
+    countWhere returned null on error and each caller wrote `?? 0`, so a timed-out
+    count was indistinguishable from a real absence — the completeness card read
+    "0 across every tier" and the priority bands read all zero, while the same
+    counts run individually return 209 for tier A and 1,837 for P1. The data was
+    never the problem.
+
+    They were failing because roughly thirty-five full-table counts were fired at
+    once inside Promise.all, and under that concurrency each one exceeded the
+    statement timeout. So: bounded concurrency, and a failure is RECORDED rather
+    than folded into the number.
+  */
+  let failedCounts = 0;
+
   const countWhere = async (filters: CountFilter[] = []): Promise<number | null> => {
     let q = supabase.from('canonical_projects').select('id', { count: 'exact', head: true });
     for (const f of filters) {
       q = f.op === 'eq' ? q.eq(f.column, f.value) : q.not(f.column, 'is', null);
     }
     const { count, error } = await q;
-    if (error) return null;
+    if (error) {
+      failedCounts += 1;
+      return null;
+    }
     return count ?? 0;
+  };
+
+  /**
+   * Runs the counts a few at a time.
+   *
+   * Four rather than one because sequential would take half a minute, and rather
+   * than all because all is what broke it. Measured: individually these take
+   * 1-2s each and succeed; thirty-five at once and they time out.
+   */
+  const inBatches = async <T>(tasks: (() => Promise<T>)[], width = 4): Promise<T[]> => {
+    const out: T[] = [];
+    for (let i = 0; i < tasks.length; i += width) {
+      out.push(...(await Promise.all(tasks.slice(i, i + width).map((t) => t()))));
+    }
+    return out;
   };
 
   // Routing columns arrived in a later migration than the priority ones, so the
   // dashboard degrades to bands-only rather than showing nothing.
   let routingMissing = false;
 
-  const [total, scored, routed] = await Promise.all([
-    countWhere(),
-    countWhere([{ column: 'priority_band', op: 'notNull' }]),
-    countWhere([{ column: 'route', op: 'notNull' }]),
+  const [total, scored, routed] = await inBatches([
+    () => countWhere(),
+    () => countWhere([{ column: 'priority_band', op: 'notNull' }]),
+    () => countWhere([{ column: 'route', op: 'notNull' }]),
   ]);
   if (routed === null) routingMissing = true;
 
-  const [bandCounts, laneCounts, tierCounts, lastRouted] = await Promise.all([
-    Promise.all(
-      PRIORITY_BANDS.map(async (band) => ({
-        band,
-        count: (await countWhere([{ column: 'priority_band', op: 'eq', value: band }])) ?? 0,
-      }))
-    ),
-    routingMissing
-      ? Promise.resolve([])
-      : Promise.all(
-          ROUTES.flatMap((route) =>
-            STAGES.map(async (stage) => ({
-              route,
-              stage,
-              count:
-                (await countWhere([
-                  { column: 'route', op: 'eq', value: route },
-                  { column: 'stage', op: 'eq', value: stage },
-                ])) ?? 0,
-            }))
-          )
-        ),
-    Promise.all(
-      COMPLETENESS_TIERS.map(async (tier) => ({
-        tier,
-        count: (await countWhere([{ column: 'source_completeness_tier', op: 'eq', value: tier }])) ?? 0,
-      }))
-    ),
-    // The most recent routing stamp, as one ordered row rather than a scan for a max.
-    (async () => {
-      const { data, error } = await supabase
-        .from('canonical_projects')
-        .select('routed_at')
-        .not('routed_at', 'is', null)
-        .order('routed_at', { ascending: false })
-        .limit(1);
-      if (error) return null;
-      return ((data ?? [])[0] as { routed_at?: string } | undefined)?.routed_at ?? null;
-    })(),
-  ]);
+  /*
+    One group at a time, not four at once. Batching each group at four while
+    running four groups concurrently is sixteen simultaneous full-table counts,
+    which is most of the way back to the problem this is fixing.
+  */
+  const bandCounts = await inBatches(
+    PRIORITY_BANDS.map((band) => async () => ({
+      band,
+      count: (await countWhere([{ column: 'priority_band', op: 'eq', value: band }])) ?? 0,
+    }))
+  );
+
+  const laneCounts = routingMissing
+    ? []
+    : await inBatches(
+        ROUTES.flatMap((route) =>
+          STAGES.map((stage) => async () => ({
+            route,
+            stage,
+            count:
+              (await countWhere([
+                { column: 'route', op: 'eq', value: route },
+                { column: 'stage', op: 'eq', value: stage },
+              ])) ?? 0,
+          }))
+        )
+      );
+
+  const tierCounts = await inBatches(
+    COMPLETENESS_TIERS.map((tier) => async () => ({
+      tier,
+      count: (await countWhere([{ column: 'source_completeness_tier', op: 'eq', value: tier }])) ?? 0,
+    }))
+  );
+
+  // The most recent routing stamp, as one ordered row rather than a scan for a max.
+  const lastRouted = await (async () => {
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('routed_at')
+      .not('routed_at', 'is', null)
+      .order('routed_at', { ascending: false })
+      .limit(1);
+    if (error) return null;
+    return ((data ?? [])[0] as { routed_at?: string } | undefined)?.routed_at ?? null;
+  })();
 
   const tiered = tierCounts.reduce((sum, t) => sum + t.count, 0);
 
@@ -1053,10 +1105,12 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
     byLane: laneCounts.filter((l) => l.count > 0).sort((a, b) => b.count - a.count),
     routedHoursAgo: lastRouted ? Math.round((Date.now() - new Date(lastRouted).getTime()) / 3_600_000) : null,
     byTier: tierCounts,
-    // Derived rather than counted: anything with no tier is the remainder, which
-    // also means an unrecognised tier value cannot go missing from the total.
+    // Derived, so a failed tier count inflates this rather than losing rows —
+    // another reason `partial` has to travel with the numbers.
     untiered: Math.max(0, (total ?? 0) - tiered),
     routingMissing,
+    partial: failedCounts > 0,
+    failedCounts,
   };
 }
 

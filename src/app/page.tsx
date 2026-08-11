@@ -173,7 +173,7 @@ export default async function DashboardPage({
   }
 
   const { scored, routed, total: totalRecords, byBand, byLane, routedHoursAgo, routingMissing } = disposition;
-  const { byTier, untiered } = disposition;
+  const { byTier, untiered, partial: countsPartial, failedCounts } = disposition;
   const tiered = totalRecords - untiered;
   // A and B arrive workable; D and E need enrichment before anyone can call.
   const workable = byTier.filter((t) => t.tier === 'A' || t.tier === 'B').reduce((s, t) => s + t.count, 0);
@@ -487,7 +487,16 @@ export default async function DashboardPage({
               );
             })}
           </div>
-          {untiered > 0 ? (
+          {/*
+            A failed count used to render as a real zero, so this whole card read
+            "0 across every tier" while the data was fine. Say so instead of
+            showing a number that was never measured.
+          */}
+          {countsPartial ? (
+            <p className="mt-4 text-[11px] text-amber-400">
+              {failedCounts} of these counts timed out, so the figures above are incomplete — reload to retry.
+            </p>
+          ) : untiered > 0 ? (
             <p className="text-subtle mt-4 text-[11px]">
               {untiered.toLocaleString()} record{untiered === 1 ? '' : 's'} arrived without a tier.
             </p>
