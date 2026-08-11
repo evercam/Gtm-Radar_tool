@@ -225,6 +225,26 @@ export const SOURCE_CATALOG: CatalogSource[] = [
   },
   // Energy assets & ownership (files / import)
   {
+    /*
+      A one-off research import of data-centre projects, loaded 2026-07-27.
+
+      Declared here because 179 records already carry this source_key, and a
+      source_key with no catalog entry is invisible: /sources cannot show it, its
+      count appears in no total, and nobody can tell whether the records are
+      current or abandoned. They are good records — every one names a contractor,
+      142 carry an email, and all are under construction — which made the silence
+      worse rather than better.
+
+      No slug and no adapter, deliberately: there is nothing to re-run. It is a
+      historical import, and saying so is the point.
+    */
+    name: 'Project Intelligence (imported)',
+    sourceKey: 'project_intelligence',
+    category: 'Construction DBs',
+    coverage: 'USA / Export',
+    auth: 'upload',
+  },
+  {
     name: 'GEM Energy Trackers',
     sourceKey: 'gem_energy_tracker',
     slug: 'gem',

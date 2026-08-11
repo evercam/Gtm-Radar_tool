@@ -139,3 +139,42 @@ if (withDefaults) {
   const fixable = results.filter((r) => r.bare.ok && r.bare.count === 0 && r.withWindow?.ok && r.withWindow.count > 0);
   console.log(`\n${fixable.length} source(s) would stop returning zero given a default date window.`);
 }
+
+/*
+  Records whose source_key nothing declares.
+
+  A catalog entry is what makes a source visible: /sources joins its counts on
+  source_key, so rows carrying a key with no entry are unattributable — they
+  appear in no total and nobody can tell whether they are current or abandoned.
+  project_intelligence sat like that with 179 good records, every one naming a
+  contractor.
+
+  Checked here rather than in a test because it needs the database. The pure
+  half — catalog against adapters against the slug map — is
+  scripts/test-source-registry.mjs.
+*/
+{
+  const { SOURCE_CATALOG } = await import('../src/lib/sourceCatalog.ts');
+  const { getSourceStats } = await import('../src/lib/queries.ts');
+  const declared = new Set(SOURCE_CATALOG.map((c) => c.sourceKey));
+  let stats = {};
+  try {
+    stats = await getSourceStats();
+  } catch {
+    stats = {};
+  }
+  const orphans = Object.entries(stats)
+    .filter(([key, s]) => !declared.has(key) && (s?.count ?? 0) > 0)
+    .sort((a, b) => b[1].count - a[1].count);
+
+  console.log('');
+  if (orphans.length === 0) {
+    console.log('Every source_key in the data has a catalog entry.');
+  } else {
+    console.log(`UNATTRIBUTABLE — ${orphans.length} source_key(s) hold records but appear in no catalog entry:`);
+    for (const [key, s] of orphans) {
+      console.log(`     ${key.padEnd(28)} ${String(s.count).padStart(7)} rows, last ${String(s.lastIngested ?? 'unknown').slice(0, 10)}`);
+    }
+    console.log('     Add each to SOURCE_CATALOG, or the rows stay invisible on /sources.');
+  }
+}
