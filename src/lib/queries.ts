@@ -5,7 +5,7 @@ import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRec
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
 import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
 import { recordReachable } from '@/lib/export/reachability';
-import { planSupply, type SupplyPlan } from '@/lib/supply';
+import { planSupply, adviseRebalance, type SupplyPlan, type RebalanceAdvice } from '@/lib/supply';
 import { getDemandPlan } from '@/lib/enrich/demand';
 import { arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
@@ -1599,6 +1599,8 @@ export interface HandoverBreakdown {
    * page already learned what happens when two of those disagree.
    */
   supply: SupplyPlan;
+  /** What to do about each short desk. Empty when nobody is short, or unmeasurable. */
+  advice: RebalanceAdvice[];
   /** Assigned to somebody no longer on the roster — nobody is working these. */
   unrostered: number;
   /** True when the policy requires a verified address, which changes `ready`. */
@@ -1625,6 +1627,7 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
   const empty: HandoverBreakdown = {
     rows: [],
     supply: planSupply([]),
+    advice: [],
     unrostered: 0,
     requireVerified: false,
     tableMissing: false,
@@ -1636,11 +1639,18 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
 
     const { data: rosterRows, error: rosterError } = await service
       .from('assignees')
-      .select('id, name, is_active, daily_lead_quota');
+      .select('id, name, is_active, daily_lead_quota, bu, verticals');
     if (rosterError) {
       return { ...empty, tableMissing: /does not exist|schema cache|relation/i.test(rosterError.message) };
     }
-    const roster = (rosterRows ?? []) as { id: string; name: string; is_active: boolean; daily_lead_quota: number | null }[];
+    const roster = (rosterRows ?? []) as {
+      id: string;
+      name: string;
+      is_active: boolean;
+      daily_lead_quota: number | null;
+      bu: string[] | null;
+      verticals: string[] | null;
+    }[];
 
     // Paged, because PostgREST caps a response at 1000 rows and a silent
     // truncation here would under-report somebody's book as complete.
@@ -1749,7 +1759,67 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
       // A supply figure we could not measure is better absent than invented.
     }
 
-    return { rows, supply, unrostered, requireVerified, tableMissing: false };
+    /*
+      Advice for EVERY short desk, not just the worst one.
+
+      adviseRebalance existed and nothing called it, so none of this reached the
+      screen — the numbers said who was short and left the reader to work out what
+      to do about it, which on this roster is not guessable: two of the three
+      shortfalls need only an assignment run, and the third cannot be fixed by
+      moving leads at all because no available stock matches that scope.
+
+      The stock read is one extra query, and cheap now the ready-inventory index
+      exists — it was this call timing out that made cover unmeasurable at all.
+    */
+    let advice: RebalanceAdvice[] = [];
+    if (supply.shortCount > 0) {
+      try {
+        const buckets = new Map<string, number>();
+        let after = '';
+        for (let guard = 0; guard < 20; guard += 1) {
+          let q = service
+            .from('canonical_projects')
+            .select('id, bu, vertical')
+            .is('assignee_id', null)
+            .not('enriched_at', 'is', null)
+            .not('contact_email', 'is', null)
+            .is('apollo_exported_at', null)
+            .eq('do_not_contact', false)
+            .order('id', { ascending: true })
+            .limit(1000);
+          if (after) q = q.gt('id', after);
+          const { data, error } = await q;
+          if (error) throw new Error(error.message);
+          const batch = (data ?? []) as { id: string; bu: string | null; vertical: string | null }[];
+          if (batch.length === 0) break;
+          for (const r of batch) {
+            const key = `${r.bu ?? 'unknown'}|${r.vertical ?? 'other'}`;
+            buckets.set(key, (buckets.get(key) ?? 0) + 1);
+          }
+          after = batch[batch.length - 1].id;
+          if (batch.length < 1000) break;
+        }
+        const stock = [...buckets.entries()].map(([k, count]) => ({
+          bu: k.split('|')[0],
+          vertical: k.split('|')[1],
+          count,
+        }));
+        advice = adviseRebalance(
+          supply,
+          roster.map((r) => ({
+            assigneeId: r.id,
+            name: r.name,
+            bu: r.bu ?? [],
+            verticals: r.verticals ?? [],
+          })),
+          stock
+        );
+      } catch {
+        // No advice is better than advice built on a failed stock read.
+      }
+    }
+
+    return { rows, supply, advice, unrostered, requireVerified, tableMissing: false };
   } catch {
     return { ...empty, tableMissing: true };
   }

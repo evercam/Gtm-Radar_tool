@@ -16,7 +16,7 @@ import { Card, CardHeader, CardBody, Badge, EmptyState, TableShell, Table, THead
  * row sums to that person's book instead of double-counting it.
  */
 export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBreakdown }) {
-  const { rows, supply, unrostered, requireVerified, tableMissing } = breakdown;
+  const { rows, supply, advice, unrostered, requireVerified, tableMissing } = breakdown;
   const cover = new Map(supply.people.map((c) => [c.assigneeId, c]));
 
   const totals = rows.reduce(
@@ -51,8 +51,25 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
       */}
       {!tableMissing && supply.shortCount > 0 ? (
         <div className="border-border-base bg-surface-raised text-body border-b px-4 py-2 text-xs">
-          <span className="text-foreground font-semibold">{describeSupply(supply)}</span>{' '}
-          Enrichment fills this — nothing is exportable until a lead has a contact and an owner.
+          <span className="text-foreground font-semibold">{describeSupply(supply)}</span>
+          {/*
+            One line per short desk, not just the thinnest. Two of these usually
+            need only an assignment run, and one may not be fixable by moving
+            leads at all — a single summary cannot say which is which.
+          */}
+          {advice.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {advice.map((a) => (
+                <li key={a.assigneeId}>
+                  <span className="text-foreground font-medium">{a.name}</span>
+                  <span className="text-muted"> — short {a.deficit.toLocaleString()}. </span>
+                  <span>{a.action}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span> Enrichment fills this — nothing is exportable until a lead has a contact and an owner.</span>
+          )}
         </div>
       ) : null}
       {rows.length === 0 ? (
