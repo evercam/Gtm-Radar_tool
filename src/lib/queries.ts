@@ -1629,18 +1629,48 @@ export async function getEnrichmentRuns(limit = 20): Promise<EnrichmentRunRow[]>
 
 /** Records enriched in the last 24h — enforces the policy's daily cap. */
 /** Records enriched in the last N days — backs the daily and monthly rails. */
-export async function getEnrichedSinceCount(days: number): Promise<number> {
+/**
+ * How many records enrichment has produced in a window, or NULL if unknown.
+ *
+ * Null rather than zero, because this feeds the spend rails. It used to end
+ * `if (error) return 0`, and the caller read that as "nothing enriched yet" — so
+ * a cap of 600 with an unmeasurable usage became a cap of infinity. Measured:
+ * this count was being cancelled by the statement timeout every time, so both
+ * rails had been reading zero used for as long as the table has been too big to
+ * scan.
+ *
+ * That is the one silent zero in this app that SPENDS MONEY rather than just
+ * misreporting, so the caller is now forced to handle not-knowing.
+ */
+export async function getEnrichedSinceCount(days: number): Promise<number | null> {
   const supabase = await getReadSupabase();
+  const startedAt = Date.now();
   try {
     const since = new Date(Date.now() - days * 86_400_000).toISOString();
     const { count, error } = await supabase
       .from('canonical_projects')
       .select('id', { count: 'exact', head: true })
       .gte('enriched_at', since);
-    if (error) return 0;
+    if (error) {
+      logEventAsync({
+        kind: 'query',
+        name: 'enriched_since_count',
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        detail: { days, error: error.message || 'empty error — usually a cancelled statement' },
+      });
+      return null;
+    }
     return count ?? 0;
-  } catch {
-    return 0;
+  } catch (err) {
+    logEventAsync({
+      kind: 'query',
+      name: 'enriched_since_count',
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      detail: { days, error: err instanceof Error ? err.message : String(err) },
+    });
+    return null;
   }
 }
 

@@ -80,11 +80,11 @@ export default async function EnrichmentPage() {
   const [claudeOn, apolloOn] = await Promise.all([isClaudeConfigured(), isApolloConfigured()]);
   // Both rails apply; the tighter one is the one worth showing.
   const rails = [
-    { label: 'today', used: enrichedToday, cap: policy.dailyCap },
+    { label: 'today', used: (enrichedToday ?? 0), cap: policy.dailyCap },
     { label: 'this month', used: enrichedMonth, cap: policy.monthlyCap },
   ].filter((r) => r.cap > 0);
-  const tightest = rails.length ? rails.reduce((a, b) => (a.cap - a.used <= b.cap - b.used ? a : b)) : null;
-  const capLeft = tightest ? Math.max(0, tightest.cap - tightest.used) : null;
+  const tightest = rails.length ? rails.reduce((a, b) => (a.cap - (a.used ?? 0) <= b.cap - (b.used ?? 0) ? a : b)) : null;
+  const capLeft = tightest ? Math.max(0, tightest.cap - (tightest.used ?? 0)) : null;
 
   const engine = (name: string, on: boolean, note: string) => (
     <div
@@ -166,7 +166,11 @@ export default async function EnrichmentPage() {
           { label: 'In queue', value: total.toLocaleString(), note: 'eligible under policy' },
           {
             label: 'Enriched (24h)',
-            value: enrichedToday.toLocaleString(),
+            // Not `?? 0`. A count that could not be measured is not a count of
+            // zero, and this figure is what the spend caps are enforced against —
+            // showing "0" for an unmeasurable rail is how both caps sat open
+            // without anyone noticing.
+            value: enrichedToday === null ? 'unknown' : enrichedToday.toLocaleString(),
             note:
               capLeft === null
                 ? 'no daily cap'

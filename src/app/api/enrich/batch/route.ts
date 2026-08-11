@@ -91,9 +91,39 @@ export async function POST(request: NextRequest) {
     policy.monthlyCap > 0 ? getEnrichedSinceCount(30) : Promise.resolve(0),
   ]);
 
+  /*
+    A rail whose usage cannot be measured is not a rail.
+
+    getEnrichedSinceCount used to return 0 when its count failed, and this read
+    that as "nothing enriched yet" — so a cap of 600 with an unmeasurable usage
+    became no cap at all. The count was in fact being cancelled by the statement
+    timeout every single time, because enriched_at was unindexed, so both rails
+    have been reading zero used for as long as the table has been too big to scan.
+
+    It now returns null and this refuses to spend. Failing closed is the only
+    defensible direction: the cost of a skipped run is an hour of delay, and the
+    cost of an unbounded run is Apollo credits nobody authorised. Every other
+    silent zero in this codebase misreported a number; this one spends money.
+  */
+  const unmeasured = [
+    enrichedToday === null ? 'the last 24h' : null,
+    policy.monthlyCap > 0 && enrichedMonth === null ? 'the last 30 days' : null,
+  ].filter(Boolean);
+  if (unmeasured.length > 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        message:
+          `Refusing to enrich: cannot measure how much has already been enriched in ${unmeasured.join(' or ')}, ` +
+          `so the spend caps cannot be enforced. Apply the enriched_at index (20260811180000) and retry.`,
+      },
+      { status: 200 }
+    );
+  }
+
   const rails = [
-    { name: 'Daily', used: enrichedToday, cap: policy.dailyCap, window: 'the last 24h' },
-    { name: 'Monthly', used: enrichedMonth, cap: policy.monthlyCap, window: 'the last 30 days' },
+    { name: 'Daily', used: enrichedToday ?? 0, cap: policy.dailyCap, window: 'the last 24h' },
+    { name: 'Monthly', used: enrichedMonth ?? 0, cap: policy.monthlyCap, window: 'the last 30 days' },
   ].filter((r) => r.cap > 0);
 
   const hit = rails.find((r) => r.used >= r.cap);
