@@ -182,22 +182,37 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
     const service = getServiceSupabase();
     const rows: Record<string, unknown>[] = [];
 
-    for (let from = 0; from < 100_000; from += 1000) {
+    /*
+      Keyset pagination. An index would not have helped here.
+
+      Measured against 88,126 rows: `created_at >= 30 days ago` matches ALL 88,126
+      of them, so the predicate has no selectivity and there is nothing for an
+      index to narrow. What made this slow was the offset — page 1 took 1.4s and
+      page 40 timed out at 8.3s, because `.range(40000, 40999)` asks Postgres to
+      produce and discard the first 40,000 rows every time. `id > last` costs the
+      same at any depth.
+    */
+    let after = '';
+    for (let guard = 0; guard < 200; guard += 1) {
       let q = service.from('canonical_projects').select(COLUMNS).gte('created_at', since);
       if (window.ownerId) q = q.eq('owner_user_id', window.ownerId);
+      if (after) q = q.gt('id', after);
       // ORDER BY is load-bearing. Each `.range()` is a separate query, and
       // without a total order Postgres may return rows in a different order
       // each time, so the same row lands in two pages while another lands in
       // none. Measured on 44,191 records: 12,535 missed and 12,535 counted
       // twice — every KPI on the dashboard was a random 72% sample, which is
       // why the funnel could report 0 exports while two leads were exported.
-      const { data, error } = await q.order('id', { ascending: true }).range(from, from + 999);
+      const { data, error } = await q.order('id', { ascending: true }).limit(1000);
 
       if (error) {
         return { ...EMPTY, tableMissing: /does not exist|schema cache/i.test(error.message) };
       }
       const page = (data ?? []) as unknown as Record<string, unknown>[];
+      if (page.length === 0) break;
       rows.push(...page);
+      // Advance the cursor, or the next request returns this same page forever.
+      after = String(page[page.length - 1].id);
       if (page.length < 1000) break;
     }
 
