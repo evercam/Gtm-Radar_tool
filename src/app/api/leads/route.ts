@@ -133,6 +133,18 @@ export async function POST(request: NextRequest) {
         usually are.
       */
       .or('contact_email.not.is.null,contact_phone.not.is.null,additional_contacts.neq.[]')
+      /*
+        A lead the brief called too late must not occupy somebody's quota.
+
+        The export now refuses to send these, so assigning one spends a slot out of
+        a 25/day allowance on a lead that can never leave the desk — it would look
+        like a full day's work and produce nothing. Gating here as well as at the
+        export keeps the two in agreement about what is worth a person's time.
+
+        Nulls are kept: no timing means the brief has not run, not that the lead is
+        late, and `neq` alone would drop them.
+      */
+      .or('evercam_timing.is.null,evercam_timing.neq.too_late')
       .order('priority_score', { ascending: false, nullsFirst: false })
       .limit(1000);
 

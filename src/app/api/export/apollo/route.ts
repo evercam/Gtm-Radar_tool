@@ -140,6 +140,25 @@ export async function POST(request: NextRequest) {
     .not('assignee_id', 'is', null)
     .eq('do_not_contact', false)
     /*
+      Never send a lead the brief called too late.
+
+      `evercam_timing` is set by the enrichment brief and takes reach_now, watch,
+      too_early or too_late. Nothing read it. Measured on the book at the time this
+      was added: of 192 exported leads carrying a timing, 44 were too_late — the
+      brief had already concluded the window had closed, the tool sent them to
+      sales anyway, and an SDR spent a call finding out.
+
+      A hard exclusion rather than a deprioritisation, because too_late cannot
+      improve: unlike too_early, which becomes reach_now when the project moves,
+      a closed window stays closed. Sending it is waste on both sides — the SDR's
+      time and an Apollo contact credit.
+
+      Nulls are KEPT. A missing timing means the brief has not run or could not
+      judge, not that the lead is late, and `neq` in PostgREST drops nulls — so the
+      filter is written to exclude the value explicitly rather than to compare.
+    */
+    .or('evercam_timing.is.null,evercam_timing.neq.too_late')
+    /*
       Either channel, not email only.
 
       This used to demand `contact_email`, which silently overrode the
@@ -185,6 +204,9 @@ export async function POST(request: NextRequest) {
       .is('apollo_exported_at', null)
       .not('assignee_id', 'is', null)
       .eq('do_not_contact', false)
+      // Same gate as the fetch above, or `eligibleTotal` counts leads the export
+      // will refuse to send and every run reports itself incomplete forever.
+      .or('evercam_timing.is.null,evercam_timing.neq.too_late')
       .or('contact_email.not.is.null,contact_phone.not.is.null,additional_contacts.neq.[]')
       .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']);
     if (requireVerified) c = c.eq('email_verified', true);
