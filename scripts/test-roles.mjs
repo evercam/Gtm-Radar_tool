@@ -25,6 +25,7 @@ import {
   permissionForPath,
   ROUTE_PERMISSIONS,
 } from '@/lib/auth/roles';
+import { adminHoldsEverything } from '@/lib/auth/roleStore';
 
 let passed = 0,
   failed = 0;
@@ -140,6 +141,45 @@ console.log('\nRoute guards still resolve most-specific-first');
   const routingOnly = { permissions: ['routing.edit'] };
   check('a narrow custom role reaches its own page', can(routingOnly, permissionForPath('/control/routing')));
   check('and is refused the Control Center landing page', !can(routingOnly, permissionForPath('/control')));
+}
+
+
+console.log('\nA new permission cannot lock an admin out of the thing it guards');
+{
+  /*
+    The failure this asserts against, exactly as it happened: `logs.view` was
+    added to the Permission type, the catalogue, the path guard and the built-in
+    matrix — and /control/logs still redirected its author to the dashboard. The
+    built-in matrix is only the fallback for a workspace with no app_roles table.
+    This workspace has one, seeded with the seventeen permissions that existed at
+    the time, so the stored array was authoritative and stale.
+
+    "admin holds everything the code enforces" is an invariant, not a list. A
+    migration per permission satisfies it once and is forgotten the next time.
+  */
+  const stale = KNOWN_PERMISSIONS.filter((p) => p !== 'logs.view');
+  const resolved = adminHoldsEverything('admin', stale);
+  check('admin gains a permission the stored row never had', resolved.includes('logs.view'));
+  check(
+    'and holds every enforced permission',
+    KNOWN_PERMISSIONS.every((p) => resolved.includes(p)),
+    KNOWN_PERMISSIONS.filter((p) => !resolved.includes(p)).join(', ')
+  );
+
+  /*
+    Union, not replacement: a permission an admin invented and assigned to
+    themselves is stored and unknown to the code, so replacing it would delete it.
+  */
+  check('an invented permission survives', adminHoldsEverything('admin', ['our.custom.thing']).includes('our.custom.thing'));
+  const dupes = adminHoldsEverything('admin', ['kpi.view']);
+  check('and no duplicates appear', new Set(dupes).size === dupes.length);
+
+  /*
+    Only admin. The other system roles are genuinely editable, and reconciling
+    them would silently undo a removal somebody made on purpose.
+  */
+  check('sales_manager is left exactly as stored', adminHoldsEverything('sales_manager', ['kpi.view']).length === 1);
+  check('and an unknown role too', adminHoldsEverything('whatever', []).length === 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

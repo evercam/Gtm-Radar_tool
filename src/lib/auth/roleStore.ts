@@ -59,6 +59,36 @@ function builtInRoles(): RoleRecord[] {
   }));
 }
 
+/**
+ * `admin` holds every permission the code enforces — computed, never stored.
+ *
+ * In code the admin role is defined as `[...KNOWN_PERMISSIONS]`, which is not a
+ * list but an invariant: whatever the codebase checks, an admin can do. The
+ * database froze that list at seed time, so the two drifted the moment a new
+ * permission shipped — and the symptom is that the admin who just added a
+ * feature is redirected away from it. That happened with `logs.view`: the stored
+ * admin row held seventeen permissions, the code knew eighteen, and the activity
+ * log bounced its author to the dashboard.
+ *
+ * Fixing it with a migration per permission would work exactly once per
+ * permission and be forgotten the next time. Recomputing means no future
+ * permission can lock an admin out of the thing they just built.
+ *
+ * A UNION with the stored list, not a replacement, so a permission an admin
+ * invented and assigned to themselves survives — those are stored and the code
+ * does not know their names.
+ *
+ * Deliberately only `admin`. The other system roles are genuinely editable, and
+ * reconciling them the same way would silently undo a removal an admin made on
+ * purpose — sales_manager losing `scoring.edit` by decision would come back on
+ * the next read. They get new permissions from a migration or by being ticked in
+ * the UI, both of which leave a trace.
+ */
+export function adminHoldsEverything(role: string, stored: string[]): string[] {
+  if (role !== 'admin') return stored;
+  return [...new Set([...stored, ...KNOWN_PERMISSIONS])];
+}
+
 export interface RoleSet {
   roles: RoleRecord[];
   /** True when the migration has not been applied and the built-ins are in use. */
@@ -91,7 +121,7 @@ export async function getRoles(): Promise<RoleSet> {
         name: r.name,
         label: r.label,
         description: r.description ?? '',
-        permissions: r.permissions ?? [],
+        permissions: adminHoldsEverything(r.name, r.permissions ?? []),
         isSystem: r.is_system,
       })),
       tableMissing: false,
