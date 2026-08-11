@@ -16,7 +16,7 @@
  * Pure — no network, no database.
  */
 
-import { planSupply, enrichmentAsk, describeSupply, MIN_DAYS_OF_COVER } from '@/lib/supply';
+import { planSupply, enrichmentAsk, describeSupply, adviseRebalance, MIN_DAYS_OF_COVER } from '@/lib/supply';
 
 let passed = 0,
   failed = 0;
@@ -124,6 +124,49 @@ console.log('\nA custom floor is honoured, a nonsense one is not');
   check('zero falls back to the default', planSupply([p('A', 10, 0)], 0).minDays === 3);
   check('negative falls back', planSupply([p('A', 10, 0)], -2).minDays === 3);
   check('NaN falls back', planSupply([p('A', 10, 0)], Number.NaN).minDays === 3);
+}
+
+console.log('\nRebalancing advice says only what can actually be done');
+{
+  const B = (bu, vertical, count) => ({ bu, vertical, count });
+  const S = (name, bu, verticals) => ({ assigneeId: name, name, bu, verticals });
+
+  /*
+    The measured situation. 188 of the available leads are usa/solar and only
+    Alex's scope covers them; Jose covers none of the big buckets. "Move some from
+    Alex" is the obvious advice and it is impossible — a lead outside Jose's scope
+    cannot be his, and the allocator would refuse it.
+  */
+  const stock = [B('usa', 'solar', 188), B('usa', 'wind', 38), B('usa', 'pipeline', 27)];
+  const scopes = [S('Alex', ['usa'], ['solar', 'wind']), S('Jose', ['usa'], ['pharma'])];
+  const advice = adviseRebalance(planSupply([p('Alex', 25, 297), p('Jose', 25, 5)]), scopes, stock);
+
+  check('only the short person gets advice', advice.length === 1 && advice[0].name === 'Jose', JSON.stringify(advice.map((a) => a.name)));
+  const jose = advice[0];
+  check('no available stock matches their scope', jose.transferable === 0, String(jose.transferable));
+  check('so no transfer is offered', jose.from.length === 0, JSON.stringify(jose.from));
+  check('the advice is to widen the scope', /Widen it to/.test(jose.action), jose.action);
+  check('naming the largest bucket first', /solar \(188 in usa\)/.test(jose.action), jose.action);
+
+  // With stock already in scope, the answer is assignment — not a transfer.
+  const a2 = adviseRebalance(
+    planSupply([p('Alex', 25, 297), p('Mayurie', 25, 46)]),
+    [S('Alex', ['usa'], ['solar']), S('Mayurie', ['usa'], ['oil_gas'])],
+    [B('usa', 'solar', 188), B('usa', 'oil_gas', 35)]
+  )[0];
+  check('in-scope stock beats asking a colleague', /run assignment, no transfer needed/.test(a2.action), a2.action);
+  check('and says it covers the shortfall', /covers the shortfall/.test(a2.action), a2.action);
+
+  /*
+    Partial cover must be stated as partial. Saying "run assignment" alone would
+    read as solved, and this desk would be empty again tomorrow.
+  */
+  const a3 = adviseRebalance(planSupply([p('Jose', 25, 5)]), [S('Jose', ['usa'], ['solar'])], [B('usa', 'solar', 5)])[0];
+  check('partial cover is stated as partial', /covers 5 of the 70 needed/.test(a3.action), a3.action);
+
+  // Nothing anywhere is not a rebalancing problem at all.
+  const a4 = adviseRebalance(planSupply([p('Jose', 25, 0)]), [S('Jose', ['usa'], ['pharma'])], [])[0];
+  check('an empty pipeline is named as such', /needs enrichment or a new source/.test(a4.action), a4.action);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

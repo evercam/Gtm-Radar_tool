@@ -140,3 +140,119 @@ export function describeSupply(plan: SupplyPlan): string | null {
       : `${plan.shortCount} people are below ${plan.minDays} days, the thinnest being ${worst?.name} at ${worst?.daysOfCover}`;
   return `${who}. ${plan.totalDeficit.toLocaleString()} more ready lead(s) needed to cover everyone.`;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Rebalancing advice                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Unassigned, reachable stock, grouped the way a scope is expressed. */
+export interface StockBucket {
+  bu: string;
+  vertical: string;
+  count: number;
+}
+
+/** A roster member's scope. Empty arrays mean unrestricted on that axis. */
+export interface ScopeOf {
+  assigneeId: string;
+  name: string;
+  bu: string[];
+  verticals: string[];
+}
+
+export interface RebalanceAdvice {
+  assigneeId: string;
+  name: string;
+  deficit: number;
+  /** Stock this person could take today, if anyone is holding surplus. */
+  transferable: number;
+  /** Who could hand it over, richest first. */
+  from: { name: string; surplus: number }[];
+  /**
+   * Buckets this person's scope excludes, largest first — the widening that would
+   * actually feed them.
+   */
+  widenTo: StockBucket[];
+  /** The one thing to do, in words. */
+  action: string;
+}
+
+const coversBucket = (s: ScopeOf, b: StockBucket): boolean =>
+  (!s.bu.length || s.bu.includes(b.bu)) && (!s.verticals.length || s.verticals.includes(b.vertical));
+
+/**
+ * What to actually do about a thin desk, when there is no time to enrich.
+ *
+ * The obvious advice is "move some leads from whoever has surplus", and on this
+ * roster it is impossible. Measured: 188 of the available leads are usa/solar and
+ * only Alex Ray's scope covers them; Jose Sanchez, on 0.2 days of cover, appears
+ * against NONE of the available buckets. Nothing can be transferred to him,
+ * because a lead outside his scope cannot be his.
+ *
+ * So transfer is only suggested where a surplus holder and the short person
+ * overlap on a bucket that actually has stock. Otherwise the advice is the
+ * scope widening that would feed them — which is the real constraint, and saying
+ * "move some leads" instead would send somebody to try something the allocator
+ * will refuse.
+ */
+export function adviseRebalance(plan: SupplyPlan, scopes: ScopeOf[], stock: StockBucket[]): RebalanceAdvice[] {
+  const byId = new Map(scopes.map((s) => [s.assigneeId, s]));
+  const surplusOf = (p: AssigneeCover) => Math.max(0, p.covered - p.target);
+
+  return plan.people
+    .filter((p) => p.short)
+    .map((p) => {
+      const mine = byId.get(p.assigneeId);
+      const reachableStock = mine ? stock.filter((b) => coversBucket(mine, b)) : [];
+      const transferable = reachableStock.reduce((n, b) => n + b.count, 0);
+
+      // A colleague can only hand over what BOTH scopes cover.
+      const from = plan.people
+        .filter((o) => o.assigneeId !== p.assigneeId && surplusOf(o) > 0)
+        .filter((o) => {
+          const theirs = byId.get(o.assigneeId);
+          return Boolean(mine && theirs && stock.some((b) => coversBucket(mine, b) && coversBucket(theirs, b)));
+        })
+        .map((o) => ({ name: o.name, surplus: surplusOf(o) }))
+        .sort((a, b) => b.surplus - a.surplus);
+
+      const widenTo = mine
+        ? stock.filter((b) => !coversBucket(mine, b)).sort((a, b) => b.count - a.count).slice(0, 3)
+        : [];
+
+      /*
+        Unassigned stock first, because it needs no transfer at all.
+
+        This checked for a surplus colleague first and said "move up to 70 from
+        Alex Ray" — two errors in one sentence. The 70 was the deficit, not
+        anything that could actually move: only the buckets BOTH scopes cover are
+        transferable, and Alex's surplus is counted in Alex's scope. And it is the
+        wrong instruction anyway when unassigned stock already matches this
+        person's scope, because assignment will hand it to them on the next run —
+        the allocator serves whoever is furthest below their floor.
+
+        So: take what is already yours, then ask a colleague, then widen. Each
+        number stated is one that can be justified.
+      */
+      let action: string;
+      if (transferable > 0) {
+        const covers = Math.min(transferable, p.deficit);
+        action =
+          `${transferable} unassigned lead(s) already match this scope — run assignment, no transfer needed. ` +
+          (covers < p.deficit
+            ? `That covers ${covers} of the ${p.deficit} needed; the rest needs a wider scope or enrichment.`
+            : 'That covers the shortfall.');
+      } else if (from.length > 0) {
+        action = `Nothing unassigned matches this scope. ${from[0].name} holds ${from[0].surplus} above their floor and the scopes overlap, so a transfer is possible — the movable amount depends on which of their leads fall in the overlap.`;
+      } else if (widenTo.length > 0) {
+        action =
+          `Nothing available matches this scope, so no lead can be moved here. Widen it to ` +
+          widenTo.map((b) => `${b.vertical} (${b.count} in ${b.bu})`).join(' or ') +
+          '.';
+      } else {
+        action = 'No stock exists anywhere for this scope — this needs enrichment or a new source, not rebalancing.';
+      }
+
+      return { assigneeId: p.assigneeId, name: p.name, deficit: p.deficit, transferable, from, widenTo, action };
+    });
+}
