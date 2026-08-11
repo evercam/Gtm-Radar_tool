@@ -1428,7 +1428,32 @@ export interface ProductionState {
   ready: number;
   /** How many of those export would send today: it also needs an assignee. */
   exportable: number;
-  /** Days of cover `ready` represents at the roster's draw rate. */
+  /**
+   * Ready stock that at least one active assignee's scope covers.
+   *
+   * `ready` counts everything unexported and contactable, which overstates cover:
+   * a lead no scope reaches can never be given to anybody, so it will never be
+   * exported no matter how many days pass.
+   */
+  assignable: number;
+  /**
+   * Ready stock no active scope reaches. Measured at 86 of 384 — usa/pipeline
+   * (27), which nobody's verticals name, plus apac/export leads while every
+   * active person is scoped `bu: ["usa"]`.
+   *
+   * Not waste: it is stock waiting for a scope decision, and it is the difference
+   * between "enrich more" and "widen a scope", which are very different bills.
+   */
+  unassignableReady: number;
+  /**
+   * Days of cover, from `assignable` rather than `ready`.
+   *
+   * This read 4.1 while the thinnest desk held 0.2 days, because it divided the
+   * whole 408 by the team's combined draw. A team average hides an empty desk by
+   * construction, and counting leads nobody can be given inflates it further. Use
+   * `planSupply` for the per-person figure, which is the one that predicts whether
+   * somebody stops working.
+   */
   daysOfCover: number;
   /** Records still needed this month to hit target. */
   remaining: number;
@@ -1478,7 +1503,7 @@ export async function getProductionState(
         .eq('do_not_contact', false)
         .not('assignee_id', 'is', null)
         .in('status', ['ASSIGNED', 'CONTACTED', 'PREPARED']),
-      supabase.from('assignees').select('daily_lead_quota').eq('is_active', true),
+      supabase.from('assignees').select('daily_lead_quota, bu, verticals, preferred_verticals').eq('is_active', true),
     ]);
 
   const dailyDemand = (roster ?? []).reduce(
@@ -1486,7 +1511,69 @@ export async function getProductionState(
     0
   );
   const readyCount = ready ?? 0;
-  const daysOfCover = dailyDemand > 0 ? Math.round((readyCount / dailyDemand) * 10) / 10 : 0;
+
+  /*
+    How much of that stock anybody can actually be given.
+
+    A head-count cannot answer this — the scope test is per row against every
+    active person — so it costs one paged read of bu/vertical for the unassigned
+    part. That is a few hundred rows, not the table, because already-assigned
+    stock is assignable by definition and is added back below.
+
+    Measured on this book: 384 unassigned ready, of which 86 match no active
+    scope. Dividing the full 408 by the team draw reported 4.1 days of cover while
+    the thinnest desk held 0.2.
+  */
+  const scopes = ((roster ?? []) as Record<string, unknown>[]).map((r) => {
+    const list = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]).filter((x) => typeof x === 'string') : []);
+    // `verticals` is the hard filter; `preferred_verticals` only narrows when it
+    // is empty — the same precedence assignment itself applies, so the two cannot
+    // disagree about who covers what.
+    const verticals = list(r.verticals).length ? list(r.verticals) : list(r.preferred_verticals);
+    return { bu: list(r.bu), verticals };
+  });
+  const coveredBySomeone = (bu: string | null, vertical: string | null): boolean =>
+    scopes.some(
+      (sc) =>
+        (!sc.bu.length || (bu != null && sc.bu.includes(bu))) &&
+        (!sc.verticals.length || (vertical != null && sc.verticals.includes(vertical)))
+    );
+
+  let unassignableReady = 0;
+  let assignableUnassigned = 0;
+  {
+    let after = '';
+    for (let page = 0; page < 10; page += 1) {
+      let q = supabase
+        .from('canonical_projects')
+        .select('id, bu, vertical')
+        .not('enriched_at', 'is', null)
+        .not('contact_email', 'is', null)
+        .is('apollo_exported_at', null)
+        .eq('do_not_contact', false)
+        .is('assignee_id', null)
+        .order('id', { ascending: true })
+        .limit(1000);
+      if (after) q = q.gt('id', after);
+      const { data: rows, error: scopeError } = await q;
+      /*
+        On a failed read, stop and leave the counts as they stand rather than
+        treating the remainder as unassignable. Overstating what nobody can be
+        given would argue for widening a scope that may be fine.
+      */
+      if (scopeError || !rows?.length) break;
+      for (const r of rows as { id: string; bu: string | null; vertical: string | null }[]) {
+        if (coveredBySomeone(r.bu, r.vertical)) assignableUnassigned += 1;
+        else unassignableReady += 1;
+      }
+      after = (rows[rows.length - 1] as { id: string }).id;
+      if (rows.length < 1000) break;
+    }
+  }
+
+  // Already-assigned stock is assignable by definition — somebody holds it.
+  const assignable = assignableUnassigned + (exportable ?? 0);
+  const daysOfCover = dailyDemand > 0 ? Math.round((assignable / dailyDemand) * 10) / 10 : 0;
 
   // A count we could not take is not a met target. Failing open keeps production
   // going; failing closed would stop the month's supply over a transient read.
@@ -1499,6 +1586,8 @@ export async function getProductionState(
       dailyDemand,
       ready: readyCount,
       exportable: exportable ?? 0,
+      assignable,
+      unassignableReady,
       daysOfCover,
       remaining: monthlyReadyTarget,
       reason: null,
@@ -1519,6 +1608,8 @@ export async function getProductionState(
     dailyDemand,
     ready: readyCount,
     exportable: exportable ?? 0,
+    assignable,
+    unassignableReady,
     daysOfCover,
     remaining,
     reason,
