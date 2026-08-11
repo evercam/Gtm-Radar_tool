@@ -990,7 +990,21 @@ export interface DispositionRollup {
  */
 async function dispositionViaRpc(supabase: SupabaseClient): Promise<DispositionRollup | null> {
   const startedAt = Date.now();
+  /*
+    No retry on a timeout, though it looks like an obvious win.
+
+    The case for one was measured: 8,016 ms cold, 3,497 ms on the call straight
+    after, against an ~8 s statement timeout. But those two calls were a tight
+    loop with the cache already warm from the first, and in the real path the
+    retry timed out as well — 10,206 ms — and then the count fan-out ran anyway.
+    So the retry turned a 22 s worst case into a 31 s one and fixed nothing.
+
+    The fix for a query on the boundary is to take it off the boundary, which is
+    what 20260811170000 does by indexing the three predicates that were still
+    doing full scans. A retry is what you reach for when you cannot do that.
+  */
   const { data, error } = await supabase.rpc('disposition_rollup');
+
   if (error || !data) {
     /*
       Not logged as a failure when the function simply does not exist: that is a
