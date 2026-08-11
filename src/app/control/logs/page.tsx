@@ -223,7 +223,18 @@ export default async function LogsPage({ searchParams }: { searchParams: Promise
                         )}
                       </Td>
                       <Td>{humanDuration(r.duration_ms)}</Td>
-                      <Td>{r.actor ?? <span className="text-subtle">scheduled</span>}</Td>
+                      <Td>
+                        {/*
+                          "scheduled" only for cron, where a null actor really does
+                          mean the scheduler. Everywhere else a null actor means the
+                          call site did not pass one — a dashboard load showed as
+                          "scheduled" when a person had just triggered it, which
+                          states something the log does not know.
+                        */}
+                        {r.actor ?? (
+                          <span className="text-subtle">{r.kind === 'cron' ? 'scheduled' : '—'}</span>
+                        )}
+                      </Td>
                       <Td>
                         <span className="text-subtle font-mono text-[11px]">{summariseDetail(r.detail)}</span>
                       </Td>

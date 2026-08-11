@@ -979,8 +979,117 @@ export interface DispositionRollup {
  * from the real one would silently report zero for a band nobody noticed was
  * missing, which is worse than being slow.
  */
+/**
+ * The rollup in one round trip, or null if the function is not installed.
+ *
+ * Returns null rather than throwing on a missing function, so a workspace that
+ * has not applied 20260811160000 falls through to the count fan-out instead of
+ * losing the dashboard. Any OTHER error also returns null for the same reason —
+ * the fallback reports its own failures, so nothing is being hidden by being
+ * lenient here.
+ */
+async function dispositionViaRpc(supabase: SupabaseClient): Promise<DispositionRollup | null> {
+  const startedAt = Date.now();
+  const { data, error } = await supabase.rpc('disposition_rollup');
+  if (error || !data) {
+    /*
+      Not logged as a failure when the function simply does not exist: that is a
+      migration that has not been applied, not a fault, and an event per dashboard
+      load would drown the log in something nobody can act on beyond running the
+      migration once.
+    */
+    if (error && !/function|does not exist|schema cache/i.test(error.message)) {
+      logEventAsync({
+        kind: 'query',
+        name: 'disposition_rollup.rpc',
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        detail: { error: error.message },
+      });
+    }
+    return null;
+  }
+
+  const raw = data as {
+    total?: number;
+    scored?: number;
+    routed?: number;
+    by_band?: { band: string; count: number }[];
+    by_tier?: { tier: string; count: number }[];
+    by_lane?: { route: string; stage: string; count: number }[];
+    last_routed?: string | null;
+  };
+
+  const byTierFound = new Map((raw.by_tier ?? []).map((t) => [t.tier, t.count]));
+  const byBandFound = new Map((raw.by_band ?? []).map((b) => [b.band, b.count]));
+  const total = raw.total ?? 0;
+  const tiered = (raw.by_tier ?? []).reduce((n, t) => n + t.count, 0);
+
+  /*
+    The declared vocabulary is used to ORDER and to fill in zeros, not to decide
+    what exists. A band the GROUP BY found that PRIORITY_BANDS does not name is
+    appended rather than dropped — the old fan-out iterated the constant and so
+    counted such a value by nobody, which is a silent undercount rather than a
+    visible surprise.
+  */
+  const orderedBands = [
+    ...PRIORITY_BANDS.map((band) => ({ band, count: byBandFound.get(band) ?? 0 })),
+    ...(raw.by_band ?? []).filter((b) => !(PRIORITY_BANDS as readonly string[]).includes(b.band)),
+  ];
+  const orderedTiers = [
+    ...COMPLETENESS_TIERS.map((tier) => ({ tier, count: byTierFound.get(tier) ?? 0 })),
+    ...(raw.by_tier ?? []).filter((t) => !(COMPLETENESS_TIERS as readonly string[]).includes(t.tier)),
+  ];
+
+  logEventAsync({
+    kind: 'query',
+    name: 'disposition_rollup',
+    ok: true,
+    durationMs: Date.now() - startedAt,
+    detail: { via: 'rpc', total, lanes: (raw.by_lane ?? []).length },
+  });
+
+  return {
+    total,
+    scored: raw.scored ?? 0,
+    routed: raw.routed ?? 0,
+    byBand: orderedBands,
+    byLane: (raw.by_lane ?? []).filter((l) => l.count > 0),
+    routedHoursAgo: raw.last_routed ? Math.round((Date.now() - new Date(raw.last_routed).getTime()) / 3_600_000) : null,
+    byTier: orderedTiers,
+    untiered: Math.max(0, total - tiered),
+    /*
+      The RPC has no routing column problem to detect: if `route` were missing the
+      function would not have been created. A GROUP BY that returns no lanes means
+      nothing has been routed, which is a fact rather than a missing column.
+    */
+    routingMissing: false,
+    // One query either succeeds whole or fails whole, so there is no partial case.
+    partial: false,
+    failedCounts: 0,
+  };
+}
+
 export async function getDispositionRollup(): Promise<DispositionRollup> {
   const supabase = await getReadSupabase();
+
+  /*
+    One GROUP BY if the database can do it, thirty-five counts if it cannot.
+
+    The counts are not merely slow, they FAIL. Measured individually with nothing
+    else running: an unfiltered count took 1,566 ms, `priority_band = 'P1'` took
+    8,665 ms and returned null, `source_completeness_tier = 'A'` took 9,491 ms and
+    returned null. Each filtered count sits on the statement timeout and lands
+    either side of it at random, so serialising them stopped sixteen competing but
+    made none of them fast — the activity log recorded `failedCounts=5` on every
+    run at about 22 s a time.
+
+    The fan-out below is kept as the fallback rather than deleted, because an
+    environment that has not applied the migration must still render a dashboard.
+    It is honest about failing, which is the most that path can be.
+  */
+  const viaRpc = await dispositionViaRpc(supabase);
+  if (viaRpc) return viaRpc;
 
   /**
    * One `count` with no rows returned. `null` means the query failed, which is
