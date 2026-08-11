@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getHandoverByPerson, getPipelineRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
+import { getHandoverByPerson, getPipelineRollup, getBuRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
 import { getDemandPlan } from '@/lib/enrich/demand';
 import { getEnrichmentPolicy } from '@/lib/policies';
 import { requireUser } from '@/lib/auth/session';
@@ -13,6 +13,7 @@ import SupplyStatus from '@/components/SupplyStatus';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
+import BuStats from '@/components/BuStats';
 import RecordLink from '@/components/RecordLink';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
 import { Card, CardHeader, CardBody, Badge, EmptyState, ProgressBar, Skeleton } from '@/components/ui';
@@ -126,10 +127,13 @@ export default async function DashboardPage({
     );
   }
 
-  let rollup, topLeads, disposition, migrated;
+  let rollup, buRollup, topLeads, disposition, migrated;
   try {
-    [rollup, topLeads, disposition, migrated] = await Promise.all([
+    // Positional destructuring: the names and the promises must stay in step, or
+    // every value after an insertion is silently the wrong one.
+    [rollup, buRollup, topLeads, disposition, migrated] = await Promise.all([
       getPipelineRollup(),
+      getBuRollup(),
       getTopPriorityLeads(8),
       getDispositionRollup(),
       hasPriorityColumns(),
@@ -429,6 +433,21 @@ export default async function DashboardPage({
           </Link>
         ) : null}
       </div>
+      {/*
+        Per business unit, before the BU x vertical grid. The grid says what we
+        have; this says whether anybody can work it, which is the number that
+        decides throughput and which nothing showed until now.
+      */}
+      <Card className="mb-6">
+        <CardHeader
+          title="By business unit"
+          subtitle="Where the stock is, and whether anyone's scope covers it"
+        />
+        <CardBody>
+          <BuStats rows={buRollup.rows} truncated={buRollup.truncated} />
+        </CardBody>
+      </Card>
+
       <div className="mb-10">
         <PipelineRollup rows={rollup} />
       </div>

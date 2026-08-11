@@ -789,6 +789,95 @@ export async function getPipelineRollup(): Promise<PipelineRollupRow[]> {
   return Array.from(counts.values());
 }
 
+/**
+ * One row per business unit: how much stock it holds, and whether anybody can
+ * work it.
+ *
+ * The BU x vertical grid further down the dashboard answers "what have we got".
+ * This answers the question that actually blocks throughput, which nothing showed:
+ * a BU can hold thousands of reachable leads and have no active assignee whose
+ * scope covers it, and then every one of them is unassignable at any quota. That
+ * is the live situation — the NESO projects are `uk`, Calgary is `export`, the
+ * Australian news is `apac`, and every active person is scoped to `usa`.
+ *
+ * `activeAssignees` is therefore part of the stat rather than a separate screen.
+ * A row with stock and no owner is the finding.
+ */
+export interface BuRollupRow {
+  bu: string;
+  total: number;
+  /** Has an email or a phone on the primary contact. */
+  reachable: number;
+  assigned: number;
+  exported: number;
+  /** Reachable, unassigned, and nobody is holding it — the workable backlog. */
+  waiting: number;
+  /** Active roster members whose scope covers this BU. Zero means stranded. */
+  activeAssignees: number;
+}
+
+export async function getBuRollup(): Promise<{ rows: BuRollupRow[]; truncated: boolean }> {
+  const supabase = getServiceSupabase();
+  const acc = new Map<string, BuRollupRow>();
+  const PAGE = 1000;
+  const MAX_PAGES = 200;
+  let truncated = false;
+
+  for (let page = 0; ; page += 1) {
+    if (page >= MAX_PAGES) {
+      truncated = true;
+      break;
+    }
+    const { data, error } = await supabase
+      .from('canonical_projects')
+      .select('bu, contact_email, contact_phone, assignee_id, apollo_exported_at')
+      // A stable key, or ranges overlap and one BU's stock is counted twice.
+      .order('id', { ascending: true })
+      .range(page * PAGE, (page + 1) * PAGE - 1);
+    if (error) return { rows: [...acc.values()], truncated: true };
+    const batch = (data ?? []) as {
+      bu: string | null;
+      contact_email: string | null;
+      contact_phone: string | null;
+      assignee_id: string | null;
+      apollo_exported_at: string | null;
+    }[];
+    if (batch.length === 0) break;
+
+    for (const r of batch) {
+      const bu = r.bu ?? 'unknown';
+      const row =
+        acc.get(bu) ??
+        { bu, total: 0, reachable: 0, assigned: 0, exported: 0, waiting: 0, activeAssignees: 0 };
+      row.total += 1;
+      const reachable = Boolean(r.contact_email || r.contact_phone);
+      if (reachable) row.reachable += 1;
+      if (r.assignee_id) row.assigned += 1;
+      if (r.apollo_exported_at) row.exported += 1;
+      if (reachable && !r.assignee_id) row.waiting += 1;
+      acc.set(bu, row);
+    }
+    if (batch.length < PAGE) break;
+  }
+
+  /*
+    Coverage, from the roster rather than from the leads. An assignee with an
+    EMPTY bu list is unrestricted on that axis and therefore covers every BU —
+    reading empty as "covers nothing" would report the whole book as stranded.
+  */
+  try {
+    const { data } = await supabase.from('assignees').select('bu, is_active').eq('is_active', true);
+    const active = (data ?? []) as { bu: string[] | null }[];
+    for (const row of acc.values()) {
+      row.activeAssignees = active.filter((a) => !a.bu?.length || a.bu.includes(row.bu)).length;
+    }
+  } catch {
+    // Leave the counts at zero rather than inventing coverage.
+  }
+
+  return { rows: [...acc.values()].sort((a, b) => b.total - a.total), truncated };
+}
+
 // ============================================================================
 // Priority + enrichment queue
 // ============================================================================
