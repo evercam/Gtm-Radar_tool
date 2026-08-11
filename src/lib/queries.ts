@@ -5,6 +5,7 @@ import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRec
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
 import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
 import { recordReachable } from '@/lib/export/reachability';
+import { planSupply, type SupplyPlan } from '@/lib/supply';
 import { arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
@@ -1567,6 +1568,14 @@ export interface HandoverRow {
 
 export interface HandoverBreakdown {
   rows: HandoverRow[];
+  /**
+   * Days of cover per person, against their own quota.
+   *
+   * Attached here because `ready` is computed here and the plan is arithmetic on
+   * it — recomputing elsewhere would be a second definition of "ready", and this
+   * page already learned what happens when two of those disagree.
+   */
+  supply: SupplyPlan;
   /** Assigned to somebody no longer on the roster — nobody is working these. */
   unrostered: number;
   /** True when the policy requires a verified address, which changes `ready`. */
@@ -1590,7 +1599,13 @@ export interface HandoverBreakdown {
 const HANDOVER_PAGE = 1000;
 
 export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
-  const empty: HandoverBreakdown = { rows: [], unrostered: 0, requireVerified: false, tableMissing: false };
+  const empty: HandoverBreakdown = {
+    rows: [],
+    supply: planSupply([]),
+    unrostered: 0,
+    requireVerified: false,
+    tableMissing: false,
+  };
   try {
     const service = getServiceSupabase();
     const { config: policy } = await getEnrichmentPolicy();
@@ -1672,7 +1687,17 @@ export async function getHandoverByPerson(): Promise<HandoverBreakdown> {
       .filter((r) => r.isActive || r.received > 0 || r.ready > 0 || r.waitingOnContact > 0)
       .sort((a, b) => b.received + b.ready - (a.received + a.ready) || a.name.localeCompare(b.name));
 
-    return { rows, unrostered, requireVerified, tableMissing: false };
+    const supply = planSupply(
+      rows.map((r) => ({
+        assigneeId: r.assigneeId,
+        name: r.name,
+        dailyQuota: r.dailyQuota,
+        ready: r.ready,
+        isActive: r.isActive,
+      }))
+    );
+
+    return { rows, supply, unrostered, requireVerified, tableMissing: false };
   } catch {
     return { ...empty, tableMissing: true };
   }

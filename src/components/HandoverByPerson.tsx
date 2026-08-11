@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { HandoverBreakdown } from '@/lib/queries';
+import { describeSupply } from '@/lib/supply';
 import { Card, CardHeader, CardBody, Badge, EmptyState, TableShell, Table, THead, TBody, Th, Td } from '@/components/ui';
 
 /**
@@ -15,7 +16,8 @@ import { Card, CardHeader, CardBody, Badge, EmptyState, TableShell, Table, THead
  * row sums to that person's book instead of double-counting it.
  */
 export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBreakdown }) {
-  const { rows, unrostered, requireVerified, tableMissing } = breakdown;
+  const { rows, supply, unrostered, requireVerified, tableMissing } = breakdown;
+  const cover = new Map(supply.people.map((c) => [c.assigneeId, c]));
 
   const totals = rows.reduce(
     (a, r) => ({
@@ -43,6 +45,16 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
           </Link>
         }
       />
+      {/*
+        The supply line, above the table. A per-person shortfall is the thing
+        somebody acts on, and it is invisible in a row of totals.
+      */}
+      {!tableMissing && supply.shortCount > 0 ? (
+        <div className="border-border-base bg-surface-raised text-body border-b px-4 py-2 text-xs">
+          <span className="text-foreground font-semibold">{describeSupply(supply)}</span>{' '}
+          Enrichment fills this — nothing is exportable until a lead has a contact and an owner.
+        </div>
+      ) : null}
       {rows.length === 0 ? (
         <CardBody>
           <EmptyState
@@ -64,6 +76,7 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
                   {requireVerified ? <Th align="right">Unverified</Th> : null}
                   <Th align="right">DNC</Th>
                   <Th align="right">Quota</Th>
+                  <Th align="right">Days of cover</Th>
                 </tr>
               </THead>
               <TBody>
@@ -107,6 +120,23 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
                     ) : null}
                     <Td align="right">{r.doNotContact > 0 ? r.doNotContact.toLocaleString() : '—'}</Td>
                     <Td align="right">{r.dailyQuota.toLocaleString()}</Td>
+                    {/*
+                      Against their OWN quota, not the team's. A healthy team
+                      average hides an empty desk — the person with nothing has
+                      stopped working while the average still reads fine.
+                    */}
+                    <Td align="right">
+                      {(() => {
+                        const c = cover.get(r.assigneeId);
+                        if (!c) return <span className="text-subtle">—</span>;
+                        return (
+                          <span className={c.short ? 'text-warning' : 'text-success'}>
+                            {c.daysOfCover}d
+                            {c.short ? <span className="text-muted"> · need {c.deficit.toLocaleString()}</span> : null}
+                          </span>
+                        );
+                      })()}
+                    </Td>
                   </tr>
                 ))}
               </TBody>

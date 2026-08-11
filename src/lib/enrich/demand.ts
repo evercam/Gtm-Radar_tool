@@ -1,5 +1,6 @@
 import 'server-only';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
+import { MIN_DAYS_OF_COVER } from '@/lib/supply';
 import { userCoversLead, type AssignableLead, type AssignableUser } from '@/lib/assignment';
 import { getEnrichmentQueue, type EnrichQueueFilters, type EnrichQueueRow } from '@/lib/queries';
 
@@ -36,6 +37,17 @@ export interface PersonDemand {
   covered: number;
   /** target - covered, floored at zero. What to produce for them. */
   deficit: number;
+  /**
+   * Three days of their own draw — the level below which they stop working.
+   *
+   * Distinct from `target`, which is a share of the MONTH and therefore always
+   * far away. A monthly share is a budget; this is an operational floor, and the
+   * two want opposite treatment: the floor must be defended today, the share can
+   * be filled over weeks.
+   */
+  floor: number;
+  /** floor - covered, floored at zero. Urgent: somebody idles without it. */
+  urgentDeficit: number;
   /**
    * Days this person could keep working from what is already in stock for them.
    *
@@ -143,6 +155,7 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
   const people: PersonDemand[] = roster.map((u) => {
     const covered = inventory.filter((lead) => userCoversLead(u, lead)).length;
     const target = totalQuota > 0 ? Math.round(monthlyReadyTarget * (u.dailyQuota / totalQuota)) : 0;
+    const floor = u.dailyQuota * MIN_DAYS_OF_COVER;
     return {
       id: u.id,
       name: u.name ?? u.id,
@@ -150,6 +163,8 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
       target,
       covered,
       deficit: Math.max(0, target - covered),
+      floor,
+      urgentDeficit: Math.max(0, floor - covered),
       daysOfCover: u.dailyQuota > 0 ? Math.round((covered / u.dailyQuota) * 10) / 10 : 0,
       scope: { bu: u.bu, verticals: u.verticals, regions: u.regions },
     };
@@ -180,15 +195,31 @@ export async function getDemandPlan(monthlyReadyTarget: number): Promise<DemandP
  * share is never rounded out of existence.
  */
 export function fillOrder(plan: DemandPlan, slots: number): PersonDemand[] {
-  const short = plan.people.filter((p) => p.deficit > 0);
+  /*
+    The three-day floor is served before the month's share.
+
+    Both are "deficits" and they are not the same kind of thing. The share is a
+    budget spread over weeks; the floor is the level below which somebody has
+    nothing to work on tomorrow. Splitting slots by the monthly share treats a
+    person with four days of cover and a person with none as merely different
+    sizes of the same need, so the empty desk waits its proportional turn.
+
+    So while anybody is below their floor, ONLY those people are served, weighted
+    by how far below they are. Once every floor is met the split reverts to the
+    monthly share, which is what it was always for.
+  */
+  const urgent = plan.people.filter((p) => p.urgentDeficit > 0);
+  const useUrgent = urgent.length > 0;
+  const short = useUrgent ? urgent : plan.people.filter((p) => p.deficit > 0);
   if (short.length === 0 || slots <= 0) return [];
 
-  const totalDeficit = short.reduce((n, p) => n + p.deficit, 0);
+  const weightOf = (p: PersonDemand) => (useUrgent ? p.urgentDeficit : p.deficit);
+  const totalDeficit = short.reduce((n, p) => n + weightOf(p), 0);
 
   // Exact proportional share, then the floor, then hand out what rounding left
   // over to the largest remainders — so the counts always sum to `slots`.
   const shares = short.map((p) => {
-    const exact = (p.deficit / totalDeficit) * slots;
+    const exact = (weightOf(p) / totalDeficit) * slots;
     return { person: p, exact, whole: Math.floor(exact) };
   });
 
