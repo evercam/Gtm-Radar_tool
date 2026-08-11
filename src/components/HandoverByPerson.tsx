@@ -19,6 +19,14 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
   const { rows, supply, advice, unrostered, requireVerified, tableMissing } = breakdown;
   const cover = new Map(supply.people.map((c) => [c.assigneeId, c]));
 
+  /*
+    UTC, because the report's date filter is UTC and the column headers say so. A
+    link built from the viewer's local day would ask for a different range than the
+    one it is labelled with, for anybody west of Greenwich after 5pm.
+  */
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = `${today.slice(0, 7)}-01`;
+
   const totals = rows.reduce(
     (a, r) => ({
       received: a.received + r.received,
@@ -94,6 +102,7 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
                   <Th align="right">DNC</Th>
                   <Th align="right">Quota</Th>
                   <Th align="right">Days of cover</Th>
+                  <Th align="right">Export</Th>
                 </tr>
               </THead>
               <TBody>
@@ -153,6 +162,29 @@ export default function HandoverByPerson({ breakdown }: { breakdown: HandoverBre
                           </span>
                         );
                       })()}
+                    </Td>
+                    <Td align="right">
+                      {/*
+                        Today's book as a spreadsheet, for the question that keeps
+                        getting asked: what did this person actually get, and was it
+                        sent. The endpoint defaults to nothing, so the dates are
+                        explicit here rather than implied — a link that silently
+                        meant "today" would return yesterday's answer after midnight
+                        UTC.
+                      */}
+                      <a
+                        className="text-subtle hover:text-foreground text-xs underline"
+                        href={`/api/reports/leads?assignee=${encodeURIComponent(r.assigneeId)}&from=${today}&to=${today}`}
+                      >
+                        today
+                      </a>
+                      <span className="text-muted"> · </span>
+                      <a
+                        className="text-subtle hover:text-foreground text-xs underline"
+                        href={`/api/reports/leads?assignee=${encodeURIComponent(r.assigneeId)}&from=${monthStart}&to=${today}`}
+                      >
+                        month
+                      </a>
                     </Td>
                   </tr>
                 ))}
