@@ -22,13 +22,45 @@ import type { AccountResearch } from '@/lib/enrich/accountResearch';
 
 const MODEL = process.env.SDR_BRIEF_MODEL || process.env.ENRICH_MODEL || 'claude-opus-4-8';
 
+/**
+ * What the brief could establish about WHEN, for a record that arrived without it.
+ *
+ * Separate from SdrIntel because these are not opinions — they are facts about the
+ * project that happen to have been found by a model, and they are written under a
+ * much stricter rule (see the brief route: only into empty columns, never over a
+ * curated value).
+ */
+export interface ScheduleFindings {
+  current_phase: string | null;
+  construction_start_date: string | null;
+  estimated_completion_date: string | null;
+  /** Where it was read. Without this the dates are unauditable. */
+  timing_basis: string | null;
+}
+
 export interface SdrBriefResult {
   ok: boolean;
   sdr: SdrIntel | null;
+  /** Null when the model found nothing datable. */
+  schedule: ScheduleFindings | null;
   message?: string;
 }
 
 const TIMINGS = ['reach_now', 'watch', 'too_early', 'too_late'] as const;
+
+/** A date the model reported, or null. Rejects anything that is not a real day. */
+const isoDay = (v: unknown): string | null => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return null;
+  const d = new Date(`${v.trim()}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  /*
+    A schedule more than fifty years either side of now is a parse artefact, not a
+    project — "0202-05-14" and similar come back often enough to be worth
+    rejecting, and a bad date is worse than none because arrivalFor believes it.
+  */
+  const years = Math.abs(d.getTime() - Date.now()) / (365.25 * 86_400_000);
+  return years > 50 ? null : v.trim();
+};
 const ANGLES = ['confidence', 'evidence', 'capacity'] as const;
 
 /**
@@ -69,14 +101,40 @@ function coerce(raw: unknown): SdrIntel | null {
   return Object.values(sdr).some((v) => v !== null) ? sdr : null;
 }
 
+/**
+ * The schedule block, or null when the model found nothing datable.
+ *
+ * A phase or date with no `timing_basis` is discarded. The whole point is that a
+ * model-sourced date must be auditable — without the URL it read it on, nobody can
+ * tell it from a guess, and it would be indistinguishable from a curated date once
+ * written.
+ */
+function coerceSchedule(raw: unknown): ScheduleFindings | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const basis = str(o.timing_basis);
+  if (!basis) return null;
+
+  const found: ScheduleFindings = {
+    current_phase: str(o.current_phase),
+    construction_start_date: isoDay(o.construction_start_date),
+    estimated_completion_date: isoDay(o.estimated_completion_date),
+    timing_basis: basis,
+  };
+  const hasFact =
+    found.current_phase !== null || found.construction_start_date !== null || found.estimated_completion_date !== null;
+  return hasFact ? found : null;
+}
+
 export async function generateSdrBrief(
   input: EnrichInput,
   research: AccountResearch | null,
   accountName?: string | null
 ): Promise<SdrBriefResult> {
   const apiKey = await readSecret('anthropic_api_key');
-  if (!apiKey) return { ok: false, sdr: null, message: 'No Anthropic key configured.' };
-  if (!input.canonical_name?.trim()) return { ok: false, sdr: null, message: 'A record with at least a name is required.' };
+  if (!apiKey) return { ok: false, sdr: null, schedule: null, message: 'No Anthropic key configured.' };
+  if (!input.canonical_name?.trim()) return { ok: false, sdr: null, schedule: null, message: 'A record with at least a name is required.' };
 
   const arrival = arrivalFor(input);
   const company = accountName || input.company_name_raw || 'the company';
@@ -134,6 +192,18 @@ evercam_timing must follow the TIMING line above:
   too_early  — early planning, no commitment yet
   too_late   — built, operating, cancelled, or nearly finished
 
+SCHEDULE — if this record arrives with no phase and no dates, nothing downstream
+can judge whether it is worth calling, and it is dropped as unknown. So look for
+when the work actually happens: a ground-breaking, a notice to proceed, a
+construction start, a target completion or commissioning date, or recent news that
+places the project in time. Give current_phase in the source's own words and dates
+as YYYY-MM-DD, and put the URL you read it on plus that article's date in
+timing_basis.
+
+Return null rather than estimating. A date here is treated as fact by everything
+downstream and cannot be told apart from a curated one, so a guessed schedule is
+worse than no schedule.
+
 Reply with a JSON object and nothing else — no preamble, no code fence:
 {
   "icp_fit_score": 0-100,
@@ -142,7 +212,11 @@ Reply with a JSON object and nothing else — no preamble, no code fence:
   "trigger_event": "The specific thing that makes now the moment, or null.",
   "opening_hook": "One sentence a rep could actually say, naming THIS project.",
   "value_angle": "confidence|evidence|capacity",
-  "pain_point": "The problem Evercam removes here."
+  "pain_point": "The problem Evercam removes here.",
+  "current_phase": "The phase in the source's own words, or null.",
+  "construction_start_date": "YYYY-MM-DD or null",
+  "estimated_completion_date": "YYYY-MM-DD or null",
+  "timing_basis": "The URL you read the schedule on, and the article date, or null."
 }`;
 
   try {
@@ -171,20 +245,23 @@ Reply with a JSON object and nothing else — no preamble, no code fence:
     // Truncation reported as truncation. It is a "give it more room" problem, not
     // a "the model would not answer" problem, and the two need different fixes.
     if (res.stop_reason === 'max_tokens') {
-      return { ok: false, sdr: null, message: 'The brief was cut off at the token limit before it finished.' };
+      return { ok: false, sdr: null, schedule: null, message: 'The brief was cut off at the token limit before it finished.' };
     }
 
     let sdr: SdrIntel | null = null;
+    let schedule: ScheduleFindings | null = null;
     try {
-      sdr = coerce(JSON.parse(extractObject(text)));
+      const parsed = JSON.parse(extractObject(text));
+      sdr = coerce(parsed);
+      schedule = coerceSchedule(parsed);
     } catch {
-      return { ok: false, sdr: null, message: `The brief was not valid JSON: ${text.slice(0, 120)}` };
+      return { ok: false, sdr: null, schedule: null, message: `The brief was not valid JSON: ${text.slice(0, 120)}` };
     }
-    if (!sdr) return { ok: false, sdr: null, message: 'The brief came back empty.' };
-    return { ok: true, sdr };
+    if (!sdr) return { ok: false, sdr: null, schedule: null, message: 'The brief came back empty.' };
+    return { ok: true, sdr, schedule };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`SDR brief failed for ${input.canonical_name}: ${message}`);
-    return { ok: false, sdr: null, message };
+    return { ok: false, sdr: null, schedule: null, message };
   }
 }

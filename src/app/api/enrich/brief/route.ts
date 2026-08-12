@@ -97,7 +97,10 @@ export async function POST(request: NextRequest) {
   const columns =
     'id,canonical_name,record_type,icp_code,company_name_raw,company_domain,account_key,contact_name,contact_email,' +
     'description,city,state_province,country,estimated_value,estimated_value_currency,source_key,project_url,vertical,' +
-    'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date';
+    // field_provenance is read before being written to. Without it here, `row
+    // .field_provenance ?? {}` would start from an empty object and the update
+    // would REPLACE whatever provenance the record already carried.
+    'current_phase,construction_start_date,estimated_completion_date,announced_date,bid_date,field_provenance';
 
   let query = service.from('canonical_projects').select(columns);
   if (body.ids?.length) {
@@ -186,6 +189,9 @@ export async function POST(request: NextRequest) {
   const results: BriefResult[] = [];
   let briefed = 0;
   let researched = 0;
+  // Records that arrived undated and left with a date — the reason this step now
+  // asks about schedules at all.
+  let scheduleResolved = 0;
   let stoppedEarly = false;
 
   for (const r of rows) {
@@ -224,6 +230,41 @@ export async function POST(request: NextRequest) {
       // say", which must not overwrite something a previous run established.
       const update: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(brief.sdr)) if (v !== null) update[k] = v;
+
+      /*
+        Schedule findings, written ONLY into columns that are empty.
+
+        A record with no phase and no dates is `unknown` to arrivalFor, and unknown
+        is deliberately not treated as cold — so it is neither dropped nor callable,
+        and it sits there. Measured: 150 of 855 assignable leads and 27 of the 43
+        currently eligible to export. This is how they get resolved: the brief is
+        already reading news about the project, so asking it for a ground-breaking
+        or completion date costs nothing extra.
+
+        The `?? null` check is the whole safety of this. A model-sourced date is a
+        much weaker witness than one from Barbour ABI or a permit filing, and once
+        written the two are indistinguishable — so it may only fill a gap, never
+        replace a value. Recorded in field_provenance so it stays auditable, which
+        is also why coerceSchedule discards any finding with no source URL.
+      */
+      if (brief.schedule) {
+        const filled: string[] = [];
+        for (const col of ['current_phase', 'construction_start_date', 'estimated_completion_date'] as const) {
+          const found = brief.schedule[col];
+          if (found !== null && (row[col] ?? null) === null) {
+            update[col] = found;
+            filled.push(col);
+          }
+        }
+        if (filled.length > 0) {
+          const provenance = (row.field_provenance as Record<string, unknown> | null) ?? {};
+          for (const col of filled) {
+            provenance[col] = { source: 'sdr_brief', basis: brief.schedule.timing_basis, at: new Date().toISOString() };
+          }
+          update.field_provenance = provenance;
+          scheduleResolved++;
+        }
+      }
       if (Object.keys(update).length === 0) {
         results.push({ id: String(row.id), name, ok: false, researchCached: research?.cached ?? false, message: 'Nothing to write.' });
         continue;
@@ -253,6 +294,7 @@ export async function POST(request: NextRequest) {
     ok: true,
     briefed,
     researched,
+    scheduleResolved,
     attempted: results.length,
     results,
     message:
