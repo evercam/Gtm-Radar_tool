@@ -18,6 +18,7 @@ import { fillCommittee } from '@/lib/enrich/committee';
 import type { SourceBudget } from '@/lib/enrich/sourceBudget';
 import { apolloRevealPhone } from '@/lib/enrich/apolloPhone';
 import { resolveApolloAccount } from '@/lib/enrich/apolloAccount';
+import { emailVerdict, normaliseApolloStatus } from '@/lib/enrich/emailVerdict';
 
 /**
  * The enrichment run itself, extracted from the /api/enrich route so the batch
@@ -494,6 +495,18 @@ export async function runEnrichment(
           });
           channelForResult = { required: channel, satisfied: validation.satisfied, missing: validation.missing };
 
+          /*
+            Apollo's own verdict on the address, folded in.
+
+            Without it `email_verified` records nothing but "the company has a mail
+            server" — the `basic` fallback, because no Hunter key is configured. A
+            pattern-guessed address sits on a real domain and passes that check, so
+            a guess was reaching sellers labelled verified. Apollo already tells us
+            which is which on the call we have paid for; we were discarding the
+            field.
+          */
+          const verdict = emailVerdict(normaliseApolloStatus(topContact?.emailStatus), validation.email);
+
           const { error } = await supabase
             .from('canonical_projects')
             .update({
@@ -518,11 +531,13 @@ export async function runEnrichment(
                 target: coverage.target,
                 complete: coverage.complete,
               },
-              email_verified: validation.email?.valid ?? false,
-              email_confidence: validation.email?.confidence ?? 0,
+              email_verified: verdict.verified,
+              email_confidence: verdict.confidence,
               email_role_based: validation.email?.roleBased ?? false,
               email_domain_exists: validation.email?.domainExists ?? false,
-              email_validation_source: validation.email?.source ?? null,
+              // What actually decided it — 'apollo_guessed', 'apollo_verified',
+              // 'hunter' or 'basic' — rather than only which validator ran.
+              email_validation_source: verdict.source,
               phone_verified: validation.phone?.valid ?? false,
               phone_confidence: validation.phone?.confidence ?? 0,
               phone_type: validation.phone?.type ?? null,

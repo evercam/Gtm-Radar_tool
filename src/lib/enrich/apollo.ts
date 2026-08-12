@@ -35,6 +35,18 @@ interface ApolloPerson {
    * knowing an email is available without carrying it.
    */
   has_email?: boolean | null;
+  /**
+   * Apollo's own verdict on the address: `verified` when it has confirmed the
+   * mailbox, `guessed` when the address is derived from the company's naming
+   * pattern, `unavailable` when it has none.
+   *
+   * This was being discarded, and it is the best verification signal available to
+   * this pipeline — we already pay for the call that returns it. A guessed address
+   * sits on a real domain, so it passes the MX check that currently sets
+   * `email_verified`, which is how a pattern guess reaches a seller labelled
+   * verified. See lib/enrich/emailVerdict.ts.
+   */
+  email_status?: string | null;
   linkedin_url?: string | null;
   phone_numbers?: Array<{ sanitized_number?: string | null; raw_number?: string | null }>;
   organization?: { phone?: string | null } | null;
@@ -153,6 +165,7 @@ export async function apolloFindContacts(params: {
           source: 'apollo',
           apolloPersonId: p.id ?? null,
           hasEmail: p.has_email === true,
+          emailStatus: p.email_status ?? null,
         };
       })
       .filter((c) => c.name || c.title);
@@ -316,6 +329,7 @@ export async function apolloRevealContacts(
         phone: personPhone(person) ?? c.phone,
         linkedin_url: person.linkedin_url ?? c.linkedin_url,
         hasEmail: Boolean(email) || c.hasEmail,
+        emailStatus: person.email_status ?? c.emailStatus ?? null,
       };
       if (email) revealed += 1;
       await writeRevealCache(

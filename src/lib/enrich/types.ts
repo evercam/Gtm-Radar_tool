@@ -112,6 +112,14 @@ export interface EnrichedContact {
   /** Where the contact came from: 'claude' | 'apollo'. */
   source: string;
   /**
+   * Apollo's verdict on the address — 'verified' | 'guessed' | 'unavailable'.
+   *
+   * Carried so the verification verdict can tell a confirmed mailbox from one
+   * derived from the company's naming pattern. Without it the only check available
+   * is an MX lookup, which both cases pass. See lib/enrich/emailVerdict.ts.
+   */
+  emailStatus?: string | null;
+  /**
    * Apollo's person id, and whether Apollo says an address exists.
    *
    * `api_search` returns neither the email nor the full surname — it reports
