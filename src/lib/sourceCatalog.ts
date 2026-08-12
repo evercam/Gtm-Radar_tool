@@ -92,6 +92,14 @@ export const SOURCE_CATALOG: CatalogSource[] = [
     auth: 'keyless',
   },
   {
+    name: 'MISO Interconnection Queue',
+    sourceKey: 'miso_interconnection_queue',
+    slug: 'miso-queue',
+    category: 'Asset & energy trackers',
+    coverage: 'USA',
+    auth: 'keyless',
+  },
+  {
     name: 'Public Contracts Scotland',
     sourceKey: 'public_contracts_scotland',
     slug: 'public-contracts-scotland',

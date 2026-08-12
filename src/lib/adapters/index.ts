@@ -22,6 +22,7 @@ import {
 import { gemAdapter } from './gem';
 import { newsSearchAdapter } from './news-search';
 import { nesoTecAdapter, nesoEmbeddedAdapter } from './neso';
+import { misoQueueAdapter } from './miso';
 import type { SourceAdapter } from './types';
 
 /**
@@ -58,6 +59,7 @@ export const LIVE_ADAPTERS: Record<string, SourceAdapter> = {
   'news-search': newsSearchAdapter,
   'neso-tec': nesoTecAdapter,
   'neso-embedded': nesoEmbeddedAdapter,
+  'miso-queue': misoQueueAdapter,
 };
 
 export function getLiveAdapter(source: string): SourceAdapter | null {

@@ -68,6 +68,7 @@ export const SOURCE_SLUGS: Record<string, SourceSlugInfo> = {
   'calgary-permits': { sourceKey: 'calgary_building_permits', keyless: true },
   'neso-tec': { sourceKey: 'neso_tec_register', keyless: true },
   'neso-embedded': { sourceKey: 'neso_embedded_register', keyless: true },
+  'miso-queue': { sourceKey: 'miso_interconnection_queue', keyless: true },
 };
 
 export function sourceKeyForSlug(slug: string): string | null {
