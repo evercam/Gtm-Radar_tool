@@ -8,6 +8,10 @@
     {
       "path": "/api/cron?job=daily",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron?job=cycle",
+      "schedule": "20 * * * *"
     }
   ]
 }

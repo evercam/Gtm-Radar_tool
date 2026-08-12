@@ -40,8 +40,27 @@ export const maxDuration = 300;
  * quietly ingested and queued records that nothing ever finished.
  */
 
-type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'brief' | 'assign' | 'export' | 'daily';
-const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'brief', 'assign', 'export', 'daily'];
+/*
+  `cycle` is everything except ingest, and it is the job that should run hourly.
+
+  Assign and export previously existed ONLY inside `daily`. So on any day the
+  once-a-day cron did not fire, nothing reached Apollo at all — measured on
+  12 August: 38 leads eligible to send, 648 waiting to be assigned, the full
+  100-lead quota unused, and no daily run. The hourly trigger fired 14 times that
+  morning and could only enrich and brief, both of which had nothing to do because
+  prioritise also lives in `daily`.
+
+  Safe to run hourly because the caps are per DAY, not per run: assignment counts
+  `owner_assigned_at >= midnight` so it tops up TO each person's 25 and stops, and
+  export only sends what is already assigned. Enrichment is bounded by batchSize
+  and the daily/monthly spend rails. Running this twenty-four times cannot exceed
+  what running it once was allowed to do.
+
+  Ingest is excluded deliberately — it is the expensive, rate-limited part and it
+  has its own per-source schedules.
+*/
+type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'brief' | 'assign' | 'export' | 'cycle' | 'daily';
+const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'brief', 'assign', 'export', 'cycle', 'daily'];
 
 interface JobResult {
   job: string;
@@ -193,20 +212,20 @@ export async function POST(request: NextRequest) {
   //
   // Scoped to unscored records, so this costs roughly what arrived today. A
   // policy change still needs the full pass, run deliberately.
-  if (job === 'score' || job === 'daily') {
+  if (job === 'score' || job === 'cycle' || job === 'daily') {
     results.push(await callInternal(request, '/api/routing/apply', { scope: 'unscored' }));
   }
-  if (job === 'prioritise' || job === 'daily') results.push(await callInternal(request, '/api/prioritize', {}));
-  if (job === 'enrich' || job === 'daily') results.push(await callInternal(request, '/api/enrich/batch', {}));
+  if (job === 'prioritise' || job === 'cycle' || job === 'daily') results.push(await callInternal(request, '/api/prioritize', {}));
+  if (job === 'enrich' || job === 'cycle' || job === 'daily') results.push(await callInternal(request, '/api/enrich/batch', {}));
   // After enrich, before assign: a brief is worth most while the lead is still
   // waiting to be handed to somebody. It is also the only step allowed to come
   // back empty without the day being a failure — briefs that do not finish stay
   // queued for tomorrow, and nothing downstream waits on one.
-  if (job === 'brief' || job === 'daily') results.push(await callInternal(request, '/api/enrich/brief', {}));
-  if (job === 'assign' || job === 'daily') {
+  if (job === 'brief' || job === 'cycle' || job === 'daily') results.push(await callInternal(request, '/api/enrich/brief', {}));
+  if (job === 'assign' || job === 'cycle' || job === 'daily') {
     results.push(await callInternal(request, '/api/leads', { action: 'autoAssign' }));
   }
-  if (job === 'export' || job === 'daily') {
+  if (job === 'export' || job === 'cycle' || job === 'daily') {
     const { config: policy } = await getEnrichmentPolicy();
     results.push(await callInternal(request, '/api/export/apollo', { limit: policy.apolloBatchSize }));
   }
