@@ -130,7 +130,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   const mine = sp.mine ?? (canSeeAll ? '0' : '1');
   const ownerId = mine === '1' ? user.id : undefined;
   const unassigned = sp.owner === 'none';
-  const sort = (['priority', 'newest', 'value', 'exported'].includes(sp.sort ?? '')
+  const sort = (['priority', 'intent', 'newest', 'value', 'exported'].includes(sp.sort ?? '')
     ? sp.sort
     : 'priority') as RecordSort;
   // Exported leads are archived out of the working list. `archived=1` brings
@@ -385,12 +385,24 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             </Chip>
           ))}
           <span className="text-subtle ml-3 text-xs font-medium">Sort</span>
-          {(['priority', 'newest', 'value', 'exported'] as const).map((s) => (
+          {(['priority', 'intent', 'newest', 'value', 'exported'] as const).map((s) => (
             <Chip
               key={s}
               href={qs(base, { sort: s, page: undefined })}
               active={sort === s}
-              title={s === 'exported' ? 'Most recently handed over to Apollo — includes archived leads' : undefined}
+              title={
+                s === 'exported'
+                  ? 'Most recently handed over to Apollo — includes archived leads'
+                  : /*
+                      Spelled out because the two are easy to confuse and the
+                      difference decides how a rep spends the morning.
+                    */
+                    s === 'intent'
+                    ? 'Readiest first — timing verdict, then urgent stage, then a named trigger. Ties broken by priority.'
+                    : s === 'priority'
+                      ? 'Biggest first — value, capacity, ICP fit and key-account weighting'
+                      : undefined
+              }
             >
               {s}
             </Chip>

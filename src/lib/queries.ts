@@ -467,7 +467,15 @@ export interface RecordRow {
   apollo_exported_at: string | null;
   apollo_export_status: string | null;
 }
-export type RecordSort = 'priority' | 'newest' | 'value' | 'exported';
+/**
+ * `intent` ranks by readiness, `priority` by value.
+ *
+ * They are different questions and the top of one is not the top of the other: a
+ * large owner scores well on priority whether or not anything is happening. A rep
+ * working a priority list spends the morning on the biggest project; an intent list
+ * gives them the readiest.
+ */
+export type RecordSort = 'priority' | 'intent' | 'newest' | 'value' | 'exported';
 export interface RecordsQuery {
   page?: number;
   pageSize?: number;
@@ -547,7 +555,7 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
   const pageSize = Math.min(500, Math.max(1, q.pageSize ?? 100));
   const from = (page - 1) * pageSize;
 
-  const run = async (tier: ColumnTier) => {
+  const run = async (tier: ColumnTier, sortMode: RecordSort) => {
     const hasPriority = tier === 'full';
     const hasRouting = tier === 'full' || tier === 'routing';
 
@@ -574,15 +582,24 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
 
     // Priority-first by default — the whole point of scoring is that the top of
     // the list is the work queue. Unscored records sort last, not first.
-    if (q.sort === 'value') query = query.order('estimated_value', { ascending: false, nullsFirst: false });
+    /*
+      Ascending, because intent_rank is 0-for-readiest. Tie-broken by priority, so
+      within the same readiness the bigger project comes first — and the composite
+      index is in that exact order.
+    */
+    if (sortMode === 'intent')
+      query = query
+        .order('intent_rank', { ascending: true, nullsFirst: false })
+        .order('priority_score', { ascending: false, nullsFirst: false });
+    else if (sortMode === 'value') query = query.order('estimated_value', { ascending: false, nullsFirst: false });
     // Most recently handed over first, and never a null export date at the top:
     // this sort exists to audit what was sent, so a page of unexported records
     // above the newest handover would defeat the only reason to pick it.
-    else if (q.sort === 'exported')
+    else if (sortMode === 'exported')
       query = query
         .order('apollo_exported_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false });
-    else if (q.sort === 'newest' || !hasPriority) query = query.order('created_at', { ascending: false });
+    else if (sortMode === 'newest' || !hasPriority) query = query.order('created_at', { ascending: false });
     else
       query = query
         .order('priority_score', { ascending: false, nullsFirst: false })
@@ -592,10 +609,31 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
   };
 
   const tiers: ColumnTier[] = ['full', 'routing', 'core'];
-  for (const tier of tiers) {
-    const { data, error, count } = await run(tier);
-    if (!error) return { rows: (data ?? []) as unknown as RecordRow[], total: count ?? 0 };
-    if (!isMissingColumn(error)) break;
+  const attempt = async (sortMode: RecordSort) => {
+    for (const tier of tiers) {
+      const { data, error, count } = await run(tier, sortMode);
+      if (!error) return { rows: (data ?? []) as unknown as RecordRow[], total: count ?? 0 };
+      if (!isMissingColumn(error)) break;
+    }
+    return null;
+  };
+
+  const requested: RecordSort = q.sort ?? 'priority';
+  const first = await attempt(requested);
+  if (first) return first;
+
+  /*
+    `intent_rank` is a generated column added by 20260812120000. Ordering on it
+    before that migration lands fails every column tier, and the loop above would
+    then return an empty list — a page of nothing that looks exactly like "no
+    records match these filters".
+
+    So a missing sort column falls back to priority rather than to silence. The
+    order is not what was asked for, but the records are the right ones.
+  */
+  if (requested === 'intent') {
+    const fallback = await attempt('priority');
+    if (fallback) return fallback;
   }
   return { rows: [], total: 0 };
 }
