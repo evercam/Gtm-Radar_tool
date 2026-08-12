@@ -21,6 +21,8 @@ import type { ContactChannel } from '@/lib/lifecycle';
 export interface Reachable {
   email?: string | null;
   phone?: string | null;
+  /** Checked for obfuscation — see nameUsable. Optional, so existing callers are unaffected. */
+  name?: string | null;
 }
 
 /**
@@ -34,8 +36,48 @@ export function laneChannel(channelRules: Record<string, ContactChannel>, stage:
   return channelRules[String(stage ?? '')] ?? 'any';
 }
 
+/*
+  Names Apollo has deliberately withheld.
+
+  `api_search` returns the surname obfuscated — "Nirmal Ma***i", "Samit Ja***a",
+  "Shelee Ki***a" — and revealing it costs a separate credited call. Where that
+  reveal did not happen, the record still carries a name-shaped string, and every
+  check downstream treats it as a real person.
+
+  Observed in a live export dry run: 2 of the first 4 contacts queued for a seller
+  had obfuscated surnames and no email. Sending those creates Apollo contacts that
+  cost a credit, cannot be deleted by this tool, and give a rep nothing to work
+  with — you cannot address an email to Ma***i or ask a switchboard for them.
+
+  Masked with asterisks, bullets or the Unicode ellipsis, since all three appear.
+*/
+const OBFUSCATED = /[*•]{2,}|\*\w*\*|…\w/;
+
+/**
+ * Whether this is a usable human name rather than one Apollo withheld.
+ *
+ * A blank name is NOT obfuscated — it is simply absent, and the export already
+ * handles that by sending the company main line, which is a deliberate and useful
+ * fallback. This is about a name that looks present and is not.
+ */
+export function nameUsable(name: string | null | undefined): boolean {
+  if (!name || !name.trim()) return true;
+  return !OBFUSCATED.test(name);
+}
+
 /** Whether one person satisfies the lane's channel requirement. */
 export function personReachable(channel: ContactChannel, person: Reachable): boolean {
+  /*
+    An obfuscated name with no channel of its own is not a reachable person.
+
+    Kept narrow deliberately: if the reveal DID return an address or a number, the
+    contact is usable even with a mangled display name — the rep can still send the
+    email. It is the combination of "we do not know who this is" and "we have no way
+    to contact them" that makes the record worthless, and that combination is what
+    was being exported.
+  */
+  if (!nameUsable(person.name) && !person.email && !person.phone) return false;
+
   const hasEmail = Boolean(person.email);
   const hasPhone = Boolean(person.phone);
   switch (channel) {

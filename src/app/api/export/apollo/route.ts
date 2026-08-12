@@ -14,6 +14,7 @@ import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
 import { notifyExportFinished } from '@/lib/notify/cliq';
 import { logEventAsync } from '@/lib/observability/events';
+import { nameUsable } from '@/lib/export/reachability';
 import { isColdArrival } from '@/lib/arrival';
 
 export const dynamic = 'force-dynamic';
@@ -388,6 +389,12 @@ export async function POST(request: NextRequest) {
   }
 
   const contacts: ExportContact[] = [];
+  /*
+    Contacts skipped because Apollo never revealed the surname and there was no
+    channel either. Reported, because a quality filter that hides what it removed
+    is indistinguishable from a bug that loses records.
+  */
+  let withheldNames = 0;
 
   /**
    * Project refs per contact identity.
@@ -649,6 +656,23 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      /*
+        A name Apollo withheld, with no channel of its own, is not a contact.
+
+        `api_search` obfuscates the surname — "Nirmal Ma***i" — and revealing it is
+        a separate credited call. Where that did not happen the record still looks
+        like a person and was exported as one. Measured in a dry run for one seller:
+        2 of the first 4 queued contacts had a masked surname and no email, so they
+        would have cost a credit each, been undeletable, and given the rep nothing —
+        you cannot email Ma***i or ask a switchboard for them.
+
+        Counted rather than dropped silently, so the run says what it withheld.
+      */
+      if (!nameUsable(personName) && !person.email && !person.phone) {
+        withheldNames += 1;
+        continue;
+      }
+
       contacts.push({
         ...shared,
         customFields: custom.values,
@@ -706,6 +730,13 @@ export async function POST(request: NextRequest) {
     already know from the run report that it is a switchboard and not a person
     somebody researched.
   */
+  /*
+    Said out loud in the message, not just returned as a field. The whole reason
+    this filter exists is that these contacts were being sent invisibly.
+  */
+  const withheldCaveat = withheldNames
+    ? ` ${withheldNames} contact(s) held back: Apollo never revealed the surname and there was no email or phone, so there was nobody to reach.`
+    : '';
   const namelessCaveat = placeholderNames
     ? ` ${placeholderNames} had no named person, so ${placeholderNames === 1 ? 'it is' : 'they are'} sent as the company main line — call and ask for the project team.`
     : '';
@@ -754,7 +785,7 @@ export async function POST(request: NextRequest) {
       message:
         `${contacts.length} contact${contacts.length === 1 ? '' : 's'}` +
         (assigneeFilter ? ` for ${assigneeFilter.name}` : '') +
-        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
+        ` would be sent to Apollo in ${chunk(contacts).length} batch(es).${caveat}${flagCaveat}${reachCaveat}${withheldCaveat}${namelessCaveat}${fieldCaveat}` +
         // The dry run has to warn about the cap too, or it promises a complete
         // send that the real run will not deliver.
         (eligibleTotal != null && eligibleTotal > rows.length
@@ -770,6 +801,7 @@ export async function POST(request: NextRequest) {
       unreachable: unreachable.slice(0, 20),
       unreachableCount: unreachable.length,
       placeholderNames,
+    withheldNames,
       preview: contacts.slice(0, 10).map((c) => ({
         name: c.name,
         title: c.title,
@@ -977,7 +1009,7 @@ export async function POST(request: NextRequest) {
     stoppedEarly,
     batchesSent,
     message:
-      `Sent ${sentContacts} of ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${reachCaveat}${namelessCaveat}${fieldCaveat}` +
+      `Sent ${sentContacts} of ${contacts.length}${assigneeFilter ? ` for ${assigneeFilter.name}` : ''} to Apollo — ${created} created, ${existing} already there${failed ? `, ${failed} failed` : ''}.${caveat}${flagCaveat}${reachCaveat}${withheldCaveat}${namelessCaveat}${fieldCaveat}` +
       /*
         What was NOT done, in the same breath as what was.
 
@@ -1014,6 +1046,7 @@ export async function POST(request: NextRequest) {
     fields: fieldReport,
     unreachableCount: unreachable.length,
     placeholderNames,
+    withheldNames,
     // 'not-configured' until someone pastes a Cliq URL in Settings — stated so a
     // silent chat is a visible fact rather than a mystery.
     notified: notice.sent,
