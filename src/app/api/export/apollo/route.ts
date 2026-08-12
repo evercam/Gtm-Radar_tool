@@ -14,6 +14,7 @@ import { classifyTitle } from '@/lib/personas';
 import { exportBatchWithRetry, chunk, APOLLO_BATCH_LIMIT, type ExportContact } from '@/lib/export/apollo';
 import { notifyExportFinished } from '@/lib/notify/cliq';
 import { logEventAsync } from '@/lib/observability/events';
+import { isColdArrival } from '@/lib/arrival';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -132,7 +133,7 @@ export async function POST(request: NextRequest) {
       // literal types, so building this from pieces collapses the row type to
       // GenericStringError. Every column the brief renders is here — selecting
       // only the summary ones made the brief omit whole sections silently.
-      'id, canonical_name, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key, ref_code, description, building_type, project_url, estimated_value_currency, square_footage, number_of_floors, capacity_mw, technology_type, address_line1, city, state_province, is_remote_location, is_access_constrained, announced_date, construction_start_date, estimated_completion_date, bid_date, evercam_timing, priority_band, priority_reasons, committee_coverage, vertical, enriched_at, route, stage, icp_code'
+      'id, canonical_name, record_type, contact_name, contact_email, contact_phone, contact_title, contact_linkedin_url, email_verified, phone_verified, company_name_raw, company_website, country, bu, priority_score, assignee_id, apollo_account_id, apollo_account_name, additional_contacts, contact_role, opening_hook, pain_point, trigger_event, value_angle, icp_fit_score, icp_fit_reason, call_prep_summary, project_type, current_phase, estimated_value, source_key, ref_code, description, building_type, project_url, estimated_value_currency, square_footage, number_of_floors, capacity_mw, technology_type, address_line1, city, state_province, is_remote_location, is_access_constrained, announced_date, construction_start_date, estimated_completion_date, bid_date, evercam_timing, priority_band, priority_reasons, committee_coverage, vertical, enriched_at, route, stage, icp_code'
     )
     .is('apollo_exported_at', null)
     // Ownership is assignee_id now — owner_user_id is null for everyone on the
@@ -240,7 +241,25 @@ export async function POST(request: NextRequest) {
 
   const takenPerAssignee = new Map<string, number>();
   const overQuota: string[] = [];
+  let coldSkipped = 0;
   const rows = fetched.filter((r) => {
+    /*
+      Cold arrivals never leave the building.
+
+      `evercam_timing` is the brief's judgement and is already gated above; this is
+      the ARRIVAL verdict, computed from the project's own phase and dates, and it
+      is the stronger signal because it does not depend on a brief having run.
+
+      Filtered here rather than in the query because `arrivalFor` reads the
+      admin-editable phase table — expressing it in SQL would mean maintaining the
+      same phase list in two places, and they would drift. The enrichment queue
+      already over-fetches for exactly this reason and uses the same predicate, so
+      enrichment cannot buy a contact this step then refuses to send.
+    */
+    if (isColdArrival(r)) {
+      coldSkipped += 1;
+      return false;
+    }
     const owner = String(r.assignee_id ?? '');
     // Somebody assigned but no longer on the active roster has no quota to spend.
     // Skipping them loudly beats sending on behalf of a deactivated account.

@@ -284,6 +284,41 @@ export function arrivalFor(
 }
 
 /** Sort key: earliest arrival first, undated after dated at the same verdict. */
+/**
+ * Verdicts treated as COLD: not worth enriching, not worth sending to Apollo.
+ *
+ * `too_late` is uncontroversial — built, cancelled or retired, so there is
+ * nothing to install.
+ *
+ * `late` is a deliberate business decision, not a technical one. The verdict
+ * itself still means "mid-build, sellable, but the easy win is gone", and the
+ * arrival chip will keep saying that. What changed is what we are willing to
+ * SPEND on it: a mid-build project converts poorly enough that buying contacts
+ * for it and putting it in front of a seller costs more than it returns. Called
+ * on 12 August 2026.
+ *
+ * This is spend, not scope. Every record stays in the table, keeps its score, and
+ * still says how late we are — a seller searching for it will find it, and
+ * turning the decision around means changing this one array.
+ */
+export const COLD_ARRIVALS: readonly ArrivalVerdict[] = ['late', 'too_late'];
+
+/**
+ * Whether a record has arrived too late to be worth spending on.
+ *
+ * One predicate rather than a filter written at each call site, because the
+ * enrichment queue, the assignment pass and the Apollo export must agree. If they
+ * disagree, enrichment buys a contact the export then refuses to send — which is
+ * the credit-burning shape this exists to prevent.
+ *
+ * `unknown` is NOT cold. An undated record with no phase has not been judged, and
+ * treating unjudged as cold would silently drop everything a source ships without
+ * dates.
+ */
+export function isColdArrival(record: ArrivalInput, config: PriorityConfig = DEFAULT_PRIORITY_CONFIG, now: number = Date.now()): boolean {
+  return COLD_ARRIVALS.includes(arrivalFor(record, config, now).verdict);
+}
+
 export const ARRIVAL_ORDER: Record<ArrivalVerdict, number> = {
   early: 0,
   on_time: 1,

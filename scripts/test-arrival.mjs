@@ -12,7 +12,7 @@
  * covering four different causes.
  */
 
-import { arrivalFor } from '../src/lib/arrival.ts';
+import { arrivalFor, isColdArrival, COLD_ARRIVALS } from '../src/lib/arrival.ts';
 import { phaseTiming } from '../src/lib/priority.ts';
 
 let passed = 0,
@@ -142,6 +142,36 @@ console.log('\nAn announcement dated in the future has not happened');
 {
   const a = at({ current_phase: 'Pre-Construction', announced_date: inMonths(-5) });
   check('a genuine past announcement still reads as one', /ago/.test(a.summary) && a.basis === 'announced', a.summary);
+}
+
+console.log('\nCold arrivals are neither enriched nor exported');
+{
+  /*
+    A business decision recorded as a test. `late` still MEANS "mid-build,
+    sellable, but the easy win is gone" — the chip keeps saying that. What this
+    fixes is what we spend on it, and the three call sites that must agree:
+    enrichment queue, assignment, export. If they disagree, enrichment buys a
+    contact the export then refuses to send.
+  */
+  check('late is cold', COLD_ARRIVALS.includes('late'));
+  check('too_late is cold', COLD_ARRIVALS.includes('too_late'));
+  check('and nothing else is', COLD_ARRIVALS.length === 2, COLD_ARRIVALS.join(','));
+
+  // Built or dead settles it on the phase alone, with no dates at all.
+  check('an operating plant is cold', isColdArrival({ current_phase: 'Operating' }));
+  check('a cancelled project is cold', isColdArrival({ current_phase: 'Cancelled' }));
+
+  // The window Evercam wants is not cold.
+  const soon = new Date(Date.now() + 120 * 86400000).toISOString().slice(0, 10);
+  check('a project months from breaking ground is not cold', !isColdArrival({ current_phase: 'Awarded', construction_start_date: soon }));
+
+  /*
+    `unknown` must NOT be cold. An undated record with no phase has not been
+    judged, and treating unjudged as cold would silently drop everything a source
+    ships without dates — measured at 150 of 855 assignable leads.
+  */
+  check('an unjudged record is not cold', !isColdArrival({}), arrivalFor({}).verdict);
+  check('and a company record is not cold', !isColdArrival({ record_type: 'account' }), arrivalFor({ record_type: 'account' }).verdict);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -7,7 +7,7 @@ import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/p
 import { recordReachable } from '@/lib/export/reachability';
 import { planSupply, adviseRebalance, type SupplyPlan, type RebalanceAdvice } from '@/lib/supply';
 import { getDemandPlan } from '@/lib/enrich/demand';
-import { arrivalFor } from '@/lib/arrival';
+import { isColdArrival, arrivalFor } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
 import { logEventAsync } from '@/lib/observability/events';
@@ -1657,7 +1657,8 @@ export async function getEnrichmentQueue(
     if (f.includeUnreachable) return { rows: fetched.slice(0, want), total: count ?? 0, unreachableSkipped: 0 };
 
     /**
-     * Drop the projects that are already built, cancelled or commissioning.
+     * Drop the projects that are cold — built, cancelled, commissioning, or
+     * already mid-build. See COLD_ARRIVALS.
      *
      * Not a change of SCOPE — every record stays in the table, on the list, and
      * says how early we are. It is a change of SPEND: buying contacts for a
@@ -1669,7 +1670,7 @@ export async function getEnrichmentQueue(
      * Measured before this: of ~111 records enriched, 13 were built or dead and
      * only 11 were in-scope construction projects.
      */
-    const keep = fetched.filter((r) => arrivalFor(r).verdict !== 'too_late');
+    const keep = fetched.filter((r) => !isColdArrival(r));
     return {
       rows: keep.slice(0, want),
       total: count ?? 0,

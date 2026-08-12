@@ -12,6 +12,7 @@ import {
 } from '@/lib/assignmentStore';
 import type { AssignableLead } from '@/lib/assignment';
 import { planAllocation } from '@/lib/allocation';
+import { isColdArrival } from '@/lib/arrival';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -109,7 +110,7 @@ export async function POST(request: NextRequest) {
     const { data, error } = await service
       .from('canonical_projects')
       .select(
-        'id, bu, vertical, country, icp_code, record_type, priority_band, priority_score, estimated_value, route, stage, contact_status, owner_user_id, assignee_id, source_key'
+        'id, bu, vertical, country, icp_code, record_type, priority_band, priority_score, estimated_value, route, stage, contact_status, owner_user_id, assignee_id, source_key, current_phase, construction_start_date, estimated_completion_date, announced_date, bid_date'
       )
       // Unowned means no assignee — most of the roster has no app account,
       // so owner_user_id is null for their leads too.
@@ -153,8 +154,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, message: `${error.message}.${hint}` }, { status: 200 });
     }
 
+    /*
+      Cold arrivals are not distributable.
+
+      The phase and date columns are selected purely so `arrivalFor` can judge this
+      — the allocator itself does not read them. Filtered in memory rather than in
+      the query because the verdict reads the admin-editable phase table, and a SQL
+      copy of that list would drift from it.
+
+      Assignment matters as much as the export here: a cold lead given to somebody
+      spends a slot out of their 25/day on something the export will refuse to
+      send, so it would read as a full day's work and produce nothing.
+    */
+    const beforeCold = (data ?? []).length;
+    const warm = ((data ?? []) as unknown as Record<string, unknown>[]).filter((r) => !isColdArrival(r));
+    const coldSkipped = beforeCold - warm.length;
+
     // The engine reads assigneeId; the row spells it assignee_id.
-    const leads = ((data ?? []) as unknown as (AssignableLead & { assignee_id: string | null })[]).map((l) => ({
+    const leads = (warm as unknown as (AssignableLead & { assignee_id: string | null })[]).map((l) => ({
       ...l,
       assigneeId: l.assignee_id,
     }));
@@ -168,6 +185,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       ok: true,
+      coldSkipped,
       message:
         `Assigned ${applied} lead${applied === 1 ? '' : 's'}` +
         `${result.atCapacity ? `, ${result.atCapacity} held (owners at quota)` : ''}` +
