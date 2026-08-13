@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLiveAdapter } from '@/lib/adapters';
+import { getLiveAdapter, LIVE_SOURCE_SLUGS } from '@/lib/adapters';
 import { AdapterAuthError, AdapterNetworkError, AdapterShapeError } from '@/lib/adapters/types';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { checkPermission } from '@/lib/auth/session';
@@ -76,7 +76,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
   if (!adapter) {
     return NextResponse.json(
       {
-        error: `Unknown or non-live source "${source}". Only barbour-abi, glenigan, and construct-connect support live ingestion.`,
+        // From the registry rather than a hardcoded list, which drifted for months
+        // and named three sources when 29 were live.
+        error: `Unknown or non-live source "${source}".`,
+        liveSources: LIVE_SOURCE_SLUGS,
       },
       { status: 404 }
     );

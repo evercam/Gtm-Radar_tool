@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLiveAdapter } from '@/lib/adapters';
+import { getLiveAdapter, LIVE_SOURCE_SLUGS } from '@/lib/adapters';
 import { AdapterAuthError, AdapterNetworkError, AdapterShapeError } from '@/lib/adapters/types';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { sourceProvenance } from '@/lib/provenance';
@@ -58,9 +58,14 @@ const SOURCE_KEY_BY_SLUG: Record<string, string> = {
 /**
  * POST /api/ingest/[source]
  *
- * Only `source` = "barbour-abi" or "glenigan" are accepted — every other
- * value 404s. This is deliberate: those are the only two sources with real
- * ingestion adapters, the remaining 63 catalog rows are metadata-only.
+ * `source` must be a slug with a live adapter — anything else 404s.
+ *
+ * The set is `LIVE_SOURCE_SLUGS`, and is NOT restated here. This comment used to
+ * say "only barbour-abi and glenigan, the remaining 63 catalog rows are
+ * metadata-only", which was true when written and wrong for a long time
+ * afterwards: there are 29 live adapters now. A hand-maintained list of what the
+ * code already knows drifts silently, and the 404 it produced sent people looking
+ * for a missing adapter that was registered all along.
  */
 export async function POST(request: NextRequest, context: { params: Promise<{ source: string }> }) {
   const auth = await checkPermission('sources.ingest');
@@ -71,7 +76,12 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
 
   if (!adapter) {
     return NextResponse.json(
-      { error: `Unknown or non-live source "${source}". Only barbour-abi and glenigan support live ingestion.` },
+      {
+        // Listed from the registry, so this can never disagree with what is
+        // actually ingestable.
+        error: `Unknown or non-live source "${source}".`,
+        liveSources: LIVE_SOURCE_SLUGS,
+      },
       { status: 404 }
     );
   }
