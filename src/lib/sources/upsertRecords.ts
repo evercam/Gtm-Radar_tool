@@ -74,6 +74,49 @@ async function findExisting(client: Client, sourceKey: string, ids: string[]): P
  * and it refuses the WHOLE statement, so one duplicated pair costs every record
  * in the chunk.
  */
+
+/**
+ * The smallest chunk worth attempting.
+ *
+ * Below this the round trips cost more than the statement, and a timeout on a
+ * single-figure batch is a real fault rather than a size problem — so it is
+ * allowed to surface instead of being split forever.
+ */
+const MIN_CHUNK = 25;
+
+const isTimeout = (message: string): boolean => /statement timeout|canceling statement|timeout/i.test(message);
+
+/**
+ * Write one chunk, halving and retrying if the statement times out.
+ *
+ * `position` and `total` are carried purely so the error names where in the run it
+ * happened — "upsert failed" on a run of several thousand tells you nothing about
+ * how much of it landed.
+ */
+async function writeChunk(
+  client: Client,
+  chunk: CanonicalProjectInsert[],
+  position: number,
+  total: number
+): Promise<void> {
+  const { error } = await client.from('canonical_projects').upsert(chunk, { onConflict: 'source_key,source_unique_id' });
+  if (!error) return;
+
+  if (isTimeout(error.message) && chunk.length > MIN_CHUNK) {
+    const half = Math.ceil(chunk.length / 2);
+    // Sequential, not parallel: the statement timed out because the database was
+    // already working too hard, and two halves at once would make that worse.
+    await writeChunk(client, chunk.slice(0, half), position, total);
+    await writeChunk(client, chunk.slice(half), position + half, total);
+    return;
+  }
+
+  throw new Error(
+    `Supabase upsert failed at records ${position}-${position + chunk.length} of ${total}: ${error.message}` +
+      (isTimeout(error.message) ? ` (already reduced to ${chunk.length} rows, so this is not a batch-size problem)` : '')
+  );
+}
+
 export async function upsertSourceRecords(
   client: Client,
   sourceKey: string,
@@ -94,16 +137,21 @@ export async function upsertSourceRecords(
     inserted += newRows;
     updated += chunk.length - newRows;
 
-    const { error } = await client
-      .from('canonical_projects')
-      .upsert(chunk, { onConflict: 'source_key,source_unique_id' });
-    // Thrown with the chunk position, because "upsert failed" on a run of several
-    // thousand tells you nothing about how much of it landed.
-    if (error) {
-      throw new Error(
-        `Supabase upsert failed at records ${i}-${i + chunk.length} of ${records.length}: ${error.message}`
-      );
-    }
+    /*
+      Written adaptively, because 500 is the right chunk for most publishers and
+      too many for some.
+
+      NYC DOB permits failed on the very first chunk with "canceling statement due
+      to statement timeout" — 0 of 10,000 written, every run, so a working source
+      produced nothing at all. Its rows are unusually wide: many populated columns
+      plus a large raw_data payload, so 500 of them is far more work per statement
+      than 500 Chicago rows.
+
+      Halving the global chunk would slow every other source to fix one. Instead a
+      timeout splits THAT chunk and retries, so the cost is paid only where it is
+      needed and a new wide-rowed publisher fixes itself rather than failing.
+    */
+    await writeChunk(client, chunk, i, records.length);
   }
 
   return { inserted, updated, collapsed };
