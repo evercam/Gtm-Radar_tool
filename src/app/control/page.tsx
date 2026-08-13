@@ -194,7 +194,13 @@ export default async function ControlCenterPage() {
               : 'migration pending'
           }
         />
-        <Stat label="Enrichment queue" value={queueTotal.toLocaleString()} note="eligible under policy" />
+        <Stat
+          label="Enrichment queue"
+          // Not `?? 0`. An unmeasurable count is not zero, and on the front page
+          // a zero here reads as "there is no work".
+          value={queueTotal === null ? '—' : queueTotal.toLocaleString()}
+          note={queueTotal === null ? 'count unavailable — not zero' : 'eligible under policy'}
+        />
         <Stat
           label="Enriched (24h)"
           value={enrichedToday.toLocaleString()}
@@ -262,7 +268,8 @@ export default async function ControlCenterPage() {
           <CardBody>
             {runs.length === 0 ? (
               <p className="text-muted text-sm">
-                No batch runs yet. {queueTotal.toLocaleString()} records are eligible.
+                No batch runs yet.{' '}
+                {queueTotal === null ? 'The eligible count is unavailable.' : `${queueTotal.toLocaleString()} records are eligible.`}
               </p>
             ) : (
               <ul className="space-y-2">

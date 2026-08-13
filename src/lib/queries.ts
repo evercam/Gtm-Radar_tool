@@ -234,6 +234,15 @@ export async function rerouteAll(
   byBand: Record<string, number>;
   scope: ScoringScope;
   reachedCap: boolean;
+  /**
+   * Set when the walk stopped on a database error rather than finishing.
+   *
+   * `reachedCap` already covers the deliberate stop. This covers the accidental
+   * one, which previously looked identical to success: `total` reported what was
+   * scored and nothing said the rest had been abandoned. A partial pass that calls
+   * itself complete is how the unscored backlog grew every night.
+   */
+  truncated: string | null;
 }> {
   const scope = opts.scope ?? 'unscored';
   const maxRecords = opts.maxRecords ?? Infinity;
@@ -247,23 +256,61 @@ export async function rerouteAll(
   const byBand: Record<string, number> = {};
   let total = 0;
 
-  for (let from = 0; from < 1_000_000; from += 1000) {
-    // ORDER BY is not decoration here. Each `.range()` is its own query, so
-    // without a stable sort Postgres may return rows in a different order per
-    // page — pages then overlap and others are never seen. That is why a pass
-    // reporting "22,438 records" left 8,555 with a null band: it counted rows
-    // READ, duplicates included, not distinct rows covered. `id` is unique and
-    // indexed, which is all a keyset-stable page needs.
+  /*
+    KEYSET paging on `id`, not `.range()`.
+
+    Offset paging re-walks everything it has already skipped, so a deep page pays
+    for every row before it — and past a certain depth it simply exceeds the
+    statement timeout. Observed 2026-08-13 on a real run: 19,613 records were
+    unscored, the pass reported `total: 19000` and `reachedCap: false`, and 613
+    records were left. 19,000 is exactly nineteen pages, so page twenty — offset
+    19,000 — timed out, hit the `if (error) break` below, and the run reported
+    success having silently abandoned its tail.
+
+    THAT IS WHY THE BACKLOG EXISTED. A nightly cron that drops its last page and
+    calls itself done accumulates a remainder forever, and the remainder was the
+    newest sources: the interconnection queues sat at 0.8% scored, which made the
+    earliest signals this tool has invisible to the enrichment queue.
+
+    `id > last` costs the same on every page. The ORDER BY was already here and is
+    what makes it safe — this only stops paying the offset. `readyInventory` in
+    lib/enrich/demand.ts does the same thing for the same reason.
+  */
+  let after = '';
+  let truncated: string | null = null;
+
+  for (let guard = 0; guard < 2000; guard += 1) {
+    // ORDER BY is not decoration here. Without a stable total order a page
+    // boundary repeats and skips rows. That is why a pass reporting "22,438
+    // records" left 8,555 with a null band: it counted rows READ, duplicates
+    // included, not distinct rows covered. `id` is unique and indexed, which is
+    // all a keyset-stable page needs.
     let page = service
       .from('canonical_projects')
       .select(SCORING_COLUMNS)
-      .order('id', { ascending: true });
+      .order('id', { ascending: true })
+      .limit(1000);
     // Unscored-only reads shrink as the backlog clears, so a daily run costs
     // roughly what arrived that day.
     if (scope === 'unscored') page = page.is('scored_at', null);
+    if (after) page = page.gt('id', after);
 
-    const { data, error } = await page.range(from, from + 999);
-    if (error) break;
+    const { data, error } = await page;
+    /*
+      Record WHY the walk stopped instead of returning as though it finished.
+
+      This was a bare `break`, which is what let a timeout masquerade as a
+      completed pass. The caller now gets the message and can say the run was
+      partial — see `truncated` in the return.
+    */
+    if (error) {
+      truncated = error.message;
+      break;
+    }
+    const batch = (data ?? []) as unknown as Record<string, unknown>[];
+    // Advance the cursor before the loop below, which can `break` on the record
+    // cap — the next page must resume from the last row READ, not the last scored.
+    if (batch.length > 0) after = String(batch[batch.length - 1].id);
     for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
       const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
       const d = routeRecord(record, rules);
@@ -324,7 +371,7 @@ export async function rerouteAll(
       if (error) throw new Error(error.message);
     }
   }
-  return { total, byLane, byBand, scope, reachedCap: total >= maxRecords };
+  return { total, byLane, byBand, scope, reachedCap: total >= maxRecords, truncated };
 }
 
 export interface RoutingPreview {
@@ -1654,14 +1701,31 @@ export async function getProductionState(
   };
 }
 
+export interface EnrichQueueResult {
+  rows: EnrichQueueRow[];
+  /**
+   * Eligible records, or NULL when the count could not be obtained.
+   *
+   * Not zero. Zero is a fact about the book — "nothing is eligible" — and null is
+   * a fact about this request: we failed to ask. Reporting the second as the first
+   * is how a control centre tells a seller there is nothing to call when really
+   * the query timed out.
+   */
+  total: number | null;
+  unreachableSkipped: number;
+  /**
+   * True when the ROWS could not be read. Distinct from an empty queue, and the
+   * caller is expected to say so rather than render emptiness.
+   */
+  failed: boolean;
+}
+
 /**
  * The enrichment queue: records eligible under the policy, highest priority
  * first. This is the exact selection the batch endpoint processes, so the
  * control centre can show the queue before spending anything on it.
  */
-export async function getEnrichmentQueue(
-  f: EnrichQueueFilters = {}
-): Promise<{ rows: EnrichQueueRow[]; total: number; unreachableSkipped: number }> {
+export async function getEnrichmentQueue(f: EnrichQueueFilters = {}): Promise<EnrichQueueResult> {
   const supabase = await getReadSupabase();
   const want = Math.min(500, Math.max(1, f.limit ?? 50));
 
@@ -1675,24 +1739,77 @@ export async function getEnrichmentQueue(
    */
   const overfetch = f.includeUnreachable ? want : Math.min(500, want * 4);
 
-  const run = async (withStatus: boolean) => {
+  const filtersFor = (withStatus: boolean) =>
+    withStatus ? { ...f, statuses: f.statuses ?? CLAIMABLE_STATUSES } : { ...f, statuses: undefined };
+
+  /*
+    Rows and count are SEPARATE queries, and this is a performance fix as much as
+    a correctness one.
+
+    They used to be one `select(columns, { count: 'exact' })`. PostgREST computes
+    the exact count in the same statement as the ordered page, and that combination
+    is what blew the statement timeout — measured 2026-08-13 against the live table:
+
+      data + inline exact count      5,022ms   (9,139ms on the run that failed)
+      data only, no count              414ms
+      exact count as its own head      410ms
+
+    Twelve times faster apart than together, and comfortably inside the timeout
+    instead of sitting on it. `count: 'exact'` is kept, because the slowness was
+    never the counting — it was counting and sorting in one statement. No need to
+    trade an accurate number for a planner estimate.
+  */
+  const runRows = async (withStatus: boolean) => {
     const columns = withStatus ? `${ENRICH_QUEUE_COLUMNS},status` : ENRICH_QUEUE_COLUMNS;
-    const base = supabase.from('canonical_projects').select(columns, { count: 'exact' });
-    const filters = withStatus ? { ...f, statuses: f.statuses ?? CLAIMABLE_STATUSES } : { ...f, statuses: undefined };
-    const query = applyQueueFilters(base as never, filters) as unknown as typeof base;
+    const base = supabase.from('canonical_projects').select(columns);
+    const query = applyQueueFilters(base as never, filtersFor(withStatus)) as unknown as typeof base;
     return query.order('priority_score', { ascending: false, nullsFirst: false }).limit(overfetch);
   };
 
-  try {
+  const runCount = async (withStatus: boolean) => {
+    const base = supabase.from('canonical_projects').select('id', { count: 'exact', head: true });
+    return applyQueueFilters(base as never, filtersFor(withStatus)) as unknown as typeof base;
+  };
+
+  /**
+   * The eligible count, or null when it cannot be obtained.
+   *
+   * Independent of the rows on purpose: a failed count must not empty the queue,
+   * and an empty queue must not be blamed on the count.
+   */
+  const countTotal = async (): Promise<number | null> => {
+    try {
+      let { count, error } = await runCount(true);
+      if (isMissingColumn(error)) ({ count, error } = await runCount(false));
+      return error ? null : (count ?? null);
+    } catch {
+      return null;
+    }
+  };
+
+  const fetchRows = async () => {
     // Prefer the lifecycle-aware query; fall back to the pre-lifecycle shape
     // when that migration hasn't run, so the queue still works rather than
     // silently reporting zero eligible records.
-    let { data, error, count } = await run(true);
-    if (isMissingColumn(error)) ({ data, error, count } = await run(false));
-    if (error) return { rows: [], total: 0, unreachableSkipped: 0 };
+    let { data, error } = await runRows(true);
+    if (isMissingColumn(error)) ({ data, error } = await runRows(false));
+    return { data, error };
+  };
+
+  try {
+    /*
+      In PARALLEL, because they are now two independent statements and waiting for
+      one before starting the other simply adds the two latencies together.
+      Measured 2026-08-13: rows 1,183ms, count 479–3,416ms depending on cache,
+      both together 523ms.
+    */
+    const [{ data, error }, total] = await Promise.all([fetchRows(), countTotal()]);
+    // `failed`, not an empty queue. The caller has to be able to tell a seller
+    // "this did not load" instead of "there is nothing to call".
+    if (error) return { rows: [], total, unreachableSkipped: 0, failed: true };
 
     const fetched = (data ?? []) as unknown as EnrichQueueRow[];
-    if (f.includeUnreachable) return { rows: fetched.slice(0, want), total: count ?? 0, unreachableSkipped: 0 };
+    if (f.includeUnreachable) return { rows: fetched.slice(0, want), total, unreachableSkipped: 0, failed: false };
 
     /**
      * Drop the projects that are cold — built, cancelled, commissioning, or
@@ -1711,14 +1828,16 @@ export async function getEnrichmentQueue(
     const keep = fetched.filter((r) => !isColdArrival(r));
     return {
       rows: keep.slice(0, want),
-      total: count ?? 0,
+      total,
       // Only what was seen on this page. The database count is unfiltered, and
       // extrapolating a global figure from a sample would be a guess presented
       // as a number.
       unreachableSkipped: fetched.length - keep.length,
+      failed: false,
     };
   } catch {
-    return { rows: [], total: 0, unreachableSkipped: 0 };
+    // Nothing completed, so there is no count either — null, not zero.
+    return { rows: [], total: null, unreachableSkipped: 0, failed: true };
   }
 }
 

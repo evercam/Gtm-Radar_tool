@@ -43,12 +43,20 @@ export async function POST(request: Request) {
 
     const what = scope === 'all' ? 'every record' : 'newly ingested records';
     const message =
-      res.total === 0
-        ? 'Nothing to score — every record already carries a score.'
-        : `Scored and routed ${res.total.toLocaleString()} ${what === 'every record' ? 'records' : 'new records'} — ${p1.toLocaleString()} in P1.` +
-          (res.reachedCap ? ' Stopped at the per-run cap; run again to continue.' : '');
+      res.total === 0 && res.truncated
+        ? // Zero scored AND the walk died: nothing was done and the reason is known.
+          // Reporting this as "every record already carries a score" was the shape
+          // that hid the backlog.
+          `Nothing was scored — the read failed: ${res.truncated}. Run again.`
+        : res.total === 0
+          ? 'Nothing to score — every record already carries a score.'
+          : `Scored and routed ${res.total.toLocaleString()} ${what === 'every record' ? 'records' : 'new records'} — ${p1.toLocaleString()} in P1.` +
+            (res.reachedCap ? ' Stopped at the per-run cap; run again to continue.' : '') +
+            // A partial pass must say so, or the remainder is invisible until
+            // somebody counts unscored records by hand.
+            (res.truncated ? ` PARTIAL — the pass stopped early (${res.truncated}). Run again to finish the rest.` : '');
 
-    return NextResponse.json({ ok: true, message, ...res });
+    return NextResponse.json({ ok: !res.truncated, message, ...res });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const hint = /route|column|schema cache|does not exist/i.test(msg)

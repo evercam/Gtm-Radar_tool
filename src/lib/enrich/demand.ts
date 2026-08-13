@@ -302,6 +302,14 @@ export interface DemandFill {
    */
   starved: Array<{ name: string; wanted: number; scope: PersonDemand['scope'] }>;
   unreachableSkipped: number;
+  /**
+   * At least one queue read FAILED rather than returning nothing.
+   *
+   * Same reasoning as `starved` above: an empty result must not look like a full
+   * tank. A timed-out read produces zero rows, and without this the batch reports
+   * "nothing to enrich" for a database problem.
+   */
+  failed: boolean;
 }
 
 /**
@@ -323,7 +331,7 @@ export async function planDemandFill(
   const order = fillOrder(plan, slots);
   if (order.length === 0) {
     const q = await getEnrichmentQueue({ ...filters, limit: slots });
-    return { rows: q.rows, perPerson: {}, starved: [], unreachableSkipped: q.unreachableSkipped };
+    return { rows: q.rows, perPerson: {}, starved: [], unreachableSkipped: q.unreachableSkipped, failed: q.failed };
   }
 
   // Slots per person, from the interleaved order.
@@ -335,6 +343,7 @@ export async function planDemandFill(
   const perPerson: Record<string, number> = {};
   const starved: DemandFill['starved'] = [];
   let unreachableSkipped = 0;
+  let failed = false;
 
   for (const [id, count] of want) {
     const person = plan.people.find((p) => p.id === id);
@@ -354,6 +363,15 @@ export async function planDemandFill(
 
     const q = await getEnrichmentQueue(narrowed);
     unreachableSkipped += q.unreachableSkipped;
+    /*
+      A failed read must not be reported as starvation.
+
+      `starved` means "this person's scope has no inventory", which the caller
+      treats as a SOURCING problem — go find more records. A timed-out read also
+      yields zero rows and would land in the same bucket, sending someone to fix
+      coverage when the database simply refused to answer. Recorded separately.
+    */
+    if (q.failed) failed = true;
 
     let taken = 0;
     for (const r of q.rows) {
@@ -367,7 +385,7 @@ export async function planDemandFill(
     if (taken < count) starved.push({ name: person.name, wanted: count - taken, scope: person.scope });
   }
 
-  return { rows, perPerson, starved, unreachableSkipped };
+  return { rows, perPerson, starved, unreachableSkipped, failed };
 }
 
 /**

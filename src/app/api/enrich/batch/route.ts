@@ -189,6 +189,32 @@ export async function POST(request: NextRequest) {
   const rows = fill.rows;
   const unreachableSkipped = fill.unreachableSkipped;
   const { total } = await getEnrichmentQueue({ ...filters, limit: 1 });
+
+  /*
+    A failed queue read is not an empty queue, and this is the endpoint where the
+    difference costs the most.
+
+    With no rows this returned `ok: true` and "Nothing in the queue matches the
+    current policy and filters" — a confident statement about the book. A read that
+    timed out produces exactly the same zero rows, so the nightly batch would report
+    success, enrich nobody, and leave no trace that anything went wrong. Measured
+    2026-08-13, the queue query was failing roughly half the time.
+  */
+  if (rows.length === 0 && fill.failed) {
+    return NextResponse.json({
+      ok: false,
+      message:
+        'The enrichment queue could not be read, so nothing was enriched. This is a failed read, not an empty queue — retry rather than assuming there is no work.',
+      requested: 0,
+      succeeded: 0,
+      failed: 0,
+      queueTotal: total,
+      unreachableSkipped,
+      buffer,
+      results: [],
+    });
+  }
+
   if (rows.length === 0) {
     return NextResponse.json({
       ok: true,
@@ -209,7 +235,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       dryRun: true,
-      message: `${rows.length} record${rows.length === 1 ? '' : 's'} would be enriched (${total.toLocaleString()} in queue).`,
+      message:
+        `${rows.length} record${rows.length === 1 ? '' : 's'} would be enriched` +
+        // null is "we could not count", which must not print as "(0 in queue)".
+        (total === null ? ' (queue size unavailable).' : ` (${total.toLocaleString()} in queue).`),
       requested: rows.length,
       queueTotal: total,
       results: rows.map((r) => ({

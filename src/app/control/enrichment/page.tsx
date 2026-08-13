@@ -55,7 +55,7 @@ export default async function EnrichmentPage() {
     getEnrichmentRules(),
     getPrioritisationRuns(5),
   ]);
-  const [{ rows: queue, total }, runs, enrichedToday] = await Promise.all([
+  const [{ rows: queue, total, failed: queueFailed }, runs, enrichedToday] = await Promise.all([
     // The preview must apply every eligibility clause the batch endpoint
      // applies, or the queue shows work that would never actually be picked up.
     getEnrichmentQueue({
@@ -163,7 +163,14 @@ export default async function EnrichmentPage() {
       {/* spend posture */}
       <section className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
-          { label: 'In queue', value: total.toLocaleString(), note: 'eligible under policy' },
+          {
+            label: 'In queue',
+            // Same rule as "Enriched (24h)" below: a count that could not be
+            // measured is not a count of zero, and this one drives whether anyone
+            // believes there is work to do.
+            value: total === null ? '—' : total.toLocaleString(),
+            note: total === null ? 'count unavailable — not zero' : 'eligible under policy',
+          },
           {
             label: 'Enriched (24h)',
             // Not `?? 0`. A count that could not be measured is not a count of
@@ -257,7 +264,24 @@ export default async function EnrichmentPage() {
             View in records
           </Link>
         </div>
-        {queue.length === 0 ? (
+        {queueFailed ? (
+          /*
+            A failed read is NOT an empty queue.
+
+            This block used to be reached either way, so a query that timed out
+            told a seller "nothing eligible — go score your records", which is
+            advice for a completely different problem and sends them to a page that
+            will not help. Measured 2026-08-13: the queue query sat on the
+            statement timeout and returned empty roughly half the time.
+          */
+          <div className="border-danger/40 bg-danger/10 rounded-lg border p-8 text-center">
+            <p className="text-danger text-sm font-semibold">The queue could not be loaded.</p>
+            <p className="text-muted mt-1 text-[12px]">
+              This is a failed read, not an empty queue — there may well be work waiting. Reload; if it persists the
+              database is refusing the query rather than answering it.
+            </p>
+          </div>
+        ) : queue.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border-strong bg-surface p-8 text-center">
             <p className="text-sm text-muted">
               Nothing eligible. Either every record has a contact, or none is scored yet — run{' '}
@@ -315,7 +339,7 @@ export default async function EnrichmentPage() {
                 ))}
               </tbody>
             </table>
-            {total > queue.length ? (
+            {total !== null && total > queue.length ? (
               <p className="border-t border-border-base px-3 py-2 text-[11px] text-subtle">
                 Showing the top {queue.length} of {total.toLocaleString()} eligible records.
               </p>
