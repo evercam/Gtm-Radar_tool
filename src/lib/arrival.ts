@@ -5,14 +5,27 @@
  * project is worth a call is not "is it a good project" but "where is it in its
  * life, and are we in front of it or behind it".
  *
- * Two signals, because no single one covers the book. Measured over the 2,378
- * in-scope records:
+ * Two signals, because no single one covers the book. Re-measured 2026-08-13 over
+ * all 101,897 records in `canonical_projects`:
  *
- *   construction_start_date      11%   exact — months before ground-breaking
- *   estimated_completion_date    48%   how much build is left
- *   announced_date               66%   how stale the opportunity is
- *   phase only                  100%   position in the lifecycle
- *   no date at all               34%
+ *   construction_start_date      36.7%   exact — months before ground-breaking
+ *   bid_date                      0.0%   ZERO. See the dead branch note below.
+ *   estimated_completion_date    17.3%   how much build is left
+ *   announced_date               86.3%   how stale the opportunity is
+ *   current_phase                89.5%   position in the lifecycle
+ *   no date at all               11.5%
+ *   neither start nor bid date   63.3%   the phase decides these
+ *
+ * The figures this file carried before were 2,378 records with 11% start-date
+ * coverage, and they were quoted in decisions — the corpus has grown 43x since and
+ * every proportion moved. Start dates more than tripled, completion dates fell by
+ * two thirds. Anything reasoning from the old numbers was reasoning about a
+ * different book, so re-measure before quoting these too.
+ *
+ * NOT ONE RECORD carries a `bid_date`. The bid-date fallback below is therefore
+ * dead on the live corpus. It is kept because it is correct and cheap and the
+ * tender adapters could start populating the column, but it is not load-bearing
+ * today and no measurement should be attributed to it.
  *
  * EVERY RESULT CARRIES ITS BASIS. "Seven months before ground-breaking" and
  * "announced three months ago" are different claims with different confidence,
@@ -146,11 +159,9 @@ export const LATE_WINDOW_MONTHS = 3;
  * The verdict when the phase is all we have.
  *
  * `early` used to be returned here, and it was the largest untrue statement this
- * file made. Only 11% of records carry a construction start date and 34% carry no
- * date at all, so the phase-only path decides most of the book — and it was
- * answering the window question with a record that cannot answer it. Measured
- * after the window change: early 79%, which read as a book full of prime leads
- * and was mostly an assumption repeated 700 times.
+ * file made. 63.3% of records carry neither a start nor a bid date, so the
+ * phase-only path decides most of the book — and it was answering the window
+ * question with a record that cannot answer it, on 64,465 records.
  *
  * `early` now REQUIRES a date. Without one the answer is `unconfirmed`: the phase
  * says we are ahead of the work, nothing says by how long. That is a real and
@@ -175,6 +186,11 @@ export const LATE_WINDOW_MONTHS = 3;
  * what "only tell me about projects we found early" has to mean at the spend layer.
  * Every such record still sits in the table and still says why. Reverting this is
  * deleting the `started` branch below.
+ *
+ * MEASURED before shipping, because "stop spending on these" deserves a number:
+ * 1,293 records move out of the enrichable pool — 1.3% of the corpus. All of them
+ * match `%construction%` with no date; `%on site%` with no date is zero. The 73
+ * undated `%commissioning%` records were already cold and are unaffected.
  */
 function undatedVerdict(phasePosition: number, started: boolean): ArrivalVerdict {
   if (started) return 'late';

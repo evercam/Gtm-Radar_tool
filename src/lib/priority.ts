@@ -188,6 +188,11 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
     The label says stage UNKNOWN. That is an absence, not a death, and it belongs
     with its semantic twin `active — stage unstated` on 0.3 rather than beside
     `commissioning`, which is on the floor deliberately because the build is over.
+
+    Measured 2026-08-13: 25 records carry a discovered phase, so this rescues 25
+    from a pool of 101,897. Small, and worth doing anyway — they are the earliest
+    signals in the book, and the bug would have kept scaling with every new
+    discovery source.
   */
   { match: 'discovered', weight: 0.3, label: 'newly discovered — stage unknown' },
 ];
