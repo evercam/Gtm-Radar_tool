@@ -80,5 +80,59 @@ t('empty string', !cronMatches('', SUNDAY_0400));
 t('non-numeric token', !cronMatches('0 4 * * MON', MONDAY_0400));
 t('whitespace is tolerated', cronMatches('  0   4  *  *  *  ', SUNDAY_0400));
 
+/*
+  The ingest concurrency pool.
+
+  `runIngest` used to be `await Promise.all(due.map(...))` — every due source
+  upserting into canonical_projects at once. Measured 2026-08-13 from
+  `ingestion_runs`, thirteen of twenty-five sources failed on "canceling statement
+  due to statement timeout", every failure stamped 06:17: the same instant.
+  austender died on "records 0-52 of 52" and electrive on "records 0-30 of 30",
+  which is what contention looks like rather than volume.
+
+  A capped pool is easy to get subtly wrong in ways nothing would notice — a
+  dropped item just means one source silently never ingests, which is the exact
+  class of bug being fixed. So the shape is asserted here: every item runs, each
+  runs ONCE, and never more than the cap at a time.
+
+  Mirrors the implementation in src/app/api/cron/route.ts. If that changes, change
+  this with it.
+*/
+console.log('\nThe ingest pool runs every source, once, at most N at a time');
+{
+  const drain = async (n, cap) => {
+    const queue = Array.from({ length: n }, (_, i) => ({ slug: `s${i}` }));
+    const results = [];
+    let live = 0,
+      peak = 0;
+    const call = async (slug) => {
+      live += 1;
+      peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 2));
+      live -= 1;
+      return slug;
+    };
+    const worker = async () => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        results.push(await call(next.slug));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(cap, queue.length) }, worker));
+    return { ran: results.length, unique: new Set(results).size, peak };
+  };
+
+  for (const n of [0, 1, 2, 3, 25, 100]) {
+    const r = await drain(n, 2);
+    t(`${String(n).padStart(3)} sources: all ran`, r.ran === n, `ran ${r.ran}`);
+    t(`${String(n).padStart(3)} sources: none twice`, r.unique === n, `${r.unique} unique of ${r.ran}`);
+    t(`${String(n).padStart(3)} sources: never exceeded 2 at once`, r.peak <= 2, `peaked at ${r.peak}`);
+  }
+  // Promise.all([]) resolves, but a cap computed as min(2, 0) must not spawn a
+  // worker that shifts undefined off an empty queue and calls the API with it.
+  t('an empty due-list spawns no workers', (await drain(0, 2)).peak === 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

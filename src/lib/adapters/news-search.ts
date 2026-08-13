@@ -109,6 +109,28 @@ const COUNTRY_BY_REGION: Record<NewsRegion, { name: string; code: string }> = {
  * minute, which is well inside the route's ceiling.
  */
 const REQUEST_GAP_MS = 2_000;
+
+/**
+ * Wall-clock budget for one sweep.
+ *
+ * Measured 2026-08-13 with `npm run diagnose:sources`: this adapter took
+ * 125,697ms to return 200 records. Every other source in the catalog finished
+ * inside 6 seconds. The daily cron is one request against a 300-second platform
+ * limit, so a two-minute sweep spends 42% of the budget for the entire pipeline —
+ * ingest, score, prioritise, enrich, assign, export — on one news feed. On
+ * 12 August the daily run ingested seven sources and then vanished; find-a-tender
+ * has been reported `interrupted` on 10 of 14 runs.
+ *
+ * The cost is structural rather than a bug: the sweep is one request per
+ * ICP-query-region round, sequential, with REQUEST_GAP_MS between them to stay
+ * polite. More ICPs or more regions means more rounds, so this only grows.
+ *
+ * 45 seconds fits a useful number of rounds and leaves the rest of the pipeline
+ * its budget. Partial coverage of the hunts is the deliberate trade — and because
+ * a truncated sweep returns fewer records for no visible reason, it says so on the
+ * way out rather than looking like a quiet news day.
+ */
+const SWEEP_BUDGET_MS = 45_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const newsSearchAdapter: SourceAdapter = {
@@ -161,10 +183,19 @@ export const newsSearchAdapter: SourceAdapter = {
       }
     }
 
+    const startedAt = Date.now();
+    let ranOutOfTime = false;
+
     outer: {
       for (const { hunt, region, query } of rounds) {
         {
           if (leads.length >= maxRecords) break outer;
+          // Checked before the sleep and the request, so the budget is a ceiling
+          // on the sweep rather than a ceiling plus one more round.
+          if (Date.now() - startedAt >= SWEEP_BUDGET_MS) {
+            ranOutOfTime = true;
+            break outer;
+          }
           if (requests > 0) await sleep(REQUEST_GAP_MS);
           requests += 1;
 
@@ -236,6 +267,22 @@ export const newsSearchAdapter: SourceAdapter = {
           }
         }
       }
+    }
+
+    /*
+      Say when the budget cut the sweep short.
+
+      A truncated sweep returns fewer leads and looks exactly like a quiet news
+      day, which is the failure-as-a-legitimate-zero shape this codebase keeps
+      paying for. The run log is the only place anyone would notice, so it goes
+      there: `requests` of `rounds.length` names what was actually covered.
+    */
+    if (ranOutOfTime) {
+      console.warn(
+        `news-search: stopped after ${Math.round((Date.now() - startedAt) / 1000)}s — ` +
+          `covered ${requests} of ${rounds.length} ICP/region rounds and found ${leads.length} lead(s). ` +
+          `Raise SWEEP_BUDGET_MS or narrow the hunts to cover more.`
+      );
     }
 
     return leads as unknown as RawProjectRecord[];

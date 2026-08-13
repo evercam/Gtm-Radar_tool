@@ -169,7 +169,42 @@ async function runIngest(request: NextRequest, at: Date): Promise<JobResult> {
 
   if (due.length === 0) return { job: 'ingest', ok: true, message: 'No source is due — every schedule has run since its last occurrence.' };
 
-  const results = await Promise.all(due.map((c) => callInternal(request, `/api/ingest/${c.slug}`, {})));
+  /*
+    A CONCURRENCY CAP, because `Promise.all` over every due source is what was
+    losing the data.
+
+    Measured 2026-08-13 from `ingestion_runs`: thirteen of twenty-five sources
+    failed on "canceling statement due to statement timeout" during their upsert,
+    every one of them stamped 06:17 — the same instant. glenigan 11/13 runs,
+    nyc-permits 7/9, sec-edgar 7/14, chicago-permits 5/9, planning-ie 5/9. The
+    records were fetched correctly and then thrown away.
+
+    The sizes prove it is contention rather than volume: austender timed out on
+    "records 0-52 of 52" and electrive on "records 0-30 of 30". Thirty rows do not
+    time out alone. They time out waiting behind twenty-four other sources upserting
+    into the same table, against a shared statement timeout, while every row updates
+    48 indexes.
+
+    Two at a time. Not one, because the fetches are IO-bound and mostly waiting on
+    other people's APIs — serialising entirely would make a slow publisher block
+    every source behind it, and news-search alone takes 125 seconds. Not more,
+    because the whole point is to stop the pile-up at the write.
+
+    This is the fix that needs no migration. Dropping the two unread GIN indexes
+    (20260813120000) attacks the per-row cost from the other side; they compound.
+  */
+  const INGEST_CONCURRENCY = 2;
+  const results: JobResult[] = [];
+  const queue = [...due];
+  const worker = async () => {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) return;
+      results.push(await callInternal(request, `/api/ingest/${next.slug}`, {}));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(INGEST_CONCURRENCY, queue.length) }, worker));
+
   const ok = results.filter((r) => r.ok).length;
   return {
     job: 'ingest',

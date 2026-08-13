@@ -1,0 +1,54 @@
+-- Drop four indexes on canonical_projects that nothing reads.
+--
+-- WHY: thirteen of twenty-five sources fail EVERY NIGHT on "canceling statement
+-- due to statement timeout" during their upsert. The records are fetched
+-- correctly and then thrown away. Measured 2026-08-13 from `ingestion_runs`:
+-- glenigan 11/13 runs failed, sec-edgar 7/14, nyc-permits 7/9, chicago-permits
+-- 5/9, planning-ie 5/9, neso-tec 2/5, ted 2/13.
+--
+-- The sizes are the tell. austender timed out on "records 0-52 of 52" and
+-- electrive on "records 0-30 of 30". Thirty rows cannot time out on their own
+-- merit, so the 500-row chunking is working and the cost is PER ROW: this table
+-- carries 48 indexes and every upserted row updates all of them, while up to
+-- twenty-five sources upsert concurrently against a shared statement timeout.
+--
+-- Each drop below is justified by a grep, not by looking redundant. Four of the
+-- six candidates originally proposed turned out to be load-bearing and are kept:
+--
+--   KEPT idx_projects_priority            the enrichment queue orders by exactly
+--                                         (priority_score desc nulls last)
+--   KEPT idx_projects_priority_score_set  queries.ts:1003 filters
+--                                         `priority_score is not null`
+--   KEPT idx_projects_status_priority     (status, priority_score desc) is THE
+--                                         index for the queue's shape
+--   KEPT idx_projects_status_created      `status` is filtered in three places
+--
+-- 1-2. THE GIN INDEXES. Much the most expensive of the 48: GIN maintenance walks
+-- and tokenises the whole JSONB value on every insert and update, and `raw_data`
+-- is the entire source payload — the largest column on the table. A GIN index on
+-- jsonb serves only containment and json-path operators (@>, ?, ?&, ?|), and a
+-- grep across src/ for `.contains(`, `@>` and `->>` against either column returns
+-- nothing. Both are read whole, in application code, by primary key. Pure write
+-- cost, no read benefit, on the hottest write path in the system.
+--
+-- 3. idx_projects_composite on (composite_score desc). `composite_score` appears
+-- exactly once in the codebase — as a type declaration in
+-- src/lib/supabase/types.ts:191. It is never selected, filtered, ordered by, or
+-- written. The index maintains an ordering of a column nothing uses.
+--
+-- 4. idx_projects_status on (processing_status). Adapters WRITE
+-- `processing_status: 'normalized'`, but no query anywhere filters or orders by
+-- it — no `.eq`, `.in` or `.neq` against that column exists. Written-but-never-
+-- read is not a reason to index; it is a reason not to.
+--
+-- SAFE TO REVERSE: every create statement is in supabase_setup.sql and
+-- 20260725133256_init_canonical_projects.sql. Re-adding costs a rebuild. If a
+-- feature later needs one, add it back TOGETHER WITH the query that justifies it.
+--
+-- `if exists` because the names differ between installs built from the original
+-- setup script and those built from migrations.
+
+drop index if exists public.idx_projects_raw_gin;
+drop index if exists public.idx_projects_provenance_gin;
+drop index if exists public.idx_projects_composite;
+drop index if exists public.idx_projects_status;
