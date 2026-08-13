@@ -32,6 +32,9 @@ export const BAND_COLORS: Record<string, ChipClass> = {
 export const ARRIVAL_COLORS: Record<string, ChipClass> = {
   too_early: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   early: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  // Deliberately not green. It is the phase's word, not a date's, and the chip
+  // should not read as the verified thing it sits next to.
+  unconfirmed: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   on_time: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300',
   late: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
   too_late: 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
@@ -41,6 +44,7 @@ export const ARRIVAL_COLORS: Record<string, ChipClass> = {
 export const ARRIVAL_LABELS: Record<string, string> = {
   too_early: 'too early',
   early: 'early',
+  unconfirmed: 'no start date',
   on_time: 'on time',
   late: 'late',
   too_late: 'too late',

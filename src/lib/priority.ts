@@ -179,7 +179,17 @@ export const DEFAULT_PHASE_TIMING: PhaseRule[] = [
   { match: 'in-development', weight: 0.3, label: 'in development' },
   { match: 'active', weight: 0.3, label: 'active — stage unstated' },
   { match: 'pipeline', weight: 0.2, label: 'in the pipeline' },
-  { match: 'discovered', weight: 0.15, label: 'newly discovered — stage unknown' },
+  /*
+    0.3, not 0.15. At 0.15 this sat exactly on `arrival.ts`'s DEAD_BELOW floor,
+    which uses `<=` — so "newly discovered — stage unknown" was judged `too_late`,
+    `too_late` is in COLD_ARRIVALS, and the earliest signal this tool can receive
+    was excluded from enrichment and the Apollo export outright.
+
+    The label says stage UNKNOWN. That is an absence, not a death, and it belongs
+    with its semantic twin `active — stage unstated` on 0.3 rather than beside
+    `commissioning`, which is on the floor deliberately because the build is over.
+  */
+  { match: 'discovered', weight: 0.3, label: 'newly discovered — stage unknown' },
 ];
 
 export const DEFAULT_PRIORITY_CONFIG: PriorityConfig = {

@@ -209,5 +209,78 @@ console.log('\nThe selling window: 6 months before ground-breaking');
   check('and sorts above late, because it comes back', ARRIVAL_ORDER.too_early < ARRIVAL_ORDER.late);
 }
 
+console.log('\n"early" requires a date — the phase alone cannot earn it');
+{
+  /*
+    The rule stated on 2026-08-13: only tell us about a project when the
+    information arrived EARLY. The blocker was that `early` did not mean early —
+    four paths returned it with no start date at all, gated only on the phase
+    weight. Only 11% of records carry a start date, so the 79%-early book was
+    mostly this assumption repeated. `early` is now a claim a date has to support.
+  */
+  for (const phase of ['Permitting', 'Planning', 'Proposed', 'Design', 'Pipeline', 'In-Development']) {
+    const a = at({ current_phase: phase, record_type: 'project' });
+    check(`"${phase}" alone is unconfirmed, not early`, a.verdict === 'unconfirmed', `got ${a.verdict}`);
+    check(`  and does not claim to be dated`, a.dated === false);
+  }
+
+  // The weaker dates do not earn it either — neither says when ground breaks.
+  const target = at({ current_phase: 'Permitting', estimated_completion_date: inMonths(24) });
+  check('a completion target does not earn early', target.verdict === 'unconfirmed', `got ${target.verdict}`);
+  const announced = at({ current_phase: 'Planning', announced_date: inMonths(-3) });
+  check('an announcement date does not earn early', announced.verdict === 'unconfirmed', `got ${announced.verdict}`);
+
+  // A real start date inside the window still does, and is the ONLY way to.
+  check('a start date inside the window is early', at({ current_phase: 'Permitting', construction_start_date: inMonths(4) }).verdict === 'early');
+
+  /*
+    unconfirmed must NOT be cold. It is where most of the book now sits, and
+    marking it cold would stop enrichment on the majority of records — a far
+    bigger decision than making `early` honest.
+  */
+  check('unconfirmed is not cold', !isColdArrival({ current_phase: 'Permitting' }), COLD_ARRIVALS.join(','));
+  check('it outranks too_early, because it might be in the window', ARRIVAL_ORDER.unconfirmed < ARRIVAL_ORDER.too_early);
+  check('but never outranks a verified early', ARRIVAL_ORDER.early < ARRIVAL_ORDER.unconfirmed);
+}
+
+console.log('\nA started phase with no date is late, not "just started"');
+{
+  /*
+    `Under Construction` with no dates returned `on_time` — "mobilising or just
+    started". Nothing on the record says whether ground broke last month or in
+    2019, and `on_time` is not cold, so the guess in the expensive direction got
+    the record enriched and sold. It is `late`: behind the work, distance unknown.
+  */
+  for (const phase of ['Under Construction', 'Construction', 'On Site']) {
+    const a = at({ current_phase: phase, record_type: 'project' });
+    check(`"${phase}" with no date is late`, a.verdict === 'late', `got ${a.verdict}`);
+    check(`  so nothing is spent on it`, isColdArrival({ current_phase: phase }));
+  }
+
+  // A not-yet-started phase at the top of the table keeps on_time — that is the
+  // table making a positive statement, not an absence of one.
+  check('pre-construction still reads on_time', at({ current_phase: 'Pre-Construction' }).verdict === 'on_time');
+  check('and awarded still reads on_time', at({ current_phase: 'Awarded' }).verdict === 'on_time');
+  check('neither is cold', !isColdArrival({ current_phase: 'Pre-Construction' }) && !isColdArrival({ current_phase: 'Awarded' }));
+}
+
+console.log('\n"Stage unknown" is an absence, not a death');
+{
+  /*
+    `discovered` sat on weight 0.15 — exactly arrival.ts's DEAD_BELOW, which
+    compares with `<=`. So "newly discovered — stage unknown" was judged
+    `too_late`, `too_late` is cold, and the EARLIEST signal this tool can receive
+    was excluded from enrichment and the Apollo export. The label says unknown.
+  */
+  const a = at({ current_phase: 'Discovered', record_type: 'project' });
+  check('a newly discovered project is not too_late', a.verdict !== 'too_late', `got ${a.verdict}`);
+  check('it is unconfirmed — stage unknown, said plainly', a.verdict === 'unconfirmed', `got ${a.verdict}`);
+  check('and it is NOT cold', !isColdArrival({ current_phase: 'Discovered' }));
+
+  // The phases that genuinely are over stay on the floor.
+  check('commissioning is still too_late', at({ current_phase: 'Commissioning' }).verdict === 'too_late');
+  check('and on hold is still too_late', at({ current_phase: 'On Hold' }).verdict === 'too_late');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -32,8 +32,17 @@ export type ArrivalVerdict =
    * today is a call the buyer cannot act on.
    */
   | 'too_early'
-  /** Starting inside the window. This is the one to call. */
+  /**
+   * Starting inside the window, ACCORDING TO A DATE. Never inferred — see
+   * `unconfirmed`. This is the one to call.
+   */
   | 'early'
+  /**
+   * The phase puts this ahead of ground-breaking, but nothing on the record says
+   * WHEN. Worth working and worth chasing a date for; not the same claim as
+   * `early`, and no longer allowed to wear its clothes.
+   */
+  | 'unconfirmed'
   /** Mobilising or just started — still installable, no time to waste. */
   | 'on_time'
   /** Mid-build. Sellable, but the easy win is gone. */
@@ -133,6 +142,45 @@ const DEAD_BELOW = 0.15;
 export const EARLY_WINDOW_MONTHS = 6;
 export const LATE_WINDOW_MONTHS = 3;
 
+/**
+ * The verdict when the phase is all we have.
+ *
+ * `early` used to be returned here, and it was the largest untrue statement this
+ * file made. Only 11% of records carry a construction start date and 34% carry no
+ * date at all, so the phase-only path decides most of the book — and it was
+ * answering the window question with a record that cannot answer it. Measured
+ * after the window change: early 79%, which read as a book full of prime leads
+ * and was mostly an assumption repeated 700 times.
+ *
+ * `early` now REQUIRES a date. Without one the answer is `unconfirmed`: the phase
+ * says we are ahead of the work, nothing says by how long. That is a real and
+ * useful state — it is the queue of records worth chasing a start date for, which
+ * is exactly the work the interconnection queue and schedule resolution were for.
+ *
+ * `on_time` survives undated, but only for phases that have NOT started. A weight
+ * at or above 0.85 on a not-yet-started phase is the phase table explicitly saying
+ * "pre-construction" or "awarded" — a curated positive statement about position,
+ * not an absence of information. Absence is what this guards against.
+ *
+ * A STARTED phase with no date is the case this team asked about directly, and it
+ * was the worst answer in the file: `Under Construction` with no dates returned
+ * `on_time`, whose own doc comment reads "mobilising or just started". Nothing on
+ * such a record says whether ground broke last month or in 2019. Under the team's
+ * rule anything more than three months past ground-breaking is `too_late`, so
+ * claiming "just started" is a guess in the one direction that costs money —
+ * `on_time` is not cold, so the record is enriched and put in front of a seller.
+ *
+ * It resolves to `late`, which is the honest floor: work has begun, we are behind
+ * it, and how far behind is unknown. `late` is cold, so nothing is spent — which is
+ * what "only tell me about projects we found early" has to mean at the spend layer.
+ * Every such record still sits in the table and still says why. Reverting this is
+ * deleting the `started` branch below.
+ */
+function undatedVerdict(phasePosition: number, started: boolean): ArrivalVerdict {
+  if (started) return 'late';
+  return phasePosition >= 0.85 ? 'on_time' : 'unconfirmed';
+}
+
 export function arrivalFor(
   record: ArrivalInput,
   config: PriorityConfig = DEFAULT_PRIORITY_CONFIG,
@@ -184,7 +232,7 @@ export function arrivalFor(
   // silently believing either one.
   if (toStart !== null && toStart < 0 && !started) {
     return {
-      verdict: phasePosition >= 0.85 ? 'on_time' : 'early',
+      verdict: undatedVerdict(phasePosition, started),
       phaseLabel,
       phasePosition,
       leadMonths: null,
@@ -249,7 +297,9 @@ export function arrivalFor(
      */
     if (!started) {
       return {
-        verdict: phasePosition >= 0.85 ? 'on_time' : 'early',
+        // A target completion date says nothing about when ground breaks, so it
+        // does not earn `early` any more than no date at all does.
+        verdict: undatedVerdict(phasePosition, started),
         phaseLabel,
         phasePosition,
         leadMonths: toCompletion,
@@ -285,7 +335,7 @@ export function arrivalFor(
     // Age is not lead time. It only says how long this has been public, which is
     // a staleness signal — so the phase decides the verdict and the date only
     // colours it.
-    const verdict: ArrivalVerdict = phasePosition >= 0.85 ? 'on_time' : 'early';
+    const verdict: ArrivalVerdict = undatedVerdict(phasePosition, started);
     return {
       verdict,
       phaseLabel,
@@ -302,7 +352,7 @@ export function arrivalFor(
 
   if (hasPhase) {
     return {
-      verdict: phasePosition >= 0.85 ? 'on_time' : 'early',
+      verdict: undatedVerdict(phasePosition, started),
       phaseLabel,
       phasePosition,
       leadMonths: null,
@@ -356,6 +406,13 @@ export const COLD_ARRIVALS: readonly ArrivalVerdict[] = ['late', 'too_late'];
  * `unknown` is NOT cold. An undated record with no phase has not been judged, and
  * treating unjudged as cold would silently drop everything a source ships without
  * dates.
+ *
+ * `unconfirmed` is NOT cold either, and this is the load-bearing part of the
+ * verdict split. It is the state most of the book is in — a phase that says
+ * pre-construction with no date to confirm it. Marking it cold would stop
+ * enrichment on the majority of records overnight, which is a far larger decision
+ * than the one this change makes. The split exists so that `early` stops being a
+ * lie, not so that everything undated gets dropped.
  */
 export function isColdArrival(record: ArrivalInput, config: PriorityConfig = DEFAULT_PRIORITY_CONFIG, now: number = Date.now()): boolean {
   return COLD_ARRIVALS.includes(arrivalFor(record, config, now).verdict);
@@ -371,8 +428,15 @@ export function isColdArrival(record: ArrivalInput, config: PriorityConfig = DEF
 export const ARRIVAL_ORDER: Record<ArrivalVerdict, number> = {
   early: 0,
   on_time: 1,
-  too_early: 2,
-  late: 3,
-  too_late: 3,
-  unknown: 4,
+  /*
+    Above `too_early`, because it MIGHT be in the window and `too_early` is known
+    not to be. Below `on_time`, because a curated "mobilising" outranks a guess.
+    This is where most of the book now sits, and that is the honest picture: the
+    ranking says "chase a date for these" rather than "call these today".
+  */
+  unconfirmed: 2,
+  too_early: 3,
+  late: 4,
+  too_late: 4,
+  unknown: 5,
 };

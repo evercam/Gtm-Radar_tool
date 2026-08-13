@@ -57,6 +57,9 @@ const ARRIVAL_TONE: Record<ArrivalVerdict, 'success' | 'warning' | 'danger' | 'n
   // Not danger: too_early is a real project that will enter the window, so it
   // must not read like a dead one.
   too_early: 'neutral',
+  // Warning, not success: the phase says we are ahead of the work and no date
+  // confirms it. The missing date IS the thing to act on.
+  unconfirmed: 'warning',
   late: 'warning',
   too_late: 'danger',
   unknown: 'neutral',
@@ -66,6 +69,7 @@ const ARRIVAL_LABEL: Record<ArrivalVerdict, string> = {
   early: 'early',
   on_time: 'on time',
   too_early: 'too early',
+  unconfirmed: 'no start date',
   late: 'late',
   too_late: 'too late',
   unknown: 'unknown',
