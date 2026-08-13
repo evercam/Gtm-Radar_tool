@@ -17,7 +17,14 @@
  */
 
 import { arrivalFor, compareArrival, ARRIVAL_ORDER } from '../src/lib/arrival.ts';
-import { SOURCE_CATALOG, SIGNAL_LEAD, signalLeadFor } from '../src/lib/sourceCatalog.ts';
+import {
+  SOURCE_CATALOG,
+  SIGNAL_LEAD,
+  signalLeadFor,
+  SIGNAL_LEADS_IN_ORDER,
+  sourceKeysForLead,
+  allCatalogSourceKeys,
+} from '../src/lib/sourceCatalog.ts';
 
 let passed = 0,
   failed = 0;
@@ -140,6 +147,36 @@ console.log('\nsignalLead is always present, whatever the verdict');
   // Only unconfirmed records get the lead spelled out in the sentence.
   const cold = arrivalFor({ source_key: 'gem_energy_tracker', current_phase: 'Operating' });
   check('a cold record does not advertise its source lead', !/This source speaks/.test(cold.summary), cold.summary);
+}
+
+console.log('\nThe lead is usable in SQL, because source_key is a real column');
+{
+  /*
+    A verdict cannot go in a query — `arrivalFor` reads the admin-editable phase
+    table. A lead can: it is a static property of the publisher. That is what lets
+    a query ask for the earliest tier rather than sorting a page already chosen by
+    `priority_score`, which matters because 19% of the book has none.
+
+    Needs an index on (source_key, priority_score) before it is usable in the
+    enrichment queue — measured 2026-08-13, the tier query times out without one.
+  */
+  check('the tiers are ordered earliest-first', SIGNAL_LEADS_IN_ORDER[0] === 'pre_project', SIGNAL_LEADS_IN_ORDER.join(' > '));
+  check('and latest-last', SIGNAL_LEADS_IN_ORDER[SIGNAL_LEADS_IN_ORDER.length - 1] === 'existing');
+  check('every lead appears exactly once', SIGNAL_LEADS_IN_ORDER.length === Object.keys(SIGNAL_LEAD).length);
+
+  const grouped = SIGNAL_LEADS_IN_ORDER.flatMap((l) => sourceKeysForLead(l));
+  check('the tiers partition the catalog — no source lost', grouped.length === SOURCE_CATALOG.length, `${grouped.length} vs ${SOURCE_CATALOG.length}`);
+  check('and none counted twice', new Set(grouped).size === grouped.length);
+  check('every source_key is reachable from some tier', allCatalogSourceKeys().every((k) => grouped.includes(k)));
+
+  const early = sourceKeysForLead('pre_project');
+  check('the earliest tier holds the grid queues', early.includes('miso_interconnection_queue') && early.includes('neso_tec_register'), early.join(','));
+  check('and not the permits', !early.includes('chicago_building_permits'));
+
+  // A source_key in no tier must be findable, or a queue walking tiers would drop
+  // it silently — worse than mis-ordering it.
+  check('an uncatalogued key is in no tier', !grouped.includes('some_new_source'));
+  check('and allCatalogSourceKeys can exclude it', !allCatalogSourceKeys().includes('some_new_source'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -87,6 +87,36 @@ export function signalLeadFor(sourceKey: string | null | undefined): SignalLead 
   return SOURCE_CATALOG.find((s) => s.sourceKey === sourceKey)?.signalLead ?? 'announced';
 }
 
+/** The leads, earliest-speaking first. */
+export const SIGNAL_LEADS_IN_ORDER = (Object.keys(SIGNAL_LEAD) as SignalLead[]).sort(
+  (a, b) => SIGNAL_LEAD[a].order - SIGNAL_LEAD[b].order
+);
+
+/**
+ * Which `source_key`s belong to a lead — so a query can ask for one tier.
+ *
+ * This is what makes the lead usable in SQL. `arrivalFor`'s verdict cannot be
+ * expressed in a query, because it reads the admin-editable phase table, but the
+ * lead is a static property of the publisher and `source_key` is a real indexed
+ * column. So the earliest tier can be FETCHED first rather than sorted first,
+ * which matters: 19% of the book has a null `priority_score`, and a query ordered
+ * by that column with nulls last never returns those rows at all.
+ */
+export function sourceKeysForLead(lead: SignalLead): string[] {
+  return SOURCE_CATALOG.filter((s) => s.signalLead === lead).map((s) => s.sourceKey);
+}
+
+/**
+ * Every catalogued source_key — used to find rows belonging to no tier.
+ *
+ * A function, not a const: `SOURCE_CATALOG` is declared below this point, and a
+ * top-level `const` reading it would evaluate inside its temporal dead zone and
+ * throw at import. TypeScript does not catch that.
+ */
+export function allCatalogSourceKeys(): string[] {
+  return SOURCE_CATALOG.map((s) => s.sourceKey);
+}
+
 export const SOURCE_CATALOG: CatalogSource[] = [
   // Construction project databases
   {
