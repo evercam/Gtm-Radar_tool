@@ -51,6 +51,16 @@ interface OcdsTender {
   description?: string;
   value?: OcdsValue;
   items?: OcdsItem[];
+  /**
+   * `endDate` is the deadline for submitting a bid — the same thing SAM.gov
+   * calls `responseDeadLine` and ConstructConnect calls `bidDate`, so it maps to
+   * `bid_date`. Present on TENDER-stage releases only: publishers drop it once a
+   * contract is awarded, because by then it is history. Measured on
+   * find-a-tender, 3 of 6 sampled tender-stage releases carry it.
+   */
+  tenderPeriod?: { startDate?: string; endDate?: string };
+  /** When the buyer intends to decide. Later than tenderPeriod, so a fallback. */
+  awardPeriod?: { startDate?: string; endDate?: string };
 }
 interface OcdsAward {
   title?: string;
@@ -486,12 +496,29 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       const announced = r.date || contract?.dateSigned || award?.date || null;
       const start = contract?.period?.startDate || null;
       const end = contract?.period?.endDate || null;
+      /*
+        The bid deadline, which is the earliest dated signal procurement gives us.
+
+        `arrivalFor` reads bid_date only when there is no construction start date,
+        and award precedes mobilisation — so on a tender-stage notice, which has no
+        contract and therefore no start date, this is the difference between a
+        record judged against the 6-month window and one that can only say
+        "unconfirmed". 194 of find-a-tender's 534 records are tender-stage.
+
+        Award-stage releases return null here, which is correct rather than a gap:
+        publishers drop tenderPeriod once the contract is let, and arrivalFor
+        ignores a bid date more than a month past anyway.
+      */
+      const bid = r.tender?.tenderPeriod?.endDate || r.tender?.awardPeriod?.endDate || null;
 
       const presentFields: Partial<Record<CriticalField, boolean>> = {
         project_name: isPresent(title),
         project_value: value != null,
         project_location: isPresent(addr?.region) || isPresent(addr?.locality) || isPresent(addr?.countryName),
-        project_timeline: isPresent(announced) || isPresent(start),
+        // A bid deadline is a timeline, and on a tender-stage notice it is the
+        // only one there is — leaving it out understated completeness for exactly
+        // the records this adapter is most useful for.
+        project_timeline: isPresent(announced) || isPresent(start) || isPresent(bid),
         building_type: isPresent(classification?.description) || isPresent(classification?.id) || isPresent(healthLabel),
         company_name: isPresent(companyName),
         company_contact: isPresent(contact?.name),
@@ -524,7 +551,7 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
         announced_date: normalizeDate(announced),
         construction_start_date: normalizeDate(start),
         estimated_completion_date: normalizeDate(end),
-        bid_date: null,
+        bid_date: normalizeDate(bid),
         project_url: null,
         current_phase: contract ? 'Contract Awarded' : award ? 'Awarded' : 'Tender',
         estimated_value: value?.amount ?? null,

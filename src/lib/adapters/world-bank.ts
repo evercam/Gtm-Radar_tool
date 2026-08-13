@@ -207,8 +207,27 @@ export const worldBankAdapter: SourceAdapter = {
       country,
       country_code: iso2(p.countrycode),
       announced_date: normalizeDate(p.boardapprovaldate),
-      construction_start_date: normalizeDate(p.boardapprovaldate),
+      /*
+        NOT boardapprovaldate, which is what this was.
+
+        The board approving a loan is not a contractor breaking ground — a World
+        Bank project is typically approved months to years before site work, and
+        the Bank publishes no construction start date at all. Writing approval into
+        this column gave all 250 records `basis: 'construction_start'` and
+        `dated: true`, which is the strongest and most confident verdict arrivalFor
+        can return, computed from a date that describes a different event. Measured
+        2026-08-13: 200 of 200 sampled records had construction_start_date exactly
+        equal to announced_date, because both were this one field.
+
+        That is the defect this file's own header warns about — a weak basis wearing
+        a strong one's clothes — and `dated: true` made these records outrank
+        honestly-judged ones in the sort. Null is the truthful answer: the approval
+        date still lands in announced_date, where arrivalFor treats it as a
+        staleness signal and says out loud that the verdict came from the phase.
+      */
+      construction_start_date: null,
       estimated_completion_date: normalizeDate(p.closingdate),
+      // The Bank publishes no bid or tender deadline in this dataset.
       bid_date: null,
       project_url: extId ? `https://projects.worldbank.org/en/projects-operations/project-detail/${extId}` : null,
       current_phase: p.status ?? null,
