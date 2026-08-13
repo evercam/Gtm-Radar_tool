@@ -38,6 +38,7 @@
  */
 
 import { phaseTiming, DEFAULT_PRIORITY_CONFIG, type PriorityConfig } from '@/lib/priority';
+import { signalLeadFor, SIGNAL_LEAD, type SignalLead } from '@/lib/sourceCatalog';
 
 export type ArrivalVerdict =
   /**
@@ -88,6 +89,11 @@ export interface Arrival {
   summary: string;
   /** True when `leadMonths` came from a date rather than an inference. */
   dated: boolean;
+  /**
+   * How early this record's SOURCE speaks. Always set, and only load-bearing when
+   * the verdict is `unconfirmed` — see `compareArrival`.
+   */
+  signalLead: SignalLead;
 }
 
 export interface ArrivalInput {
@@ -97,6 +103,8 @@ export interface ArrivalInput {
   estimated_completion_date?: string | null;
   announced_date?: string | null;
   bid_date?: string | null;
+  /** Which publisher this came from. Decides `signalLead`. */
+  source_key?: string | null;
 }
 
 const MS_PER_MONTH = 30.44 * 86_400_000;
@@ -202,6 +210,19 @@ export function arrivalFor(
   config: PriorityConfig = DEFAULT_PRIORITY_CONFIG,
   now: number = Date.now()
 ): Arrival {
+  return { ...judge(record, config, now), signalLead: signalLeadFor(record.source_key) };
+}
+
+/**
+ * The verdict itself. Split out so `signalLead` is attached in exactly one place:
+ * this function has eight return paths and adding a field to seven of them is how
+ * you end up with one that silently lacks it.
+ */
+function judge(
+  record: ArrivalInput,
+  config: PriorityConfig = DEFAULT_PRIORITY_CONFIG,
+  now: number = Date.now()
+): Omit<Arrival, 'signalLead'> {
   const { weight: phasePosition, label: phaseLabel, started } = phaseTiming(
     record.current_phase,
     record.record_type,
@@ -367,15 +388,26 @@ export function arrivalFor(
   }
 
   if (hasPhase) {
+    const verdict = undatedVerdict(phasePosition, started);
+    /*
+      Name the source's lead when the phase is all we have.
+
+      "Issued Permit — no dates published, so this is the phase only" was true and
+      useless: it reads identically for a permit whose work starts in weeks and a
+      grid-queue entry whose project does not exist yet. The publisher is the only
+      thing that distinguishes them, so it goes in the sentence a rep reads.
+    */
+    const lead = verdict === 'unconfirmed' ? ` This source speaks ${SIGNAL_LEAD[signalLeadFor(record.source_key)].label}.` : '';
     return {
-      verdict: undatedVerdict(phasePosition, started),
+      verdict,
       phaseLabel,
       phasePosition,
       leadMonths: null,
       basis: 'phase_only',
-      summary: phaseLabel
-        ? `${phaseLabel} — no dates published, so this is the phase only.`
-        : 'Phase recorded but unrecognised, and no dates published.',
+      summary:
+        (phaseLabel
+          ? `${phaseLabel} — no dates published, so this is the phase only.`
+          : 'Phase recorded but unrecognised, and no dates published.') + lead,
       dated: false,
     };
   }
@@ -441,6 +473,33 @@ export function isColdArrival(record: ArrivalInput, config: PriorityConfig = DEF
   enter the window; one that broke ground four months ago has left it and is not
   coming back. So of the two non-ideal states, the future one is worth more.
 */
+/**
+ * Order two records by how early we are arriving — verdict first, then, for the
+ * undated majority, by how early their SOURCE speaks.
+ *
+ * `ARRIVAL_ORDER` alone cannot do this. Measured 2026-08-13, `unconfirmed` is
+ * ~63% of the book and it contains both of these:
+ *
+ *   an ISSUED Chicago building permit   work starts in weeks
+ *   a MISO Phase 1 queue entry          the project does not physically exist yet
+ *
+ * Identical verdicts, opposite ends of the lifecycle, and no date on either record
+ * to tell them apart — 50,000 permits against 3,728 queue entries, competing on
+ * equal footing for the same enrichment spend. The tie-break is the publisher,
+ * because that is the only thing left that knows.
+ *
+ * Applied ONLY within `unconfirmed`. A dated verdict already knows more than its
+ * source does, and letting the catalog reorder `early` records would put a
+ * queue entry breaking ground in three years above a permit breaking ground next
+ * month — which is the exact inversion this whole exercise exists to prevent.
+ */
+export function compareArrival(a: Arrival, b: Arrival): number {
+  const byVerdict = ARRIVAL_ORDER[a.verdict] - ARRIVAL_ORDER[b.verdict];
+  if (byVerdict !== 0) return byVerdict;
+  if (a.verdict !== 'unconfirmed') return 0;
+  return SIGNAL_LEAD[a.signalLead].order - SIGNAL_LEAD[b.signalLead].order;
+}
+
 export const ARRIVAL_ORDER: Record<ArrivalVerdict, number> = {
   early: 0,
   on_time: 1,
