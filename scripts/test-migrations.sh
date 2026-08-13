@@ -60,6 +60,13 @@ create or replace function auth.uid() returns uuid language sql stable as $$ sel
 do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated; end if;
   if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon; end if;
+  -- service_role was missing, and it is the reason this whole check has been red
+  -- since 20260811160000_disposition_rollup_rpc.sql landed on 11 August: every run
+  -- since then has failed with "role service_role does not exist" and stopped
+  -- there, so the four migrations after it were never validated by anything.
+  -- Exactly the failure the `anon` comment below describes, repeated for the next
+  -- role the migrations started using.
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role; end if;
 end $$;
 SQL
 )
@@ -71,7 +78,7 @@ fi
 
 # Prove the stubs are really there. A silently-failed setup previously showed
 # up as a bogus migration failure ("role anon does not exist").
-for role in anon authenticated; do
+for role in anon authenticated service_role; do
   if ! docker exec "$CONTAINER" psql -U postgres -d "$DB" -tAc       "select 1 from pg_roles where rolname='$role'" | grep -q 1; then
     echo "Harness setup incomplete: role '$role' was not created."
     exit 1
