@@ -91,6 +91,20 @@ export interface CanonicalProjectInsert {
  *     approach used by the reference adapter this was ported from.
  */
 export interface AdapterFetchParams {
+  /**
+   * Terms to ask the publisher for, rather than pulling the newest rows and
+   * hoping the vertical turns up.
+   *
+   * Measured on Chicago building permits: the newest 10,000 rows contained THREE
+   * records mentioning a data centre; a server-side LIKE on the same dataset
+   * returned 175 across all history. Bulk ingest is dominated by routine small
+   * works because that is what most permits are, so a book that is thin on a
+   * vertical should ask for it by name.
+   *
+   * Only honoured by adapters whose publisher supports a text filter.
+   */
+  focusTerms?: string[];
+
   since?: Date;
   until?: Date;
   page?: number;

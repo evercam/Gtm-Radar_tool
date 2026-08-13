@@ -53,6 +53,11 @@ export interface SocrataPermitConfig {
   dateField: string;
   /** Map one raw SODA row to the subset of fields we normalize. */
   extract: (raw: RawProjectRecord) => ExtractedPermit;
+  /**
+   * Free-text column to search when `focusTerms` is used. Publisher-specific:
+   * Chicago calls it work_description, NYC job_description.
+   */
+  textField?: string;
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -223,6 +228,7 @@ export const SOCRATA_PERMIT_PUBLISHERS: SocrataPermitConfig[] = [
     host: 'data.cityofnewyork.us',
     datasetId: 'ipu4-2q9a',
     dateField: 'issuance_date',
+    textField: 'job_description',
     extract: extractNyc,
   },
   {
@@ -234,6 +240,7 @@ export const SOCRATA_PERMIT_PUBLISHERS: SocrataPermitConfig[] = [
     host: 'data.cityofchicago.org',
     datasetId: 'ydr8-5enu',
     dateField: 'issue_date',
+    textField: 'work_description',
     extract: extractChicago,
   },
   {
@@ -247,6 +254,7 @@ export const SOCRATA_PERMIT_PUBLISHERS: SocrataPermitConfig[] = [
     host: 'data.calgary.ca',
     datasetId: 'c2es-76ed',
     dateField: 'applieddate',
+    textField: 'description',
     extract: extractCalgary,
   },
 ];
@@ -276,6 +284,33 @@ function makeSocrataAdapter(cfg: SocrataPermitConfig): SourceAdapter {
       const whereParts: string[] = [];
       if (params.since) whereParts.push(`${cfg.dateField} >= '${params.since.toISOString().slice(0, 19)}'`);
       if (params.until) whereParts.push(`${cfg.dateField} <= '${params.until.toISOString().slice(0, 19)}'`);
+
+      /*
+        Ask the publisher for the thing you want, instead of pulling the newest
+        rows and hoping.
+
+        Measured on Chicago: bulk-ingesting the newest 10,000 permits yielded THREE
+        records mentioning a data centre. The same dataset, queried with a LIKE on
+        the work description, returns 175 across all history — 58x, from the same
+        source, for the same one call.
+
+        That is the whole point of a server-side filter, and it generalises: any
+        vertical this book is thin on can be asked for by name rather than waited
+        for. Bulk ingest is dominated by routine small works, because that is what
+        most permits are.
+
+        Terms are upper-cased on both sides so the match is case-insensitive
+        without needing a function index, and quotes are stripped because a term
+        with an apostrophe would otherwise break out of the SoQL literal.
+      */
+      const focus = (params.focusTerms ?? []).map((t) => t.replace(/['\\]/g, '').trim()).filter(Boolean);
+      if (focus.length > 0) {
+        const field = cfg.textField;
+        if (!field) {
+          throw new Error(`${cfg.slug}: focusTerms was given but this publisher has no textField configured.`);
+        }
+        whereParts.push(`(${focus.map((t) => `upper(${field}) like '%${t.toUpperCase()}%'`).join(' OR ')})`);
+      }
 
       const rows: RawProjectRecord[] = [];
       let offset = ((params.page ?? 1) - 1) * pageSize;
