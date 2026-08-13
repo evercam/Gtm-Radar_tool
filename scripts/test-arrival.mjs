@@ -12,7 +12,7 @@
  * covering four different causes.
  */
 
-import { arrivalFor, isColdArrival, COLD_ARRIVALS } from '../src/lib/arrival.ts';
+import { arrivalFor, isColdArrival, COLD_ARRIVALS, EARLY_WINDOW_MONTHS, LATE_WINDOW_MONTHS, ARRIVAL_ORDER } from '../src/lib/arrival.ts';
 import { phaseTiming } from '../src/lib/priority.ts';
 
 let passed = 0,
@@ -40,7 +40,8 @@ console.log('\nThe strongest basis wins, and is named');
     announced_date: inMonths(-4),
   });
   check('a start date beats the weaker dates', a.basis === 'construction_start', `got ${a.basis}`);
-  check('and reports the lead time', a.verdict === 'early' && Math.round(a.leadMonths) === 7, `got ${a.leadMonths}`);
+  // 7 months out is now OUTSIDE the 6-month window — real, but not yet callable.
+  check('and reports the lead time', a.verdict === 'too_early' && Math.round(a.leadMonths) === 7, `got ${a.verdict}/${a.leadMonths}`);
   check('marked as dated', a.dated === true);
 }
 
@@ -127,7 +128,8 @@ console.log('\nThe phase overrules a date that contradicts it');
   // Once building HAS started, a past start date means what it says.
   const a = at({ current_phase: 'Under Construction', construction_start_date: inMonths(-6) });
   check('a started phase still reports elapsed build', /ground was broken/.test(a.summary), a.summary);
-  check('and that is late', a.verdict === 'late', `got ${a.verdict}`);
+  // Ground broken 6 months ago is past the 3-month late window.
+  check('and that is too late', a.verdict === 'too_late', `got ${a.verdict}`);
 }
 
 console.log('\nAn announcement dated in the future has not happened');
@@ -172,6 +174,39 @@ console.log('\nCold arrivals are neither enriched nor exported');
   */
   check('an unjudged record is not cold', !isColdArrival({}), arrivalFor({}).verdict);
   check('and a company record is not cold', !isColdArrival({ record_type: 'account' }), arrivalFor({ record_type: 'account' }).verdict);
+}
+
+console.log('\nThe selling window: 6 months before ground-breaking');
+{
+  /*
+    Set by the team on 2026-08-13 and asserted here because it is the single
+    criterion this book is ranked on. Before this, "early" meant any future date at
+    all — a project breaking ground in 2031 read the same as one starting in March.
+  */
+  check('the window is 6 months', EARLY_WINDOW_MONTHS === 6);
+  check('and late runs 3 months past the start', LATE_WINDOW_MONTHS === 3);
+
+  const v = (m) => at({ current_phase: 'Pre-Construction', construction_start_date: inMonths(m) }).verdict;
+  check('24 months out is too early', v(24) === 'too_early', v(24));
+  check('7 months out is too early', v(7) === 'too_early', v(7));
+  check('5 months out is EARLY — the window', v(5) === 'early', v(5));
+  check('1 month out is early', v(1) === 'early', v(1));
+
+  // Past the start date the phase has to agree that work began, or arrivalFor
+  // treats the date as stale and keeps the phase's word instead.
+  const started = (m) => at({ current_phase: 'Under Construction', construction_start_date: inMonths(m) }).verdict;
+  check('started 1 month ago is late', started(-1) === 'late', started(-1));
+  check('started 2 months ago is still late', started(-2) === 'late', started(-2));
+  check('started 5 months ago is too late', started(-5) === 'too_late', started(-5));
+
+  /*
+    too_early must NOT be cold. It is a real project that will enter the window,
+    and dropping it would mean never calling anything found more than six months
+    ahead — which is most of what an interconnection queue or a planning portal
+    surfaces.
+  */
+  check('too_early is not cold', !COLD_ARRIVALS.includes('too_early'), COLD_ARRIVALS.join(','));
+  check('and sorts above late, because it comes back', ARRIVAL_ORDER.too_early < ARRIVAL_ORDER.late);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

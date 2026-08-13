@@ -27,7 +27,12 @@
 import { phaseTiming, DEFAULT_PRIORITY_CONFIG, type PriorityConfig } from '@/lib/priority';
 
 export type ArrivalVerdict =
-  /** Ahead of the work. The window Evercam wants. */
+  /**
+   * Further out than the selling window. Real, and worth revisiting — but a call
+   * today is a call the buyer cannot act on.
+   */
+  | 'too_early'
+  /** Starting inside the window. This is the one to call. */
   | 'early'
   /** Mobilising or just started — still installable, no time to waste. */
   | 'on_time'
@@ -106,6 +111,28 @@ function span(n: number): string {
  */
 const DEAD_BELOW = 0.15;
 
+/*
+  The selling window, in months before ground-breaking.
+
+  Set by the team on 2026-08-13, and stated as a rule rather than left implicit in
+  three comparisons:
+
+    starting in more than 6 months   too_early  — real, but nothing to act on yet
+    starting within 6 months         EARLY      — the window; this is the call
+    already started, up to 3 months  late       — installable, the easy win is gone
+    started more than 3 months ago   too_late   — the programme has moved on
+
+  These were 1 and -2 months, which made "early" mean anything at all in the
+  future — a project breaking ground in 2031 read the same as one starting in
+  March. That is the difference between a call worth making and a call that wastes
+  both people's time, and it is the single criterion this team ranks on.
+
+  Named constants because the numbers are a business decision, not arithmetic:
+  changing the window is editing these two lines.
+*/
+export const EARLY_WINDOW_MONTHS = 6;
+export const LATE_WINDOW_MONTHS = 3;
+
 export function arrivalFor(
   record: ArrivalInput,
   config: PriorityConfig = DEFAULT_PRIORITY_CONFIG,
@@ -169,13 +196,26 @@ export function arrivalFor(
     };
   }
   if (toStart !== null) {
-    const verdict: ArrivalVerdict = toStart > 1 ? 'early' : toStart > -2 ? 'on_time' : 'late';
+    /*
+      Read against the window above, not against zero. A start date far in the
+      future is not a good lead — it is one to come back to.
+    */
+    const verdict: ArrivalVerdict =
+      toStart > EARLY_WINDOW_MONTHS
+        ? 'too_early'
+        : toStart > 0
+          ? 'early'
+          : toStart > -LATE_WINDOW_MONTHS
+            ? 'late'
+            : 'too_late';
     const summary =
-      toStart > 1
-        ? `Early — ${span(toStart)} before ground-breaking.`
-        : toStart > -2
-          ? 'On time — mobilising now.'
-          : `Late — ground was broken ${span(toStart)} ago.`;
+      toStart > EARLY_WINDOW_MONTHS
+        ? `Too early — ${span(toStart)} before ground-breaking, outside the ${EARLY_WINDOW_MONTHS}-month window.`
+        : toStart > 0
+          ? `Early — breaking ground in ${span(toStart)}. This is the window.`
+          : toStart > -LATE_WINDOW_MONTHS
+            ? `Late — ground was broken ${span(toStart)} ago, but it is still installable.`
+            : `Too late — ground was broken ${span(toStart)} ago.`;
     return { verdict, phaseLabel, phasePosition, leadMonths: toStart, basis: 'construction_start', summary, dated: true };
   }
 
@@ -184,7 +224,9 @@ export function arrivalFor(
   const toBid = months(record.bid_date, now);
   if (toBid !== null && toBid > -1) {
     return {
-      verdict: 'early',
+      // Same window: an award a year out is no more actionable than a start date
+      // a year out.
+      verdict: toBid > EARLY_WINDOW_MONTHS ? 'too_early' : 'early',
       phaseLabel,
       phasePosition,
       leadMonths: toBid,
@@ -319,10 +361,18 @@ export function isColdArrival(record: ArrivalInput, config: PriorityConfig = DEF
   return COLD_ARRIVALS.includes(arrivalFor(record, config, now).verdict);
 }
 
+/*
+  Sort order: closest to the selling window first.
+
+  `too_early` sits ABOVE `late` deliberately. A project starting in two years will
+  enter the window; one that broke ground four months ago has left it and is not
+  coming back. So of the two non-ideal states, the future one is worth more.
+*/
 export const ARRIVAL_ORDER: Record<ArrivalVerdict, number> = {
   early: 0,
   on_time: 1,
-  late: 2,
+  too_early: 2,
+  late: 3,
   too_late: 3,
   unknown: 4,
 };

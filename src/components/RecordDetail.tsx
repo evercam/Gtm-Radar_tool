@@ -54,6 +54,9 @@ function Facts({ rows }: { rows: Row[] }) {
 const ARRIVAL_TONE: Record<ArrivalVerdict, 'success' | 'warning' | 'danger' | 'neutral'> = {
   early: 'success',
   on_time: 'success',
+  // Not danger: too_early is a real project that will enter the window, so it
+  // must not read like a dead one.
+  too_early: 'neutral',
   late: 'warning',
   too_late: 'danger',
   unknown: 'neutral',
@@ -62,6 +65,7 @@ const ARRIVAL_TONE: Record<ArrivalVerdict, 'success' | 'warning' | 'danger' | 'n
 const ARRIVAL_LABEL: Record<ArrivalVerdict, string> = {
   early: 'early',
   on_time: 'on time',
+  too_early: 'too early',
   late: 'late',
   too_late: 'too late',
   unknown: 'unknown',

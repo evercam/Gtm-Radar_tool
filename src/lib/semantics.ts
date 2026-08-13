@@ -30,6 +30,7 @@ export const BAND_COLORS: Record<string, ChipClass> = {
  * built is not a lead, and if the two read alike that contradiction disappears.
  */
 export const ARRIVAL_COLORS: Record<string, ChipClass> = {
+  too_early: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   early: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   on_time: 'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300',
   late: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
@@ -38,6 +39,7 @@ export const ARRIVAL_COLORS: Record<string, ChipClass> = {
 };
 
 export const ARRIVAL_LABELS: Record<string, string> = {
+  too_early: 'too early',
   early: 'early',
   on_time: 'on time',
   late: 'late',
