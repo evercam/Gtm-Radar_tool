@@ -41,6 +41,40 @@ const PUBLIC_PATHS = [
   // them an account. It reads nothing and writes nothing — the file it
   // produces is uploaded by an admin, who is authenticated.
   '/config-questionnaire.html',
+  /*
+    OAuth discovery and the token exchange, for the MCP endpoint.
+
+    These MUST answer unauthenticated, and the reason is the whole point of the
+    subsystem: a client arrives holding no credential, and these are the paths
+    that tell it how to get one. A redirect to /signin here is not a locked door,
+    it is an HTML page where a client expected JSON — which it reports as "this
+    server has no sign-in service", with no hint that a sign-in page was the
+    thing it was handed.
+
+    That is precisely what was happening before these entries existed.
+
+    Each is safe to expose. The two metadata documents are public by
+    specification and contain only URLs derived from the host in the request.
+    Registration yields an identifier that authorizes nothing on its own. The
+    token and revoke endpoints authenticate the grant they are given — a code
+    plus its PKCE verifier, or a refresh token — which is a credential check, and
+    a cookie could not stand in for it because a machine calling from Anthropic's
+    servers has none.
+
+    Note that /oauth/authorize is deliberately NOT here. It is the consent screen,
+    it needs a signed-in person, and the sign-in redirect is exactly the right
+    behaviour for it.
+  */
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/openid-configuration',
+  '/api/oauth/metadata',
+  '/api/oauth/register',
+  '/api/oauth/token',
+  '/api/oauth/revoke',
+  // The bare-origin registration fallback, rewritten in next.config.ts. The proxy
+  // sees the pre-rewrite path, so it has to be listed under its own name.
+  '/register',
 ];
 
 export async function proxy(request: NextRequest) {

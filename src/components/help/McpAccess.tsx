@@ -79,11 +79,36 @@ export default function McpAccess() {
 
         <HelpToggle question="How do I set it up?">
           <p>
-            Two ways in, and which you want depends on whether you have the code checked out.
+            Three ways in. Pick the first one unless you have a reason not to — it is the only one with nothing to copy,
+            and the only one that reads as <em>you</em> rather than as a shared role.
           </p>
 
           <p className="mt-2">
-            <Term>1 — From this app, with a token.</Term> Nothing to install; works from anywhere.
+            <Term>1 — As a Claude connector.</Term> Nothing to paste, and nothing to install.
+          </p>
+          <ol className="mt-1 space-y-1 pl-4" style={{ listStyle: 'decimal' }}>
+            <li>
+              In Claude, open <em>Settings → Connectors → Add custom connector</em>.
+            </li>
+            <li>
+              Give it the endpoint URL — <code className="text-[11px]">https://&lt;your-app&gt;/api/mcp</code> — and
+              nothing else. Leave the OAuth client ID and secret fields empty: the connector registers itself.
+            </li>
+            <li>
+              Claude opens a page here asking you to approve it. Sign in with Google if you are not already, check what
+              it says it will read, and approve.
+            </li>
+          </ol>
+          <p className="mt-2">
+            It then reads as <Term>you</Term>, through your own role. That is the part a token cannot do: your access
+            narrows when your role narrows, it stops the moment your account is deactivated, and two colleagues
+            connecting the same workspace are not sharing one credential. An admin can see every connection, and cut any
+            of them off, under <em>Settings → Connected assistants</em>.
+          </p>
+
+          <p className="mt-3">
+            <Term>2 — From this app, with a token.</Term> For a script or a scheduled job — something that is not a
+            person and should not borrow one&rsquo;s identity.
           </p>
           <ol className="mt-1 space-y-1 pl-4" style={{ listStyle: 'decimal' }}>
             <li>
@@ -112,7 +137,7 @@ Content-Type: application/json
           </p>
 
           <p className="mt-3">
-            <Term>2 — From a checkout, with no token at all.</Term> The repository already registers a local server in{' '}
+            <Term>3 — From a checkout, with no token at all.</Term> The repository already registers a local server in{' '}
             <code className="text-[11px]">.mcp.json</code>, so an agent working inside the project picks it up on its
             own. It reads your own <code className="text-[11px]">.env.local</code>, so there is no second credential to
             create or leak.
@@ -136,6 +161,34 @@ Content-Type: application/json
 
         <HelpToggle question="It will not connect. What should I check?">
           <ul className="space-y-1">
+            <li>
+              <Term>“Couldn’t register with Evercam Radar’s sign-in service”</Term> — the connector could not find an
+              OAuth server here. Almost always the <code className="text-[11px]">mcp_oauth</code> migration has not been
+              applied yet: registration answers{' '}
+              <code className="text-[11px]">503 “Run the MCP OAuth migration first”</code> until it has. Check by opening{' '}
+              <code className="text-[11px]">/.well-known/oauth-protected-resource/api/mcp</code> in a browser — it should
+              return JSON. If it redirects to the sign-in page instead, the discovery paths are not reaching their
+              handlers.
+            </li>
+            <li>
+              <Term>Adding an OAuth Client ID does not help</Term> — and is not meant to. That field is for a server whose
+              registration is closed. This one registers connectors automatically, so leave it empty; filling it in with
+              an invented value will fail.
+            </li>
+            <li>
+              <Term>The approval page says “Unknown application”</Term> — the client registered, then its record was
+              revoked, or it is pointing at a different deployment than the one it registered with. Remove the connector
+              and add it again so it registers afresh.
+            </li>
+            <li>
+              <Term>The approval page says “Unregistered redirect address”</Term> — the address the connector asked to be
+              returned to is not one it registered. Nothing is shared when this happens. It is also what a tampered
+              authorization link looks like, so it is worth mentioning to whoever sent you the link.
+            </li>
+            <li>
+              <Term>Connected, but it stopped working after a month</Term> — a connection renews itself while in use and
+              expires thirty days after its last renewal. Reconnect; there is nothing to clean up first.
+            </li>
             <li>
               <Term>401, “send an Authorization: Bearer token”</Term> — the header is missing or malformed. It must read{' '}
               <code className="text-[11px]">Bearer gtm_…</code>, with the word Bearer.
@@ -213,6 +266,17 @@ Content-Type: application/json
             shown exactly once when created — there is no way to reveal one afterwards, which is also why a lost token is
             replaced rather than recovered. Each row records when it was last used, so an unfamiliar token is easy to
             spot.
+          </p>
+          <p className="mt-2">
+            A <Term>connected assistant</Term> is cut off the same way, under <em>Settings → Connected assistants</em>, and
+            it also stops on its own when the person&rsquo;s account is deactivated — there is no separate step to
+            remember when somebody leaves.
+          </p>
+          <p className="mt-2">
+            Connections additionally defend themselves. The credential behind one is replaced every time it renews, so a
+            copied credential works only until the real assistant next renews — and when that happens the copy is
+            detected and <em>the whole connection</em> is revoked, not just the copy. Being asked to reconnect for no
+            apparent reason is worth reporting rather than ignoring: it is the signal that this happened.
           </p>
         </HelpToggle>
       </div>

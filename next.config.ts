@@ -34,6 +34,44 @@ const CONTROL_REDIRECTS: { from: string; to: string }[] = [
   { from: "/control/kpi", to: "/" },
 ];
 
+/**
+ * OAuth discovery lives at paths the specifications fix, and none of them are
+ * where the handler wants to live.
+ *
+ * RFC 8414 and RFC 9728 both mandate a `/.well-known/...` URL. Serving those from
+ * a `.well-known` directory inside the app tree works, but scatters four related
+ * handlers across two unrelated places — so the handlers sit together under
+ * `/api/oauth/*` and the well-known URLs rewrite onto them. Rewrite, not redirect:
+ * a client fetching discovery metadata is not obliged to follow a 307, and some
+ * do not.
+ *
+ * The last entry is the one that repairs the original failure. A client that finds
+ * no metadata falls back to assuming the MCP origin is also the authorization
+ * server and posts its registration to `/register` on it. That used to hit the
+ * catch-all and redirect to the sign-in page, which surfaces to the user as
+ * "couldn't register with the sign-in service" — so it now lands on the real
+ * registration endpoint, and a client that never reads our metadata still works.
+ */
+const OAUTH_REWRITES: { source: string; destination: string }[] = [
+  { source: '/.well-known/oauth-authorization-server', destination: '/api/oauth/metadata/authorization-server' },
+  // Some clients append the resource path to the AS metadata URL too. Harmless to
+  // answer, and it costs one line against a discovery failure with no diagnostic.
+  { source: '/.well-known/oauth-authorization-server/api/mcp', destination: '/api/oauth/metadata/authorization-server' },
+  /*
+    Not an OpenID provider — there is no id_token here and no userinfo endpoint —
+    but a good number of clients probe this path first out of habit. The OAuth
+    metadata is a strict subset of what they are looking for, and the fields they
+    need for an authorization code flow are all present.
+  */
+  { source: '/.well-known/openid-configuration', destination: '/api/oauth/metadata/authorization-server' },
+  { source: '/.well-known/oauth-protected-resource/api/mcp', destination: '/api/oauth/metadata/protected-resource' },
+  // RFC 9728 puts the resource path inside the well-known path; a client that
+  // instead asks for the bare document should still be told who guards the MCP
+  // endpoint, since that is the only protected resource here.
+  { source: '/.well-known/oauth-protected-resource', destination: '/api/oauth/metadata/protected-resource' },
+  { source: '/register', destination: '/api/oauth/register' },
+];
+
 const nextConfig: NextConfig = {
   async redirects() {
     return CONTROL_REDIRECTS.map(({ from, to }) => ({
@@ -41,6 +79,9 @@ const nextConfig: NextConfig = {
       destination: to,
       permanent: true,
     }));
+  },
+  async rewrites() {
+    return OAUTH_REWRITES;
   },
 };
 

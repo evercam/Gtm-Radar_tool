@@ -60,14 +60,33 @@ export const mcpResource = (origin: string) => `${origin}${MCP_RESOURCE_PATH}`;
  * server and probing `/register` on it — which is precisely the failure this
  * whole subsystem was built to fix.
  */
-export const challenge = (origin: string, description?: string) =>
-  [
-    'Bearer',
-    `resource_metadata="${origin}${PROTECTED_RESOURCE_METADATA_PATH}"`,
-    description ? `error="invalid_token", error_description="${description.replace(/"/g, '')}"` : null,
-  ]
-    .filter(Boolean)
-    .join(' ');
+export function challenge(origin: string, invalidTokenReason?: string): string {
+  /*
+    Auth-params are COMMA-separated (RFC 7235 §4.1) and the scheme is separated
+    from the first param by a space. Joining the lot with spaces produces a header
+    a strict parser reads as one malformed parameter, and then discards — taking
+    `resource_metadata` with it and leaving the client back to guessing.
+  */
+  const params = [`resource_metadata="${origin}${PROTECTED_RESOURCE_METADATA_PATH}"`];
+
+  /*
+    `error` is included ONLY when a credential was actually presented and refused.
+    RFC 6750 §3.1 is explicit that a request carrying no authentication at all
+    should not be answered with an error code — `invalid_token` in that case tells
+    the client its token was rejected, which sends anyone debugging it looking for
+    a token that was never sent.
+
+    Quotes are stripped from the description because a quoted-string cannot
+    contain one unescaped: it would terminate the parameter early and corrupt
+    every parameter after it.
+  */
+  if (invalidTokenReason) {
+    params.push('error="invalid_token"');
+    params.push(`error_description="${invalidTokenReason.replace(/"/g, '')}"`);
+  }
+
+  return `Bearer ${params.join(', ')}`;
+}
 
 /** RFC 9728 — what the MCP endpoint publishes about who guards it. */
 export function protectedResourceMetadata(origin: string) {

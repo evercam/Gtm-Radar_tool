@@ -15,8 +15,10 @@ import { loadCustomFields, FIELD_MAP } from '@/lib/export/apolloFields';
 import { getExportFieldPolicy } from '@/lib/policies';
 import { DEFAULT_EXPORT_FIELD_POLICY } from '@/lib/export/fieldPolicy';
 import { listTokens } from '@/lib/auth/apiTokens';
+import { listConnections } from '@/lib/auth/oauth/tokens';
 import { getRoles } from '@/lib/auth/roleStore';
 import TokenManager from '@/components/settings/TokenManager';
+import ConnectionManager from '@/components/settings/ConnectionManager';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +31,11 @@ export default async function SettingsPage() {
 
   // Tokens for the HTTP MCP endpoint. A token carries a role, so the picker
   // needs the live role list rather than a hard-coded six.
-  const [{ tokens, tableMissing: tokensMissing }, { roles: allRoles }] = await Promise.all([listTokens(), getRoles()]);
+  // Connections are the other half: not minted here, but created when somebody
+  // approves a client on the consent screen. Read alongside the tokens so the two
+  // ways in are visible together rather than in separate corners of the app.
+  const [{ tokens, tableMissing: tokensMissing }, { roles: allRoles }, { connections, tableMissing: connectionsMissing }] =
+    await Promise.all([listTokens(), getRoles(), listConnections()]);
   const tokenRoles = allRoles.map((r) => ({ name: r.name, label: r.label }));
 
   // The policies moved to the pages that run them: scoring to /control/routing
@@ -158,6 +164,19 @@ export default async function SettingsPage() {
         </p>
         <div className="mt-4">
           <TokenManager tokens={tokens} roles={tokenRoles} tableMissing={tokensMissing} />
+        </div>
+      </section>
+
+      <section className="mt-12">
+        <h2 className="text-lg font-semibold text-foreground">Connected assistants</h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          Assistants people have connected through the Claude connector flow, rather than with a token. Each one reads as
+          the person who approved it — through <em>their</em> role, so it narrows when their role does and stops when
+          their account is deactivated. Add the connector by pointing it at <code>/api/mcp</code>; it registers and asks
+          for approval on its own, with nothing to paste.
+        </p>
+        <div className="mt-4">
+          <ConnectionManager connections={connections} tableMissing={connectionsMissing} />
         </div>
       </section>
 

@@ -568,3 +568,95 @@ Before: thirteen sources with `error_kind` set and `fetched` counts discarded.
 After: the upsert timeouts should be gone. The two remaining failures are network
 blocks that no migration touches — `public-contracts-scotland` and `mining-com`
 both work locally and are refused from Vercel's `cdg1` egress.
+
+---
+
+## PENDING — `20260817120000_mcp_oauth.sql`
+
+**Nothing breaks until you want to connect an assistant from claude.ai.** This is
+additive: three new tables and one function, no changes to anything that exists.
+The HTTP MCP endpoint keeps working exactly as it does now for static `gtm_`
+tokens and for a signed-in tab.
+
+What it unlocks is the other way in. claude.ai's connector UI has nowhere to paste
+a bearer token — it speaks OAuth or nothing — so before this, adding the endpoint
+as a custom connector failed with:
+
+> Couldn't register with Evercam Radar's sign-in service. You can try again, or add
+> an OAuth Client ID in the connector settings.
+
+That message is the client having probed for an OAuth server, found none, guessed
+that the MCP origin was one, posted its registration to `/register`, and been
+handed the sign-in page. Adding an OAuth Client ID does not fix it — there was no
+authorization server to have a client ID *for*.
+
+| Table | Holds | Lifetime of a row |
+|---|---|---|
+| `oauth_clients` | a registered application | until revoked |
+| `oauth_authorization_codes` | one approval in flight | 2 minutes |
+| `oauth_tokens` | access and refresh tokens | 8 hours / 30 days |
+
+Storage follows `api_tokens`: only SHA-256 hashes, RLS on with **no policy at
+all**, every access through the service role from a route that has already decided
+who is asking.
+
+### The property worth having
+
+A token from this flow belongs to a **person**, and its permissions are read from
+their role on every request rather than baked in at issue time. So narrowing a
+role narrows their connector immediately, and deactivating an account stops it —
+at the same moment it stops their browser, with nothing to remember. A shared
+`gtm_` token cannot do either, which is why handing one round to colleagues would
+have quietly collapsed the per-role model the endpoint is built on.
+
+### Registration is open, and that is deliberate
+
+Anyone can POST to `/api/oauth/register` without a credential. It has to be that
+way — a hosted client that has never heard of this deployment cannot be issued a
+client ID out of band. What it yields is an identifier that **authorizes nothing**.
+Reading a single row additionally requires an active Evercam Radar account, an
+explicit approval on the consent screen, a return to an address fixed at
+registration time, and the matching PKCE verifier. An unapproved registration is
+an inert row; the rate limit (40/hour) is there to stop those rows accumulating,
+not to protect data.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260817120000_mcp_oauth.sql
+```
+
+It is one file and it is idempotent — `create table if not exists` throughout,
+plus explicit `add column if not exists` for every column, so re-running it is
+always safe.
+
+Verified against a throwaway Postgres with all 30 prior migrations applied:
+`npm run test:migrations` passes the whole chain and re-applies it cleanly.
+
+### Confirming it worked
+
+Registration is the test, and it needs no browser:
+
+```bash
+curl -s -X POST https://<your-app>/api/oauth/register \
+  -H 'content-type: application/json' \
+  -d '{"client_name":"probe","redirect_uris":["https://example.com/cb"]}'
+```
+
+Before: `503 {"error":"temporarily_unavailable","error_description":"Run the MCP
+OAuth migration first."}` — which is also the exact 503 that surfaces in Claude as
+the "couldn't register" message above.
+
+After: `201` with a `client_id`. Delete the probe row afterwards if you like; an
+unapproved client can read nothing, so leaving it costs only the row.
+
+Then add the connector in Claude: *Settings → Connectors → Add custom connector*,
+give it `https://<your-app>/api/mcp`, and **leave the OAuth client ID and secret
+fields empty**. It registers itself and opens the approval page here.
+
+### What to watch
+
+`Settings → Connected assistants` lists every live connection with the person it
+reads as and when it was last used, and disconnects any of them. A connection that
+nobody recognises is the thing to look for; there is no legitimate way for one to
+appear without somebody having approved it while signed in.
