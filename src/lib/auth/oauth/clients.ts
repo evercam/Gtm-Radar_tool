@@ -73,14 +73,22 @@ const toClient = (row: ClientRow): OAuthClient => ({
  * gets delivered.
  *
  *   - https only, EXCEPT loopback — a desktop MCP client listens on
- *     http://127.0.0.1 on an ephemeral port, and there is no https there to
- *     have. Loopback never leaves the machine, so plaintext costs nothing.
- *   - `localhost` as a NAME is refused where the literal addresses are allowed:
- *     it resolves through whatever the host says, which is not necessarily the
- *     loopback interface. RFC 8252 §8.3 says use the literal.
+ *     http://127.0.0.1 or http://localhost on an ephemeral port, and there is no
+ *     https there to have. Loopback never leaves the machine, so plaintext costs
+ *     nothing.
  *   - No fragment, per RFC 6749 §3.1.2 — the fragment is where the code would
  *     go on an implicit flow, and a client-supplied one collides with it.
  *   - No wildcards and no credentials in the authority.
+ *
+ * `localhost` BY NAME is accepted, and it was not originally. RFC 8252 §8.3
+ * recommends the literal address because a name resolves through whatever the
+ * host says, which is not guaranteed to be the loopback interface. That is true,
+ * and refusing the name was still wrong: real clients register
+ * `http://localhost:PORT` routinely, and because validation refuses the whole
+ * array on one bad entry, a client sending both its https callback AND a
+ * localhost one had its ENTIRE registration rejected. The purism bought a
+ * marginal defence against a hostile hosts file — on a machine the attacker
+ * already controls — at the price of refusing ordinary clients outright.
  */
 export function isUsableRedirectUri(value: string): boolean {
   let url: URL;
@@ -97,7 +105,12 @@ export function isUsableRedirectUri(value: string): boolean {
   if (url.protocol === 'https:') return url.hostname.length > 0;
 
   if (url.protocol === 'http:') {
-    return url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1';
+    return (
+      url.hostname === '127.0.0.1' ||
+      url.hostname === '[::1]' ||
+      url.hostname === '::1' ||
+      url.hostname === 'localhost'
+    );
   }
 
   /*
@@ -147,7 +160,7 @@ export async function registerClient(body: RegistrationRequest): Promise<Registr
     return {
       ok: false,
       error: 'invalid_redirect_uri',
-      description: `"${bad}" is not usable: redirect URIs must be https, http on 127.0.0.1, or a reverse-domain private scheme, and must carry no fragment.`,
+      description: `"${bad}" is not usable: redirect URIs must be https, http on loopback (localhost, 127.0.0.1 or [::1]), or a reverse-domain private scheme, and must carry no fragment.`,
     };
   }
 

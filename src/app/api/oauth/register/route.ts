@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { registerClient, type RegistrationRequest } from '@/lib/auth/oauth/clients';
 import { MCP_SCOPE } from '@/lib/auth/oauth/metadata';
+import { logEvent } from '@/lib/observability/events';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,11 +31,61 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, MCP-Protocol-Version',
 };
 
+/**
+ * Every REFUSED registration is recorded, and successes deliberately are not.
+ *
+ * A success writes an oauth_clients row, which is already the record — logging it
+ * twice would just add noise. What was missing was any trace of a refusal, and
+ * that gap turned three connector failures into three rounds of guessing: the
+ * client reports only "couldn't register with the sign-in service", which is the
+ * same message whether the request was malformed, refused, or never arrived at
+ * all.
+ *
+ * With this, the three cases are finally distinguishable:
+ *
+ *   oauth_clients row      -> arrived and succeeded
+ *   app_events row         -> arrived and was refused, with the reason
+ *   neither                -> never arrived; look at DNS, the URL, or the firewall
+ *
+ * The user agent is recorded because it is the only way to tell a real client's
+ * attempt from somebody's curl while debugging. `logEvent` sanitises the detail
+ * on the way in, and swallows its own errors — a logging failure must never turn
+ * a refusal into a 500.
+ */
+async function recordRefusal(
+  request: NextRequest,
+  error: string,
+  description: string,
+  body: RegistrationRequest | null
+) {
+  await logEvent({
+    kind: 'auth',
+    name: 'oauth.register.refused',
+    ok: false,
+    detail: {
+      error,
+      description,
+      // What the client actually asked for — the usual culprit, and not sensitive:
+      // these are callback URLs, published by the client by definition.
+      clientName: typeof body?.client_name === 'string' ? body.client_name : null,
+      redirectUris: Array.isArray(body?.redirect_uris) ? body.redirect_uris : null,
+      grantTypes: Array.isArray(body?.grant_types) ? body.grant_types : null,
+      authMethod: typeof body?.token_endpoint_auth_method === 'string' ? body.token_endpoint_auth_method : null,
+      scope: typeof body?.scope === 'string' ? body.scope : null,
+      userAgent: request.headers.get('user-agent'),
+      origin: request.headers.get('origin'),
+    },
+  });
+}
+
 export async function POST(request: NextRequest) {
   let body: RegistrationRequest;
   try {
     body = (await request.json()) as RegistrationRequest;
   } catch {
+    // Logged too: a client posting something other than JSON is a real failure
+    // mode, and it is invisible from the outside.
+    await recordRefusal(request, 'invalid_client_metadata', 'The body was not JSON.', null);
     return NextResponse.json(
       { error: 'invalid_client_metadata', error_description: 'The body was not JSON.' },
       { status: 400, headers: CORS }
@@ -44,6 +95,7 @@ export async function POST(request: NextRequest) {
   const result = await registerClient(body);
 
   if (!result.ok) {
+    await recordRefusal(request, result.error, result.description, body);
     /*
       RFC 7591 §3.2.2 fixes the status codes: 400 for metadata the server will
       not accept, and it is the client's job to read `error` rather than the

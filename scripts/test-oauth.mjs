@@ -110,11 +110,18 @@ check('https with a port and query is allowed', isUsableRedirectUri('https://exa
 check('http on 127.0.0.1 is allowed, for a local client', isUsableRedirectUri('http://127.0.0.1:53682/callback'));
 check('http on [::1] is allowed', isUsableRedirectUri('http://[::1]:53682/callback'));
 /*
-  `localhost` as a NAME is refused where the literal address is allowed: it
-  resolves through whatever the host says, which is not necessarily the loopback
-  interface. RFC 8252 §8.3 says use the literal.
+  `localhost` BY NAME is accepted, and this assertion is inverted from what it
+  originally was. RFC 8252 §8.3 prefers the literal address, and refusing the name
+  outright was still wrong: real clients register http://localhost:PORT routinely,
+  and because one bad entry refuses the WHOLE array, a client sending its https
+  callback alongside a localhost one had its entire registration rejected.
 */
-check('http on localhost-by-name is refused', !isUsableRedirectUri('http://localhost:3000/callback'));
+check('http on localhost-by-name is allowed', isUsableRedirectUri('http://localhost:3000/callback'));
+check('http on localhost with no port is allowed', isUsableRedirectUri('http://localhost/callback'));
+// Still only loopback names. A non-loopback host over plaintext would put an
+// authorization code on the wire in clear.
+check('http on a lookalike host is still refused', !isUsableRedirectUri('http://localhost.evil.com/cb'));
+check('http on a host merely containing localhost is refused', !isUsableRedirectUri('http://mylocalhost/cb'));
 check('plain http elsewhere is refused', !isUsableRedirectUri('http://example.com/callback'));
 check('a fragment is refused', !isUsableRedirectUri('https://example.com/cb#part'));
 check('credentials in the authority are refused', !isUsableRedirectUri('https://user:pw@example.com/cb'));
