@@ -507,3 +507,64 @@ read can happen, so it cannot come from the encrypted store.
 
 The Control Center reports when the scheduler was last heard from, because a
 scheduler that silently stops looks exactly like a quiet period.
+
+---
+
+## PENDING — `20260813120000_drop_unread_indexes.sql`
+
+**Run this one. It is why thirteen of twenty-five sources lose their data every
+night.** Measured 2026-08-13 from `ingestion_runs`: glenigan failed 11 of 13 runs,
+sec-edgar 7 of 14, nyc-permits 7 of 9, chicago-permits 5 of 9, planning-ie 5 of 9 —
+all on `canceling statement due to statement timeout` during the upsert. The
+records are fetched correctly and then thrown away.
+
+`canonical_projects` carries 48 indexes, so every upserted row updates all 48. Two
+are GIN indexes over JSONB, one of them covering `raw_data` — the entire source
+payload and the largest column on the table. GIN maintenance walks and tokenises
+the whole value on every insert and update. That is why austender timed out on
+"records 0-52 of 52" and electrive on "records 0-30 of 30": thirty rows cannot time
+out on their own merit, so the cost is per row, not per batch.
+
+Nothing reads any of the four. Each drop is justified by a grep, and four further
+candidates were checked and KEPT because they are load-bearing — see the comments
+in the migration file itself.
+
+Paste into the Supabase SQL editor:
+
+```sql
+drop index if exists public.idx_projects_raw_gin;
+drop index if exists public.idx_projects_provenance_gin;
+drop index if exists public.idx_projects_composite;
+drop index if exists public.idx_projects_status;
+```
+
+Safe on a live table: dropping an index takes a brief lock, not a rebuild, and
+these are all non-constraint indexes. Reversible — every `create` statement is in
+`supabase_setup.sql` and `20260725133256_init_canonical_projects.sql`.
+
+Verified against a throwaway Postgres with every prior migration applied: all four
+present before, none after, the four load-bearing ones still present, 48 indexes
+down to 46. `npm run test:migrations` passes the whole chain and re-applies it
+cleanly.
+
+**It cannot be applied from a dev machine without IPv6 egress.** The pooler host
+`aws-0-eu-west-3.pooler.supabase.com` accepts TCP but no Postgres handshake
+completes — six combinations across ports 5432 and 6543, with and without explicit
+SSL, all time out at 15s while the REST API on 443 works normally. Use the SQL
+editor, or a machine that can reach the pooler.
+
+### Confirming it worked
+
+There is no need to inspect `pg_indexes`. The next scheduled ingest is the test:
+
+```sql
+select slug, started_at, fetched, inserted, error_kind, left(error, 80)
+from ingestion_runs
+where started_at > now() - interval '1 day'
+order by started_at desc;
+```
+
+Before: thirteen sources with `error_kind` set and `fetched` counts discarded.
+After: the upsert timeouts should be gone. The two remaining failures are network
+blocks that no migration touches — `public-contracts-scotland` and `mining-com`
+both work locally and are refused from Vercel's `cdg1` egress.
