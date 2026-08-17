@@ -11,7 +11,7 @@
     },
     {
       "path": "/api/cron?job=cycle",
-      "schedule": "20 * * * *"
+      "schedule": "20 14 * * *"
     }
   ]
 }
