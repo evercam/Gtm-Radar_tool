@@ -102,7 +102,23 @@ export async function proxy(request: NextRequest) {
     if (isApi) return NextResponse.next();
     const signin = request.nextUrl.clone();
     signin.pathname = '/signin';
-    signin.search = pathname === '/' ? '' : `?next=${encodeURIComponent(pathname)}`;
+    /*
+      The QUERY STRING travels with the path, not just the path.
+
+      This used to send only `pathname`, which silently discarded every
+      parameter on the way to sign-in. For most pages that is invisible — a
+      filter or a sort is nice to keep but nobody notices losing one.
+
+      For /oauth/authorize it is fatal. Claude sends a person here carrying
+      client_id, redirect_uri, state and code_challenge; dropping them means
+      that after signing in they arrive at a consent screen with nothing to
+      consent to, and are told "Missing client_id" for a link that was
+      perfectly well formed. The authorization flow cannot be restarted from
+      that page either, because the parameters only ever existed in the URL
+      the client generated.
+    */
+    const target = `${pathname}${request.nextUrl.search}`;
+    signin.search = pathname === '/' ? '' : `?next=${encodeURIComponent(target)}`;
     return NextResponse.redirect(signin);
   }
 
