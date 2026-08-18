@@ -1,10 +1,34 @@
-# Pending migrations — run in this order
+# Migrations — what to run, and what has already been run
+
+## Nothing is outstanding as of 2026-08-18
+
+Every migration in `supabase/migrations/` is applied to production. Verified
+against the live database rather than from these notes:
+
+| Applied | Verified by |
+|---|---|
+| `20260813120000_drop_unread_indexes.sql` | the ingest upsert timeouts it targets |
+| `20260817120000_mcp_oauth.sql` | `oauth_clients`, `oauth_tokens`, `oauth_authorization_codes`, `purge_expired_oauth()` |
+| `20260818120000_pipeline_rollup_rpc.sql` | `pipeline_rollup()` answers in 0.5 s |
+| `20260818160000_dashboard_rollup.sql` | `dashboard_rollup()` answers in 0.6 s |
+| `20260818180000_source_stats_rollup.sql` | `source_stats()` returns 26 sources |
+| `20260818200000_kpi_snapshots.sql` | `kpi_snapshots` holds a row per window |
+
+`20260818140000_pipeline_rollup_index.sql` was **never applied and should not
+be** — `20260818160000` supersedes it with one wider index covering both
+aggregates. Its section below is kept for the reasoning, marked as superseded.
+
+**A section headed `APPLIED` is history, not a task.** These notes were briefly
+worse than useless in the other direction: every section said `PENDING` long
+after the migration had been run, which is exactly how somebody ends up
+re-running SQL or deciding the file cannot be trusted. If you add a migration
+here, mark it `PENDING` while it is, and change the heading the day it lands.
 
 ## The order
 
-Run these top to bottom. Each file is idempotent (`create table if not
-exists`, `add column if not exists`, `create or replace`), so re-running one is
-always safe.
+If you are rebuilding from scratch, run these top to bottom. Each file is
+idempotent (`create table if not exists`, `add column if not exists`, `create or
+replace`), so re-running one is always safe.
 
 | # | File | Adds |
 |---|---|---|
@@ -510,7 +534,7 @@ scheduler that silently stops looks exactly like a quiet period.
 
 ---
 
-## PENDING — `20260813120000_drop_unread_indexes.sql`
+## APPLIED 2026-08-18 — `20260813120000_drop_unread_indexes.sql`
 
 **Run this one. It is why thirteen of twenty-five sources lose their data every
 night.** Measured 2026-08-13 from `ingestion_runs`: glenigan failed 11 of 13 runs,
@@ -571,7 +595,7 @@ both work locally and are refused from Vercel's `cdg1` egress.
 
 ---
 
-## PENDING — `20260817120000_mcp_oauth.sql`
+## APPLIED 2026-08-17 — `20260817120000_mcp_oauth.sql`
 
 **Nothing breaks until you want to connect an assistant from claude.ai.** This is
 additive: three new tables and one function, no changes to anything that exists.
@@ -663,7 +687,11 @@ appear without somebody having approved it while signed in.
 
 ---
 
-## PENDING — `20260818120000_pipeline_rollup_rpc.sql`
+## APPLIED 2026-08-18 — `20260818120000_pipeline_rollup_rpc.sql`
+
+> **Outcome:** `pipeline_rollup()` answers in 0.5 s. summarise_pipeline 64-114 s -> 1.3 s.
+> Note this migration alone was NOT enough — it needed the covering index that
+> `20260818160000` ended up providing.
 
 **Run this to make `summarise_pipeline` usable from a connector.** It is additive:
 one function and two grants, no table touched, nothing dropped. The tool keeps
@@ -735,9 +763,14 @@ paging, so it needs its own aggregate. Same shape of fix, separate change.
 
 ---
 
-## PENDING — `20260818140000_pipeline_rollup_index.sql`
+## SUPERSEDED, never applied — `20260818140000_pipeline_rollup_index.sql`
 
-**Run this too. Without it the previous migration makes things worse, not better.**
+> **Do not run this.** `20260818160000_dashboard_rollup.sql` replaced it with one
+> wider index covering both aggregates, rather than two indexes taxing every
+> upsert. Kept only because the diagnosis below — why an aggregate over a 492 MB
+> table dies at the statement timeout without a covering index — is the reasoning
+> behind every rollup index in this file. What follows was written while it was
+> still the plan.
 
 `pipeline_rollup()` is now installed and it dies at the statement timeout:
 
@@ -812,7 +845,10 @@ number that is also a different number is a bug, not a win.
 
 ---
 
-## PENDING — `20260818160000_dashboard_rollup.sql`
+## APPLIED 2026-08-18 — `20260818160000_dashboard_rollup.sql`
+
+> **Outcome:** `dashboard_rollup()` answers in 0.6 s. getBuRollup 73.7 s -> 0.9 s,
+> getPipelineRollup 74.6 s -> 4.5 s, both still totalling 109,552.
 
 **Run this one; it SUPERSEDES `20260818140000` — skip that file.** The dashboard
 does not render, and this is why.
@@ -887,7 +923,10 @@ functions must also be **rewired to call the RPC** — the migration alone is in
 
 ---
 
-## PENDING — `20260818180000_source_stats_rollup.sql`
+## APPLIED 2026-08-18 — `20260818180000_source_stats_rollup.sql`
+
+> **Outcome:** getSourceStats 75.8 s -> 1.4 s, 26 sources and 109,552 records unchanged.
+> The two `test:mcp` failures it caused are gone — the suite is green.
 
 **The last whole-table walk.** `getSourceStats` reads all 109,552 rows to produce
 about 25 — measured at 75.8 s and 97.3 s. It is the slowest read in the app, it
@@ -946,7 +985,10 @@ not a win — and the null-completeness note above is exactly where that would s
 
 ---
 
-## PENDING — `20260818200000_kpi_snapshots.sql`
+## APPLIED 2026-08-18 — `20260818200000_kpi_snapshots.sql`
+
+> **Outcome:** the team KPI row reads from a snapshot in 0.2 s instead of 35-46 s,
+> and the card carries "as of HH:MM" so stored figures are never shown as live.
 
 **The last slow thing on the dashboard.** After the rollups landed, `getKpiSummary`
 became the slowest read by a wide margin — and the KPI row sits at the *top* of the
