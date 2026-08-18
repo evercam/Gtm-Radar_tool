@@ -107,6 +107,38 @@ async function HandoverSection() {
   return <HandoverByPerson breakdown={await getHandoverByPerson()} />;
 }
 
+/**
+ * Stock per business unit, and the BU x vertical grid.
+ *
+ * THESE TWO ARE WHY THE DASHBOARD STOPPED RENDERING. Both walk the whole
+ * canonical_projects table, and measured against 109,552 rows they take 73.7 s
+ * and 74.6 s. They sat in the blocking `Promise.all` below, which waits for the
+ * slowest — so the page could not paint for over a minute and read as permanently
+ * loading, while the four panels above them were ready in under two seconds.
+ *
+ * Moving them behind a boundary is the same decision this file already made for
+ * KpiSection, for the same reason, and it is worth being clear that it is not a
+ * performance fix: the queries are still slow, and 20260818160000_dashboard_rollup
+ * is what makes them fast. This is the structural half — after it, no single slow
+ * read can blank the whole dashboard again, which is the property that survives the
+ * next slow query somebody adds.
+ *
+ * They are also the last two panels on the page, so streaming them costs nothing
+ * visually: nobody is looking at the bottom of the dashboard in the first second.
+ *
+ * No try/catch, like HandoverSection: getBuRollup returns `truncated: true` on
+ * failure and getPipelineRollup returns an empty array. Neither throws, so a catch
+ * here would catch nothing.
+ */
+async function BuSection() {
+  const buRollup = await getBuRollup();
+  return <BuStats rows={buRollup.rows} truncated={buRollup.truncated} />;
+}
+
+async function PipelineSection() {
+  return <PipelineRollup rows={await getPipelineRollup()} />;
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -127,13 +159,19 @@ export default async function DashboardPage({
     );
   }
 
-  let rollup, buRollup, topLeads, disposition, migrated;
+  /*
+    What the page shell genuinely cannot render without. Measured: 0.4 s, 1.1 s and
+    0.7 s — so this resolves in about a second.
+
+    getPipelineRollup and getBuRollup used to be the first two entries here, at
+    73.7 s and 74.6 s, and a Promise.all waits for the slowest. They now stream
+    behind their own boundaries further down; see BuSection and PipelineSection.
+  */
+  let topLeads, disposition, migrated;
   try {
     // Positional destructuring: the names and the promises must stay in step, or
     // every value after an insertion is silently the wrong one.
-    [rollup, buRollup, topLeads, disposition, migrated] = await Promise.all([
-      getPipelineRollup(),
-      getBuRollup(),
+    [topLeads, disposition, migrated] = await Promise.all([
       getTopPriorityLeads(8),
       getDispositionRollup(),
       hasPriorityColumns(),
@@ -444,12 +482,16 @@ export default async function DashboardPage({
           subtitle="Where the stock is, and whether anyone's scope covers it"
         />
         <CardBody>
-          <BuStats rows={buRollup.rows} truncated={buRollup.truncated} />
+          <Suspense fallback={<PanelSkeleton rows={5} />}>
+            <BuSection />
+          </Suspense>
         </CardBody>
       </Card>
 
       <div className="mb-10">
-        <PipelineRollup rows={rollup} />
+        <Suspense fallback={<PanelSkeleton rows={6} />}>
+          <PipelineSection />
+        </Suspense>
       </div>
 
       {/* Completeness reference */}
