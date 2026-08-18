@@ -118,6 +118,67 @@ const COLUMNS =
   'queued_at, enrichment_started_at, prepared_at, call_prep_generated_at, contacted_at, ' +
   'converted_at, lost_at';
 
+/**
+ * Raised by a slice so one failed read fails the whole summary.
+ *
+ * Necessary because the slices run under Promise.all: returning a partial result
+ * from a failed slice would produce a summary that is quietly missing a sixteenth
+ * of the book, which is precisely the class of bug the ORDER BY note in
+ * getKpiSummary describes. Better to report nothing than a confident undercount.
+ */
+class KpiReadError extends Error {}
+
+/**
+ * Sixteen disjoint, exhaustive slices of the uuid space.
+ *
+ * The correctness argument, because it is the whole basis for reading in parallel:
+ * every uuid begins with one of the sixteen hex digits, each slice covers exactly
+ * one of them, so every row falls in exactly one slice. Bounds are `id > from` and
+ * `id <= to` — half-open on the low side so a boundary id belongs to one slice and
+ * not two. The first slice has an empty `from` (no lower bound) and the last has an
+ * empty `to` (no upper bound), so nothing at either end escapes.
+ *
+ * Sixteen because v4 uuids are uniform, which puts ~6,850 of 109,552 rows in each —
+ * about seven pages, walked concurrently instead of 110 pages walked in series. An
+ * uneven distribution would only unbalance the slices, never lose a row: coverage
+ * comes from the bounds, not from the assumption.
+ */
+const SLICES: { from: string; to: string }[] = Array.from({ length: 16 }, (_, i) => {
+  const boundary = (n: number) => `${n.toString(16)}0000000-0000-0000-0000-000000000000`;
+  return {
+    from: i === 0 ? '' : boundary(i),
+    to: i === 15 ? '' : boundary(i + 1),
+  };
+});
+
+/**
+ * How many slices are read at once. MEASURED, not chosen.
+ *
+ * All sixteen at once saturates the database and individual queries start
+ * exceeding the 8-second statement timeout about four pages deep:
+ *
+ *   16 concurrent   52.3 s   4 of 16 slices failed,  98,002 of 109,552 rows
+ *    6 concurrent   30.1 s   0 failed,              109,552 rows
+ *    4 concurrent   37.8 s   0 failed,              109,552 rows
+ *    1 (sequential) 101.6 s  0 failed,              109,552 rows
+ *
+ * Six, then. The failures at sixteen are the important row of that table: a
+ * timeout throws, and a thrown read empties the whole summary, so being greedy
+ * here does not trade speed for accuracy — it trades a slow dashboard for a blank
+ * one.
+ */
+const SLICE_CONCURRENCY = 6;
+
+/**
+ * True for the errors worth trying again.
+ *
+ * A statement timeout under concurrent load is transient by definition: the same
+ * query on a quieter database succeeds, which is exactly what the numbers above
+ * show. Anything else — a missing table, a bad column — will fail identically on a
+ * second attempt, and retrying it would only double the wait before reporting it.
+ */
+const isTransient = (message: string) => /statement timeout|canceling statement|57014|timeout/i.test(message);
+
 const stageIndex = (stage: JourneyStage): number => JOURNEY_STAGES.indexOf(stage);
 
 /**
@@ -180,41 +241,100 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
 
   try {
     const service = getServiceSupabase();
-    const rows: Record<string, unknown>[] = [];
 
     /*
-      Keyset pagination. An index would not have helped here.
+      Keyset pagination, walked in PARALLEL over disjoint slices of the id space.
 
-      Measured against 88,126 rows: `created_at >= 30 days ago` matches ALL 88,126
-      of them, so the predicate has no selectivity and there is nothing for an
-      index to narrow. What made this slow was the offset — page 1 took 1.4s and
-      page 40 timed out at 8.3s, because `.range(40000, 40999)` asks Postgres to
-      produce and discard the first 40,000 rows every time. `id > last` costs the
-      same at any depth.
+      An index would not have helped: `created_at >= 30 days ago` matches all
+      109,552 rows, so the predicate has no selectivity and there is nothing to
+      narrow. Offset paging was the first fault and keyset fixed it — page 1 took
+      1.4 s and page 40 timed out at 8.3 s under `.range()`, because that asks
+      Postgres to produce and discard the first 40,000 rows every time, while
+      `id > last` costs the same at any depth.
+
+      What remained was that keyset is inherently SEQUENTIAL: each page needs the
+      previous page's last id, so 110 pages meant 110 round trips one after
+      another. Measured at 92.7 s and 101.6 s for a 30-day window — and the KPI row
+      sits at the top of the dashboard, so that is what somebody stares at.
+
+      The fix is to make the walk parallel without making it wrong. Every row still
+      arrives exactly once, because the slices are disjoint and exhaustive by
+      construction — see SLICES — and each slice is walked by keyset within itself.
+      Nothing about the aggregation below changed.
+
+      Deliberately NOT rewritten as a SQL aggregate, though that is what fixed the
+      dashboard rollups. The arithmetic under this loop derives a funnel position, a
+      furthest-stage-reached fan-out, an SLA breach against wall-clock now, contact
+      latency percentiles and three separate breakdowns — several hundred lines
+      whose failure mode is a plausible wrong number, not an error. This file
+      already carries the scar of exactly that (see the ORDER BY note below: every
+      KPI was silently a random 72% sample). Reading the same rows faster risks
+      nothing; recomputing them in SQL risks everything, for a further ~10 s.
     */
-    let after = '';
-    for (let guard = 0; guard < 200; guard += 1) {
-      let q = service.from('canonical_projects').select(COLUMNS).gte('created_at', since);
-      if (window.ownerId) q = q.eq('owner_user_id', window.ownerId);
-      if (after) q = q.gt('id', after);
-      // ORDER BY is load-bearing. Each `.range()` is a separate query, and
-      // without a total order Postgres may return rows in a different order
-      // each time, so the same row lands in two pages while another lands in
-      // none. Measured on 44,191 records: 12,535 missed and 12,535 counted
-      // twice — every KPI on the dashboard was a random 72% sample, which is
-      // why the funnel could report 0 exports while two leads were exported.
-      const { data, error } = await q.order('id', { ascending: true }).limit(1000);
+    /** Reads one page, retrying once if the database was merely busy. */
+    const readPage = async (after: string, to: string) => {
+      for (let attempt = 0; ; attempt += 1) {
+        let q = service.from('canonical_projects').select(COLUMNS).gte('created_at', since);
+        if (window.ownerId) q = q.eq('owner_user_id', window.ownerId);
+        // `gt` on the low bound rather than `gte`, so the boundary id belongs to
+        // exactly one slice and cannot be counted twice.
+        if (after) q = q.gt('id', after);
+        if (to) q = q.lte('id', to);
 
-      if (error) {
-        return { ...EMPTY, tableMissing: /does not exist|schema cache/i.test(error.message) };
+        // ORDER BY is load-bearing. Each request is a separate query, and
+        // without a total order Postgres may return rows in a different order
+        // each time, so the same row lands in two pages while another lands in
+        // none. Measured on 44,191 records: 12,535 missed and 12,535 counted
+        // twice — every KPI on the dashboard was a random 72% sample, which is
+        // why the funnel could report 0 exports while two leads were exported.
+        const { data, error } = await q.order('id', { ascending: true }).limit(1000);
+
+        if (!error) return (data ?? []) as unknown as Record<string, unknown>[];
+        // One retry, and only for a timeout. Anything else fails the same way twice.
+        if (attempt >= 1 || !isTransient(error.message)) throw new KpiReadError(error.message);
       }
-      const page = (data ?? []) as unknown as Record<string, unknown>[];
-      if (page.length === 0) break;
-      rows.push(...page);
-      // Advance the cursor, or the next request returns this same page forever.
-      after = String(page[page.length - 1].id);
-      if (page.length < 1000) break;
-    }
+    };
+
+    const walkSlice = async (slice: { from: string; to: string }) => {
+      const rows: Record<string, unknown>[] = [];
+      let after = slice.from;
+      // Generous: a slice holds ~1/16th of the table, so ~7 pages. A runaway guard,
+      // not a limit anyone should reach.
+      for (let guard = 0; guard < 200; guard += 1) {
+        const page = await readPage(after, slice.to);
+        if (page.length === 0) break;
+        rows.push(...page);
+        // Advance the cursor, or the next request returns this same page forever.
+        after = String(page[page.length - 1].id);
+        if (page.length < 1000) break;
+      }
+      return rows;
+    };
+
+    /*
+      A fixed pool rather than Promise.all over all sixteen: the concurrency is the
+      whole point of the measurement above, and mapping every slice at once is what
+      produced the timeouts. Workers pull the next slice as they finish, so six
+      requests are in flight and no more.
+    */
+    const pages: Record<string, unknown>[][] = [];
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: SLICE_CONCURRENCY }, async () => {
+        while (next < SLICES.length) {
+          const index = next;
+          next += 1;
+          pages[index] = await walkSlice(SLICES[index]);
+        }
+      })
+    );
+
+    /*
+      Order across slices is irrelevant: every consumer below is a counter, a map
+      or a push onto hoursToContact, which is reduced to percentiles. There is no
+      position-dependent logic to preserve.
+    */
+    const rows = pages.flat();
 
     /** Where records stand now — one bucket per journey stage, plus LOST. */
     const funnelCounts = new Map<string, number>();
@@ -371,7 +491,19 @@ export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<K
         .slice(0, 15),
       tableMissing: false,
     };
-  } catch {
+  } catch (err) {
+    /*
+      A read failure is only `tableMissing` when the message says so.
+
+      This distinction was previously made at the call site, where the query error
+      was inspected directly; slices throw now, so it has to be made here instead.
+      Losing it would report a statement timeout as a missing migration, and the
+      dashboard renders a "run the migration" notice for that — sending somebody to
+      the SQL editor to fix a table that is present and fine.
+    */
+    if (err instanceof KpiReadError) {
+      return { ...EMPTY, tableMissing: /does not exist|schema cache/i.test(err.message) };
+    }
     return { ...EMPTY, tableMissing: true };
   }
 }
