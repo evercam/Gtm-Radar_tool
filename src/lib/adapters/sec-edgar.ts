@@ -26,6 +26,44 @@ import type { CriticalField } from '@/lib/supabase/types';
  * that honestly; EDGAR hits are early signals that require enrichment.
  */
 
+/**
+ * What an 8-K item code actually means, for the ones that matter here.
+ *
+ * `items` is returned on 100% of 8-K hits and was being passed through raw: the
+ * description read "Items 1.01, 2.02, 7.01", which tells a seller nothing. The codes
+ * are the only thing in this index that says what a filing IS, and they separate a
+ * facility announcement from a quarterly earnings release that merely mentions data
+ * centres. Measured 2026-08-18 over 600 stored records:
+ *
+ *   no items at all (10-K, 10-Q)                    50%
+ *   PURE earnings — 2.02 and nothing substantive      9%   noise
+ *   substantive (1.01 / 2.01 / 8.01 / 7.01)          39%
+ *   material definitive agreement (1.01)             11%   the contract signal
+ *
+ * Only the codes worth naming are here. An unmapped code keeps its number rather
+ * than being dropped, because a code we have not classified is still evidence.
+ */
+const ITEM_LABELS: Record<string, string> = {
+  '1.01': 'material definitive agreement',
+  '1.02': 'agreement terminated',
+  '2.01': 'acquisition or disposition completed',
+  '2.02': 'earnings release',
+  '2.03': 'new debt obligation',
+  '3.02': 'unregistered equity sale',
+  '5.02': 'director or officer change',
+  '7.01': 'Reg FD disclosure',
+  '8.01': 'other events',
+  '9.01': 'financial statements and exhibits',
+};
+
+/**
+ * Items that suggest a filing is about a DEAL or an EVENT rather than a results
+ * announcement. A filing carrying none of these, but carrying 2.02, is a quarterly
+ * earnings release that matched the full-text query because earnings discuss data
+ * centres — real, and not a project.
+ */
+const SUBSTANTIVE_ITEMS = new Set(['1.01', '2.01', '7.01', '8.01']);
+
 const DEFAULT_BASE_URL = 'https://efts.sec.gov/LATEST/search-index';
 const USER_AGENT = 'Evercam Source Hub research@evercam.io';
 const DEFAULT_QUERY = '"new facility" OR "data center" OR gigafactory OR "manufacturing plant"';
@@ -179,6 +217,25 @@ export const secEdgarAdapter: SourceAdapter = {
 
     const projectName = company ? `${company} — ${form ?? 'SEC'} facility/capex disclosure` : `SEC filing ${extId}`;
 
+    /*
+      The item codes, read rather than passed through.
+
+      `hasAgreement` is the filing saying a material definitive agreement exists —
+      for a facility disclosure that is usually the construction or lease contract,
+      and it is the strongest signal this index gives. `earningsOnly` is the
+      opposite: a 2.02 with nothing substantive alongside it, which is a quarterly
+      results release that matched the query because results talk about data centres.
+      Measured over 600 stored records: 11% and 9% respectively.
+
+      Neither is used to DISCARD anything. A 10-K has no items at all (50% of the
+      corpus) and is still a real capex disclosure, and an earnings release can carry
+      a genuine announcement. They change what the record SAYS, not whether it exists.
+    */
+    const items = (s.items ?? []).filter((c): c is string => typeof c === 'string');
+    const itemSet = new Set(items);
+    const hasAgreement = itemSet.has('1.01');
+    const earningsOnly = itemSet.has('2.02') && !items.some((c) => SUBSTANTIVE_ITEMS.has(c));
+
     // Honest completeness: FTS gives name, company, location, timeline only —
     // NOT value, building type, contact, sqft, funding, etc.
     const presentFields: Partial<Record<CriticalField, boolean>> = {
@@ -211,7 +268,17 @@ export const secEdgarAdapter: SourceAdapter = {
       project_type: s.sics?.[0] ? `SIC ${s.sics[0]}` : null,
       building_type: null,
       description:
-        [s.form, s.file_description, s.items?.length ? `Items ${s.items.join(', ')}` : null]
+        [
+          s.form,
+          s.file_description,
+          // Named, not numbered. "Items 1.01, 2.02" is a code a seller has to look
+          // up; "material definitive agreement; earnings release" is the reason to
+          // read the filing or skip it.
+          items.length ? items.map((c) => ITEM_LABELS[c] ?? `item ${c}`).join('; ') : null,
+          earningsOnly
+            ? 'Likely a quarterly earnings release rather than a project announcement — it matched the search because results discuss facilities.'
+            : null,
+        ]
           .filter(Boolean)
           .join(' — ') || null,
       address_line1: null,
@@ -224,7 +291,21 @@ export const secEdgarAdapter: SourceAdapter = {
       estimated_completion_date: null,
       bid_date: null,
       project_url: filingUrl(hit._id, cik),
-      current_phase: null,
+      /*
+        A PHASE, rather than null on all 4,047 records.
+
+        With no phase, `arrivalFor` fell through to the record-type default for
+        'filing' — an arbitrary weight that happens to land on `unconfirmed`. The
+        verdict was therefore right by accident and untunable: an admin editing the
+        phase table could not move it, because it was not reading the table at all.
+
+        A filing that mentions building a facility IS an announcement, so it says so.
+        'Announcement' is a phase the table already matches ("announced only", weight
+        0.3), which keeps the same practical verdict while making it explicit and
+        editable. A material definitive agreement is further along — the contract for
+        the thing exists — so it maps to 'Awarded'.
+      */
+      current_phase: hasAgreement ? 'Awarded' : 'Announcement',
       estimated_value: null,
       estimated_value_currency: null,
       company_name_raw: company,

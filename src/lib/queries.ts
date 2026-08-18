@@ -7,7 +7,7 @@ import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/p
 import { recordReachable } from '@/lib/export/reachability';
 import { planSupply, adviseRebalance, type SupplyPlan, type RebalanceAdvice } from '@/lib/supply';
 import { getDemandPlan } from '@/lib/enrich/demand';
-import { isColdArrival } from '@/lib/arrival';
+import { isColdArrival, arrivalFor, compareArrival } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
 import { logEventAsync } from '@/lib/observability/events';
@@ -1900,8 +1900,32 @@ export async function getEnrichmentQueue(f: EnrichQueueFilters = {}): Promise<En
      * only 11 were in-scope construction projects.
      */
     const keep = fetched.filter((r) => !isColdArrival(r));
+    /*
+      Ordered by how early we are arriving, then by how early the SOURCE speaks.
+
+      `compareArrival` sorts on the verdict first and only uses the source lead to
+      break ties WITHIN `unconfirmed` — the 63% of the book that carries no usable
+      date, where an issued building permit and a grid-queue entry are otherwise
+      indistinguishable. A dated verdict already knows more than its publisher does,
+      so it is never reordered by the catalog.
+
+      MEASURED 2026-08-18, and worth being straight about: on the current window this
+      changes nothing. The queue comes back 58 pre_project/`unconfirmed` and 42 GEM
+      `on_time`, and `on_time` outranks `unconfirmed` regardless of source — which is
+      correct, because a phase table explicitly saying "pre-construction" beats a
+      prior about what the publisher usually carries. It bites when one window holds
+      undated records from sources of different lead, which is the direction the book
+      moves as the interconnection queues grow.
+
+      The sort is stable, so records with an equal verdict and lead keep the
+      priority_score order the query returned them in.
+    */
+    const ordered = keep
+      .map((r) => ({ r, a: arrivalFor(r) }))
+      .sort((x, y) => compareArrival(x.a, y.a))
+      .map((x) => x.r);
     return {
-      rows: keep.slice(0, want),
+      rows: ordered.slice(0, want),
       total,
       // Only what was seen on this page. The database count is unfiltered, and
       // extrapolating a global figure from a sample would be a guess presented
