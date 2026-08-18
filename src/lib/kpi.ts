@@ -1,5 +1,6 @@
 import 'server-only';
 import { getServiceSupabase, isSupabaseServiceConfigured } from '@/lib/supabase/server';
+import { acrossSlices, isTransientReadError } from '@/lib/db/slices';
 import {
   isLeadStatus,
   JOURNEY_STAGES,
@@ -136,56 +137,12 @@ const COLUMNS =
  */
 class KpiReadError extends Error {}
 
-/**
- * Sixteen disjoint, exhaustive slices of the uuid space.
- *
- * The correctness argument, because it is the whole basis for reading in parallel:
- * every uuid begins with one of the sixteen hex digits, each slice covers exactly
- * one of them, so every row falls in exactly one slice. Bounds are `id > from` and
- * `id <= to` — half-open on the low side so a boundary id belongs to one slice and
- * not two. The first slice has an empty `from` (no lower bound) and the last has an
- * empty `to` (no upper bound), so nothing at either end escapes.
- *
- * Sixteen because v4 uuids are uniform, which puts ~6,850 of 109,552 rows in each —
- * about seven pages, walked concurrently instead of 110 pages walked in series. An
- * uneven distribution would only unbalance the slices, never lose a row: coverage
- * comes from the bounds, not from the assumption.
- */
-const SLICES: { from: string; to: string }[] = Array.from({ length: 16 }, (_, i) => {
-  const boundary = (n: number) => `${n.toString(16)}0000000-0000-0000-0000-000000000000`;
-  return {
-    from: i === 0 ? '' : boundary(i),
-    to: i === 15 ? '' : boundary(i + 1),
-  };
-});
-
-/**
- * How many slices are read at once. MEASURED, not chosen.
- *
- * All sixteen at once saturates the database and individual queries start
- * exceeding the 8-second statement timeout about four pages deep:
- *
- *   16 concurrent   52.3 s   4 of 16 slices failed,  98,002 of 109,552 rows
- *    6 concurrent   30.1 s   0 failed,              109,552 rows
- *    4 concurrent   37.8 s   0 failed,              109,552 rows
- *    1 (sequential) 101.6 s  0 failed,              109,552 rows
- *
- * Six, then. The failures at sixteen are the important row of that table: a
- * timeout throws, and a thrown read empties the whole summary, so being greedy
- * here does not trade speed for accuracy — it trades a slow dashboard for a blank
- * one.
- */
-const SLICE_CONCURRENCY = 6;
-
-/**
- * True for the errors worth trying again.
- *
- * A statement timeout under concurrent load is transient by definition: the same
- * query on a quieter database succeeds, which is exactly what the numbers above
- * show. Anything else — a missing table, a bad column — will fail identically on a
- * second attempt, and retrying it would only double the wait before reporting it.
- */
-const isTransient = (message: string) => /statement timeout|canceling statement|57014|timeout/i.test(message);
+/*
+  The slice partition, the measured concurrency and the transient-error test all
+  live in lib/db/slices.ts now. getRoutingPreview needs the same three, and a uuid
+  partition duplicated across two files is exactly the drift this codebase keeps
+  paying for — the correctness argument has to be true in one place.
+*/
 
 const stageIndex = (stage: JourneyStage): number => JOURNEY_STAGES.indexOf(stage);
 
@@ -383,7 +340,7 @@ async function computeKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiS
 
       The fix is to make the walk parallel without making it wrong. Every row still
       arrives exactly once, because the slices are disjoint and exhaustive by
-      construction — see SLICES — and each slice is walked by keyset within itself.
+      construction — see lib/db/slices.ts — and each slice is walked by keyset within itself.
       Nothing about the aggregation below changed.
 
       Deliberately NOT rewritten as a SQL aggregate, though that is what fixed the
@@ -415,7 +372,7 @@ async function computeKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiS
 
         if (!error) return (data ?? []) as unknown as Record<string, unknown>[];
         // One retry, and only for a timeout. Anything else fails the same way twice.
-        if (attempt >= 1 || !isTransient(error.message)) throw new KpiReadError(error.message);
+        if (attempt >= 1 || !isTransientReadError(error.message)) throw new KpiReadError(error.message);
       }
     };
 
@@ -435,23 +392,9 @@ async function computeKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiS
       return rows;
     };
 
-    /*
-      A fixed pool rather than Promise.all over all sixteen: the concurrency is the
-      whole point of the measurement above, and mapping every slice at once is what
-      produced the timeouts. Workers pull the next slice as they finish, so six
-      requests are in flight and no more.
-    */
-    const pages: Record<string, unknown>[][] = [];
-    let next = 0;
-    await Promise.all(
-      Array.from({ length: SLICE_CONCURRENCY }, async () => {
-        while (next < SLICES.length) {
-          const index = next;
-          next += 1;
-          pages[index] = await walkSlice(SLICES[index]);
-        }
-      })
-    );
+    // A bounded pool, not Promise.all over all sixteen — see lib/db/slices.ts for
+    // the measurement that decided the number.
+    const pages = await acrossSlices(walkSlice);
 
     /*
       Order across slices is irrelevant: every consumer below is a counter, a map

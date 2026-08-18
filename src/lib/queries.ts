@@ -1,4 +1,5 @@
 import { getReadSupabase, getServiceSupabase } from '@/lib/supabase/server';
+import { acrossSlices } from '@/lib/db/slices';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
@@ -494,41 +495,86 @@ export async function getRoutingPreview(
     let total = 0;
     let scoreSum = 0;
 
-    for (let from = 0; from < 1_000_000; from += 1000) {
-      const { data, error } = await supabase
-        .from('canonical_projects')
-        .select(SCORING_COLUMNS)
-        // Ordered for the same reason as the scoring pass above: an unordered
-        // `.range()` walk repeats rows and skips others, which here would make
-        // the lane and band preview disagree with what the run actually does.
-        .order('id', { ascending: true })
-        .range(from, from + 999);
-      /*
-        Was `return empty` — a preview showing zeros of everything, which reads as
-        "nothing would be routed" rather than "the scan failed". Keep what was
-        counted and say it is incomplete.
-      */
-      if (error) {
-        partial = `the scan stopped after ${total} records (${error.message})`;
-        break;
+    /*
+      Read in parallel slices of the id space, not as one sequential walk.
+
+      Measured before this: 130.1 s, and it stopped at 91,000 of 109,552 records on
+      `canceling statement due to statement timeout`. So the routing preview — the
+      screen somebody checks before re-routing the whole book — was built on 83% of
+      it. It said so, which is the only reason this was a slowness complaint rather
+      than a correctness incident.
+
+      Offset paging was the reason it degraded: `.range(from, from + 999)` asks
+      Postgres to produce and discard everything before the window, so the pages get
+      slower the deeper they go until one exceeds the statement timeout. Each slice
+      now walks its own range by keyset, and six run at once — see lib/db/slices.ts
+      for why sixteen slices and six at a time, and for the argument that no row is
+      read twice.
+
+      NOT pushed into SQL, unlike the dashboard rollups. `toScoredRecord` and
+      `routeRecord` are the scoring and routing engines; re-expressing them in SQL
+      would mean two definitions of what a lane is, obliged to agree forever. This
+      screen exists to preview what the real run will do, so it has to use the same
+      code the real run uses.
+
+      The accumulators below are shared across slices, which is safe: each page's
+      rows are folded synchronously, so no two slices interleave a read and write of
+      the same counter.
+    */
+    await acrossSlices(async (slice) => {
+      let after = slice.from;
+
+      for (let guard = 0; guard < 200; guard += 1) {
+        let q = supabase
+          .from('canonical_projects')
+          .select(SCORING_COLUMNS)
+          // Ordered for the same reason as the scoring pass above: without a total
+          // order a page boundary repeats rows and skips others, which here would
+          // make the lane and band preview disagree with what the run actually does.
+          .order('id', { ascending: true })
+          .limit(1000);
+        if (after) q = q.gt('id', after);
+        if (slice.to) q = q.lte('id', slice.to);
+
+        const { data, error } = await q;
+
+        /*
+          Was `return empty` — a preview showing zeros of everything, which reads as
+          "nothing would be routed" rather than "the scan failed". Keep what was
+          counted and say it is incomplete.
+
+          Recorded rather than thrown, and only the FIRST cause is kept: with slices
+          running concurrently a single timeout would otherwise be overwritten by the
+          next one and the count in the message would race.
+        */
+        if (error) {
+          partial ??= `the scan stopped after ${total} records (${error.message})`;
+          return;
+        }
+
+        const rows = (data ?? []) as unknown as Record<string, unknown>[];
+        if (rows.length === 0) return;
+
+        for (const r of rows) {
+          const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
+          const d = routeRecord(record, rules);
+          const key = `${d.route}/${d.stage}`;
+          lane.set(key, (lane.get(key) ?? 0) + 1);
+          rule.set(d.reason, (rule.get(d.reason) ?? 0) + 1);
+          band.set(priority.band, (band.get(priority.band) ?? 0) + 1);
+          if (record.bu) facet.bu.add(record.bu);
+          if (record.icp_code) facet.icp.add(record.icp_code);
+          if (record.vertical) facet.vertical.add(record.vertical);
+          if (record.record_type) facet.recordType.add(record.record_type);
+          if (record.country) facet.country.add(record.country);
+          scoreSum += priority.score;
+          total += 1;
+        }
+
+        if (rows.length < 1000) return;
+        after = String(rows[rows.length - 1].id);
       }
-      for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
-        const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
-        const d = routeRecord(record, rules);
-        const key = `${d.route}/${d.stage}`;
-        lane.set(key, (lane.get(key) ?? 0) + 1);
-        rule.set(d.reason, (rule.get(d.reason) ?? 0) + 1);
-        band.set(priority.band, (band.get(priority.band) ?? 0) + 1);
-        if (record.bu) facet.bu.add(record.bu);
-        if (record.icp_code) facet.icp.add(record.icp_code);
-        if (record.vertical) facet.vertical.add(record.vertical);
-        if (record.record_type) facet.recordType.add(record.record_type);
-        if (record.country) facet.country.add(record.country);
-        scoreSum += priority.score;
-        total += 1;
-      }
-      if (!data || data.length < 1000) break;
-    }
+    });
 
     const byLane = Array.from(lane.entries())
       .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
