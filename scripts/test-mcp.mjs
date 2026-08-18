@@ -92,13 +92,14 @@ function send(method, params) {
   });
 }
 
-const payload = (res) => {
-  try {
-    return JSON.parse(res?.result?.content?.[0]?.text ?? 'null');
-  } catch {
-    return null;
-  }
-};
+/*
+  Reads `structuredContent`, the machine-readable half of a tool result.
+
+  The text block is markdown now — a table meant to be read — so parsing it back
+  into objects would assert against the PRESENTATION, and a column reorder would
+  fail these pipeline tests for no reason.
+*/
+const payload = (res) => res?.result?.structuredContent ?? null;
 
 console.log('Handshake');
 {

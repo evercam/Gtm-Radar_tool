@@ -6,6 +6,7 @@ import { can } from '@/lib/auth/roles';
 import { verifyAccessToken } from '@/lib/auth/oauth/tokens';
 import { challenge } from '@/lib/auth/oauth/metadata';
 import { MCP_TOOLS, findTool, toolInputSchema, McpToolError } from '@/lib/mcp/tools';
+import { presentResult, presentError } from '@/lib/mcp/present';
 
 export const dynamic = 'force-dynamic';
 /** Some tools page the whole table; the default platform ceiling is too tight. */
@@ -288,13 +289,40 @@ export async function POST(request: NextRequest) {
 
     try {
       const result = await tool.run(parsed.data as Record<string, unknown>);
-      return rpcResult(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+      /*
+        Markdown to read, the object to compute with.
+
+        The text block is what an assistant actually renders, and pretty-printed
+        JSON made it paraphrase four hundred lines of quoted keys into a list of
+        its own invention. Markdown is already the list, and it lifts into a
+        table, a document or a spreadsheet without being reinterpreted.
+
+        `structuredContent` carries the exact values alongside — full precision,
+        every field, including the ones the table omits as redundant. So nothing
+        is lost: a caller building a spreadsheet from real numbers has them, and a
+        client that does not understand the field simply ignores it.
+      */
+      return rpcResult(id, {
+        content: [{ type: 'text', text: presentResult(result) }],
+        structuredContent: result,
+      });
     } catch (err) {
       const payload =
         err instanceof McpToolError
           ? { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) }
           : { code: 'unexpected', message: err instanceof Error ? err.message : String(err) };
-      return rpcResult(id, { isError: true, content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] });
+      /*
+        A failure carries the object too, not just the sentence.
+
+        `code` is the part an agent acts on — `assignee_ambiguous` means "ask which
+        person", `not_found` means "stop". Rendering only prose would leave it
+        matching on wording, which changes.
+      */
+      return rpcResult(id, {
+        isError: true,
+        content: [{ type: 'text', text: presentError(payload) }],
+        structuredContent: payload,
+      });
     }
   }
 

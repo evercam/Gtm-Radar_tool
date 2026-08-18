@@ -31,6 +31,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { isSupabaseServiceConfigured } from '@/lib/supabase/server';
 import { MCP_TOOLS, McpToolError } from '@/lib/mcp/tools';
+// Shared with the HTTP transport on purpose: the two must not render the same
+// result differently, or a question answered here and there gives two answers.
+import { presentResult, presentError } from '@/lib/mcp/present';
 
 /*
   stdout is the protocol channel.
@@ -55,14 +58,18 @@ for (const tool of MCP_TOOLS) {
     async (args) => {
       try {
         const result = await tool.run(args ?? {});
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        // Markdown to read, the object to compute with — see the HTTP route for
+        // why both, rather than one or the other.
+        return { content: [{ type: 'text', text: presentResult(result) }], structuredContent: result };
       } catch (err) {
         // Uniform shape so an agent can recover instead of guessing.
         const payload =
           err instanceof McpToolError
             ? { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) }
             : { code: 'unexpected', message: err instanceof Error ? err.message : String(err) };
-        return { isError: true, content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+        // The object travels with the sentence: `code` is what an agent branches
+        // on, and matching on prose would break the moment the wording changed.
+        return { isError: true, content: [{ type: 'text', text: presentError(payload) }], structuredContent: payload };
       }
     }
   );
