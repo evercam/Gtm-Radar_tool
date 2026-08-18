@@ -809,3 +809,78 @@ npm run test:mcp
 The four `summarise_pipeline` failures should pass, and the tool should answer in
 around a second rather than 114. **Check `records` still reads 109,552** — a faster
 number that is also a different number is a bug, not a win.
+
+---
+
+## PENDING — `20260818160000_dashboard_rollup.sql`
+
+**Run this one; it SUPERSEDES `20260818140000` — skip that file.** The dashboard
+does not render, and this is why.
+
+`app/page.tsx:134` blocks on a `Promise.all` of five reads and waits for the
+slowest. Measured against 109,552 rows:
+
+| Function | Time |
+|---|---|
+| `getPipelineRollup` | **74.6 s** — walks the whole table |
+| `getBuRollup` | **73.7 s** — walks the whole table |
+| `getTopPriorityLeads` | 0.4 s |
+| `getDispositionRollup` | 1.1 s — already an RPC with indexes |
+| `hasPriorityColumns` | 0.7 s |
+
+So the shell cannot paint for ~75 seconds and the page reads as permanently
+loading. `getDispositionRollup` at 1.1 s is the same table and the same shape of
+question, already fixed on 11 August — this applies that fix to the two left
+walking.
+
+`getKpiSummary` is 42 s and is **not** why nothing renders: it already sits behind
+a Suspense boundary and streams in late. Worth fixing next, separately.
+
+### Why it supersedes 20260818140000
+
+That migration added a 7-column index for `pipeline_rollup` alone. A second index
+for the dashboard's columns would mean two indexes maintained on every upsert, on
+a table whose nightly ingest is already timing out on writes. This uses **one wider
+index covering both aggregates** — ~20 MB and one write cost instead of ~23 MB and
+two — and drops the narrow one if it exists. Since 140000 was never applied, there
+is nothing to undo.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818160000_dashboard_rollup.sql
+```
+
+`create index if not exists` and `create or replace function`, so re-running is
+safe. Building the index locks writes on the table briefly — wait if the nightly
+ingest is running.
+
+### What is verified, and what is not
+
+Verified against a throwaway Postgres with the full chain and synthetic rows: the
+migration applies, is idempotent, and both aggregates' arithmetic agrees with the
+table they count — 20,000 rows in, 20,000 counted by each, and `reachable` matching
+a direct count exactly.
+
+**NOT verified: that the query planner will choose the index.** The synthetic table
+is mostly nulls, so it is a few MB rather than 492 MB, and a sequential scan
+genuinely wins there — the sandbox cannot reproduce the row width that makes an
+index-only scan the cheap option. On the real table the ratio is ~20 MB of index
+against ~492 MB of heap, which the cost model should favour heavily, but that is
+reasoning rather than a measurement.
+
+So the production check is the test, and it is one command:
+
+```sql
+explain (analyze, buffers) select * from dashboard_rollup();
+```
+
+Want to see `Index Only Scan using idx_projects_rollup_wide`. If it says `Seq Scan`
+and takes 8 s, the index is not being chosen and the honest next step is not a
+third index — it is a small summary table maintained on write, because a
+134-column, 492 MB table should not be scanned to answer this at all.
+
+### Confirming it worked
+
+The dashboard should paint in a second or two rather than hanging. Note the two
+functions must also be **rewired to call the RPC** — the migration alone is inert.
