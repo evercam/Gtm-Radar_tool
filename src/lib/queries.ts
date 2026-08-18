@@ -949,7 +949,108 @@ export async function getAccounts(q: AccountsQuery = {}): Promise<AccountsResult
   return { rows: (data ?? []) as AccountViewRow[], total: count ?? 0 };
 }
 
+/**
+ * One row per distinct combination, as `dashboard_rollup()` returns it.
+ *
+ * Shared by the two rollups below because both are folds over the SAME grouping —
+ * getPipelineRollup wants (bu, vertical, contact_status) and getBuRollup wants bu
+ * with reachable/assigned/exported. One aggregate, two folds, so the table is read
+ * once rather than twice.
+ */
+export interface DashboardRollupRow {
+  bu: string | null;
+  vertical: string | null;
+  contact_status: string | null;
+  reachable: boolean;
+  assigned: boolean;
+  exported: boolean;
+  n: number;
+}
+
+/**
+ * Folds the aggregate onto (bu, vertical, contact_status).
+ *
+ * Exported for one reason: this is where a silent wrong number would live. The
+ * aggregate splits each combination further by reachable/assigned/exported, so up
+ * to eight rows collapse into one key here — and a fold that overwrote instead of
+ * summing would report an eighth of the stock while looking entirely plausible on
+ * screen. Pure, so it can be tested without a database. See scripts/test-rollup.mjs.
+ */
+export function foldPipelineRollup(rows: DashboardRollupRow[]): PipelineRollupRow[] {
+  const grouped = new Map<string, PipelineRollupRow>();
+  for (const r of rows) {
+    const bu = r.bu as string;
+    const vertical = r.vertical as string;
+    const contact_status = r.contact_status as string;
+    const key = `${bu}|${vertical}|${contact_status}`;
+    const existing = grouped.get(key);
+    if (existing) existing.count += r.n;
+    else grouped.set(key, { bu, vertical, contact_status, count: r.n });
+  }
+  return Array.from(grouped.values());
+}
+
+/**
+ * Folds the aggregate onto business unit.
+ *
+ * `waiting` is derived rather than grouped in SQL because it is exactly
+ * `reachable and not assigned` — adding a grouping level for something computable
+ * would widen the aggregate for nothing. `activeAssignees` is left at zero; the
+ * caller fills it from the roster, which is a different table.
+ */
+export function foldBuRollup(rows: DashboardRollupRow[]): Map<string, BuRollupRow> {
+  const acc = new Map<string, BuRollupRow>();
+  for (const r of rows) {
+    const bu = r.bu ?? 'unknown';
+    const row = acc.get(bu) ?? { bu, total: 0, reachable: 0, assigned: 0, exported: 0, waiting: 0, activeAssignees: 0 };
+    row.total += r.n;
+    if (r.reachable) row.reachable += r.n;
+    if (r.assigned) row.assigned += r.n;
+    if (r.exported) row.exported += r.n;
+    if (r.reachable && !r.assigned) row.waiting += r.n;
+    acc.set(bu, row);
+  }
+  return acc;
+}
+
+/**
+ * The aggregate, or null when it cannot be had.
+ *
+ * Null covers "the migration is not applied" and any other failure alike, because
+ * both lead to the same place: the caller walks the table instead. That fallback is
+ * why this returns null rather than throwing — a slow correct dashboard beats an
+ * error page, and beats a panel that renders zero as though it were an answer.
+ */
+async function fetchDashboardRollup(): Promise<DashboardRollupRow[] | null> {
+  try {
+    const { data, error } = await getServiceSupabase().rpc('dashboard_rollup');
+    if (error || !Array.isArray(data)) return null;
+    return (data as Record<string, unknown>[]).map((r) => ({
+      bu: (r.bu as string) ?? null,
+      vertical: (r.vertical as string) ?? null,
+      contact_status: (r.contact_status as string) ?? null,
+      reachable: Boolean(r.reachable),
+      assigned: Boolean(r.assigned),
+      exported: Boolean(r.exported),
+      // bigint arrives as a string over PostgREST; Number() before arithmetic or
+      // the totals become concatenated digits.
+      n: Number(r.n) || 0,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 export async function getPipelineRollup(): Promise<PipelineRollupRow[]> {
+  /*
+    Counted in the database. This walked the whole table to produce ~96 grouped
+    counts — 74.6 seconds measured against 109,552 rows, and the dashboard waited
+    for it. Nothing about 96 counts requires 109,552 rows to cross the wire.
+  */
+  const rollup = await fetchDashboardRollup();
+  if (rollup) return foldPipelineRollup(rollup);
+
+  // Fallback: walk the table. Slow, and correct — see fetchDashboardRollup.
   const supabase = await getReadSupabase();
   const counts = new Map<string, PipelineRollupRow>();
   const PAGE = 1000; // Supabase caps each response at 1000 rows — page through all.
@@ -1007,6 +1108,46 @@ export async function getBuRollup(): Promise<{ rows: BuRollupRow[]; truncated: b
   const MAX_PAGES = 200;
   let truncated = false;
 
+  /**
+   * Coverage, from the roster rather than from the leads.
+   *
+   * Hoisted out of the two paths below so both get it — it was previously written
+   * once at the end of the walk, and the aggregate path would have silently
+   * reported every BU as stranded without it.
+   *
+   * An assignee with an EMPTY bu list is unrestricted on that axis and therefore
+   * covers every BU. Reading empty as "covers nothing" would report the whole book
+   * as unworkable.
+   */
+  const applyCoverage = async (rows: Map<string, BuRollupRow>) => {
+    try {
+      const { data } = await supabase.from('assignees').select('bu, is_active').eq('is_active', true);
+      const active = (data ?? []) as { bu: string[] | null }[];
+      for (const row of rows.values()) {
+        row.activeAssignees = active.filter((a) => !a.bu?.length || a.bu.includes(row.bu)).length;
+      }
+    } catch {
+      // Leave the counts at zero rather than inventing coverage.
+    }
+  };
+
+  /*
+    Counted in the database — 73.7 seconds measured against 109,552 rows before
+    this, walking the whole table for a handful of per-BU totals while the dashboard
+    waited on it.
+
+    `waiting` is derived here rather than grouped in SQL because it is exactly
+    `reachable and not assigned`, and adding a grouping level for something the
+    caller can compute would widen the aggregate for nothing.
+  */
+  const rollup = await fetchDashboardRollup();
+  if (rollup) {
+    const folded = foldBuRollup(rollup);
+    await applyCoverage(folded);
+    return { rows: [...folded.values()].sort((a, b) => b.total - a.total), truncated: false };
+  }
+
+  // Fallback: walk the table. Slow, and correct — see fetchDashboardRollup.
   for (let page = 0; ; page += 1) {
     if (page >= MAX_PAGES) {
       truncated = true;
@@ -1044,20 +1185,8 @@ export async function getBuRollup(): Promise<{ rows: BuRollupRow[]; truncated: b
     if (batch.length < PAGE) break;
   }
 
-  /*
-    Coverage, from the roster rather than from the leads. An assignee with an
-    EMPTY bu list is unrestricted on that axis and therefore covers every BU —
-    reading empty as "covers nothing" would report the whole book as stranded.
-  */
-  try {
-    const { data } = await supabase.from('assignees').select('bu, is_active').eq('is_active', true);
-    const active = (data ?? []) as { bu: string[] | null }[];
-    for (const row of acc.values()) {
-      row.activeAssignees = active.filter((a) => !a.bu?.length || a.bu.includes(row.bu)).length;
-    }
-  } catch {
-    // Leave the counts at zero rather than inventing coverage.
-  }
+  // The same coverage pass the aggregate path uses, so the two cannot disagree.
+  await applyCoverage(acc);
 
   return { rows: [...acc.values()].sort((a, b) => b.total - a.total), truncated };
 }
