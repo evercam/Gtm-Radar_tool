@@ -18,6 +18,7 @@
  * invented ones — including the award-stage release that correctly yields null.
  */
 
+import { readFileSync } from 'node:fs';
 import { findATenderAdapter } from '../src/lib/adapters/ocds.ts';
 import { worldBankAdapter } from '../src/lib/adapters/world-bank.ts';
 import { arrivalFor } from '../src/lib/arrival.ts';
@@ -137,6 +138,40 @@ console.log('\nWorld Bank board approval is not a construction start');
     /target rather than time remaining|inferred from the phase|no dates published/.test(a.summary),
     a.summary
   );
+}
+
+console.log('\nA throttled publisher is paged to what its window affords');
+{
+  /*
+    Find a Tender allows 12 requests per 120 seconds. Paced at 10s, a run issues
+    requests at t=0,10,…,110 — twelve inside the window — so the thirteenth lands on
+    its boundary and is refused with a 429 asking for a 120-second wait, longer than
+    fetchWithRetry will sit on a Retry-After.
+
+    `maxPages` used to come from the record budget alone: 5,000 records at 100 a page
+    capped to 40. So every scheduled run walked into that thirteenth request. Measured
+    2026-08-18, find-a-tender reported `fetched=0` with a 429 and 10 of its previous
+    14 runs were killed as `interrupted` — 40 pages at 10s each is 400 seconds of
+    deliberate sleeping against a 300-second function limit. One number, both symptoms.
+  */
+  const ceilingFor = (intervalMs) => (intervalMs ? Math.max(1, Math.floor(120_000 / intervalMs)) : 40);
+  const pagesFor = (intervalMs, maxRecords, pageSize) =>
+    Math.min(ceilingFor(intervalMs), 40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
+
+  check('a 10s pace affords 12 pages, not 40', pagesFor(10_000, 5000, 100) === 12, String(pagesFor(10_000, 5000, 100)));
+  check('and that fits inside the function budget', (pagesFor(10_000, 5000, 100) - 1) * 10 < 240);
+  // The old value is the regression to guard against.
+  check('the record budget alone would have asked for 40', Math.min(40, Math.ceil(5000 / 100) + 2) === 40);
+  check('an unthrottled publisher is unaffected', pagesFor(null, 5000, 250) === 22, String(pagesFor(null, 5000, 250)));
+  check('a small budget still wins over the ceiling', pagesFor(10_000, 100, 100) === 3, String(pagesFor(10_000, 100, 100)));
+  check('the ceiling never drops below one page', ceilingFor(600_000) === 1);
+
+  // Source-level: a mid-pull failure must keep what earlier pages returned.
+  const src = readFileSync('src/lib/adapters/ocds.ts', 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  check('a mid-pull failure keeps the pages already collected', /if \(releases\.length === 0\) throw new Error\(why\)/.test(code));
+  check('and stops rather than throwing them away', /console\.warn\([\s\S]{0,240}?break;/.test(code), 'no break following the warn');
+  check('the first page still throws, since nothing was collected', /releases\.length === 0/.test(code));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

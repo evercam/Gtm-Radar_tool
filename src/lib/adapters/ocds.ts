@@ -370,9 +370,33 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
       const releases: OcdsRelease[] = [];
       const stage = cfg.supportsStages ? params.stage : undefined;
       let url: string | undefined = cfg.buildUrl(cfg.fmtDate(from, 'from'), cfg.fmtDate(to, 'to'), stage);
-      // Enough pages to reach the budget, with a hard ceiling so a misconfigured
-      // budget cannot walk a vendor’s whole index.
-      const maxPages = params.dryRun ? 1 : Math.min(40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
+      /*
+        Enough pages to reach the budget, with a hard ceiling so a misconfigured
+        budget cannot walk a vendor's whole index — and, for a throttled publisher,
+        a ceiling set by the THROTTLE rather than by the record budget.
+
+        Find a Tender allows 12 requests per 120 seconds. Paced at 10s a run issues
+        requests at t=0,10,…,110 — twelve inside the window — so the thirteenth
+        lands exactly on its boundary and is refused. `maxPages` was 40 (5,000
+        records / 100 per page, capped), so every scheduled run marched straight
+        into that thirteenth request and got a 429 asking for a 120-second wait,
+        which is longer than fetchWithRetry will sit on a Retry-After.
+
+        Measured on 2026-08-18: find-a-tender reported `fetched=0` with a 429, and
+        10 of its last 14 runs before that were killed as `interrupted` — 40 pages
+        at 10s each is 400 seconds of deliberate sleeping against a 300-second
+        function limit. Both symptoms are this one number.
+
+        So the pages are bounded by what the throttle window actually affords.
+        Twelve pages of 100 is 1,200 records a run, which is the honest ceiling for
+        this publisher; going deeper needs several runs, not a longer sleep.
+      */
+      const throttleCeiling = cfg.minRequestIntervalMs
+        ? Math.max(1, Math.floor(120_000 / cfg.minRequestIntervalMs))
+        : 40;
+      const maxPages = params.dryRun
+        ? 1
+        : Math.min(throttleCeiling, 40, Math.max(1, Math.ceil(maxRecords / Math.max(1, pageSize)) + 2));
 
       for (let i = 0; i < maxPages && url && releases.length < maxRecords; i++) {
         // Between pages only — never before the first, so a one-page scheduled
@@ -386,7 +410,23 @@ function makeOcdsAdapter(cfg: OcdsPublisherConfig): SourceAdapter {
           { timeoutMs: 20_000 }
         );
         if (!res.ok) {
-          throw new Error(`${cfg.slug} OCDS request failed: HTTP ${res.status} ${res.statusText}${await detail(res)}`);
+          /*
+            Keep what the earlier pages returned.
+
+            This threw unconditionally, so a throttled thirteenth page discarded
+            twelve good ones — which is why a run that had already collected 1,200
+            releases reported `fetched=0`. The publisher was rate-limiting a deep
+            pull, not refusing to answer; treating those as the same thing turned a
+            partial success into a total failure every night.
+
+            The FIRST page is different: nothing was collected, so there is no
+            partial success to preserve and the caller needs a real error rather
+            than a silent zero.
+          */
+          const why = `${cfg.slug} OCDS request failed: HTTP ${res.status} ${res.statusText}${await detail(res)}`;
+          if (releases.length === 0) throw new Error(why);
+          console.warn(`${why} — stopping after ${i} page(s) and keeping ${releases.length} release(s).`);
+          break;
         }
         let pkg: OcdsPackage;
         try {
