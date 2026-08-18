@@ -732,3 +732,80 @@ pass. The totals must not change; if `records` no longer equals the row count in
 **`list_sources` is NOT fixed by this** and still takes ~73 s. It walks the same
 table through `getSourceStats` in `lib/queries.ts`, which already uses keyset
 paging, so it needs its own aggregate. Same shape of fix, separate change.
+
+---
+
+## PENDING — `20260818140000_pipeline_rollup_index.sql`
+
+**Run this too. Without it the previous migration makes things worse, not better.**
+
+`pipeline_rollup()` is now installed and it dies at the statement timeout:
+
+```
+select * from pipeline_rollup();
+-- 8.8 s, 57014 canceling statement due to statement timeout
+```
+
+So `summarise_pipeline` pays 8.8 s for the failed aggregate and then falls back to
+walking the table anyway. Measured after applying it: **114 s**, where the old path
+alone was 64-81 s. Totals stayed exact (109,552) — it just got slower.
+
+### Why
+
+`canonical_projects` is **134 columns, ~4.7 KB a row — roughly 492 MB** across
+109,552 rows. A `GROUP BY` with no usable index is a sequential scan of all of it,
+and nothing reads half a gigabyte inside an 8-second budget. For scale, a bare
+`count(*)` on this table takes 5.4 s even when served by the primary key.
+
+This is precisely what `20260811160000_disposition_rollup_rpc` already recorded —
+*"Without them every count is a sequential scan of the whole table, and no amount
+of restructuring the client fixes that"* — and that migration added indexes
+alongside its `GROUP BY`. The previous one did not, and repeated the mistake its
+own neighbour had documented.
+
+### What this adds
+
+| Change | Why |
+|---|---|
+| `idx_projects_rollup` covering the 7 rollup columns | lets the aggregate run as an **index-only scan** — ~10 MB of index instead of ~492 MB of heap |
+| `statement_timeout = '30s'` on the function | backstop only, for when the visibility map is stale after a bulk load and an index-only scan degrades to heap fetches |
+
+Verified against a throwaway Postgres with the whole chain applied and 20,000
+synthetic rows — the plan is the one intended, not merely a hope:
+
+```
+HashAggregate
+  Group Key: current_phase, priority_band, vertical, bu, icp_code,
+             (assignee_id IS NOT NULL), (apollo_exported_at IS NOT NULL)
+  ->  Index Only Scan using idx_projects_rollup on canonical_projects
+```
+
+Totals unchanged: 20,000 rows in, 20,000 counted, 12 aggregate rows out.
+
+### It costs the ingest a little, deliberately
+
+An extra index is extra work on every upsert, and the nightly ingest is currently
+fighting upsert timeouts — `20260813120000` dropped four indexes to relieve exactly
+that. This one is a narrow btree of about 10 MB; the four dropped were GIN indexes
+over jsonb, which cost orders of magnitude more per row. Real cost, small, and the
+reason the index is minimal rather than a comfortable superset.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818140000_pipeline_rollup_index.sql
+```
+
+`create index if not exists` and `create or replace function`, so re-running is
+safe. Building the index locks writes on the table briefly; if the nightly ingest
+is running, wait for it.
+
+### Confirming it worked
+
+```bash
+npm run test:mcp
+```
+
+The four `summarise_pipeline` failures should pass, and the tool should answer in
+around a second rather than 114. **Check `records` still reads 109,552** — a faster
+number that is also a different number is a bug, not a win.
