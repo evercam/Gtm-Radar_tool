@@ -62,7 +62,18 @@ export async function GET(request: Request) {
     leads.view.all, which is the same permission that lets you see their leads on
     screen — this must not become a way around that.
   */
-  const roster = await getAssignableUsers();
+  const { users: roster, unavailable: rosterUnavailable } = await getAssignableUsers();
+  /*
+    Checked BEFORE the not-found below, because an unreadable roster would otherwise
+    answer "No active roster member with that id" — a confident 404 about a person
+    who may well exist.
+  */
+  if (rosterUnavailable) {
+    return NextResponse.json(
+      { ok: false, message: `The roster could not be read (${rosterUnavailable}). Retry — this is not a missing person.` },
+      { status: 503 }
+    );
+  }
   const target = assigneeId ? roster.find((r) => r.id === assigneeId) : null;
   if (assigneeId && !target) {
     return NextResponse.json({ ok: false, message: 'No active roster member with that id.' }, { status: 404 });

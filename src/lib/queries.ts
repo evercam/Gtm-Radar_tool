@@ -7,7 +7,7 @@ import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/p
 import { recordReachable } from '@/lib/export/reachability';
 import { planSupply, adviseRebalance, type SupplyPlan, type RebalanceAdvice } from '@/lib/supply';
 import { getDemandPlan } from '@/lib/enrich/demand';
-import { isColdArrival, arrivalFor } from '@/lib/arrival';
+import { isColdArrival } from '@/lib/arrival';
 import { PRIORITY_BANDS, ROUTES, STAGES } from '@/lib/semantics';
 import { COMPLETENESS_TIER_RANGES } from '@/lib/completeness';
 import { logEventAsync } from '@/lib/observability/events';
@@ -26,7 +26,16 @@ export async function getRecentCanonicalProjects(limit = 25): Promise<CanonicalP
     .select('*')
     .order('created_at', { ascending: false })
     .limit(limit);
-  if (error) return []; // table not created yet -> empty state
+  if (error) {
+    /*
+      Logged, not silent. The comment here used to read "table not created yet",
+      but this branch catches EVERY error including a statement timeout, and an
+      empty dashboard list is indistinguishable from a quiet day. Display-only, so
+      it still degrades rather than failing the page — it just leaves a trace.
+    */
+    console.error(`getRecentCanonicalProjects: ${error.message}`);
+    return [];
+  }
   return (data ?? []) as CanonicalProjectRow[];
 }
 
@@ -98,23 +107,46 @@ interface AccountSignal {
   key_account_score: number | null;
 }
 
-/** Key-account flags per account_key — the account-level half of both passes. */
-async function loadAccountSignals(client: SupabaseClient): Promise<Map<string, AccountSignal>> {
+/**
+ * Key-account flags per account_key — the account-level half of both passes.
+ *
+ * `partial` is the important half of the return. This walk feeds SCORING: a missing
+ * account_key does not read as "no flags on file", it reads as "not a key account",
+ * so a truncated read silently scores part of the book as though those accounts were
+ * ordinary. Nothing downstream could tell, because the map has no way to say which
+ * keys it never managed to load.
+ *
+ * It used to `break` on error and return whatever it had. Keyset-paged now for the
+ * same reason `rerouteAll` is — offset paging gets slower with depth until it
+ * exceeds the statement timeout, which is precisely how that pass came to abandon
+ * 613 records while reporting success.
+ */
+async function loadAccountSignals(
+  client: SupabaseClient
+): Promise<{ signals: Map<string, AccountSignal>; partial: string | null }> {
   const map = new Map<string, AccountSignal>();
-  for (let from = 0; from < 500_000; from += 1000) {
-    // Ordered for the same reason as the scoring pass below: an unordered
-    // `.range()` walk can repeat rows and skip others, which here would silently
-    // drop key-account flags for part of the book.
-    const { data, error } = await client
+  const PAGE = 1000;
+  let after = '';
+
+  for (let guard = 0; guard < 500; guard += 1) {
+    // The ORDER BY is load-bearing twice over: it makes the page boundary stable,
+    // and it is what `gt(account_key, after)` resumes from.
+    let q = client
       .from('account_enrichment')
       .select('account_key, key_account, key_account_score')
       .order('account_key', { ascending: true })
-      .range(from, from + 999);
-    if (error) break;
-    for (const r of (data ?? []) as ({ account_key: string } & AccountSignal)[]) map.set(r.account_key, r);
-    if (!data || data.length < 1000) break;
+      .limit(PAGE);
+    if (after) q = q.gt('account_key', after);
+
+    const { data, error } = await q;
+    if (error) return { signals: map, partial: error.message };
+    const batch = (data ?? []) as ({ account_key: string } & AccountSignal)[];
+    if (batch.length === 0) break;
+    for (const r of batch) map.set(r.account_key, r);
+    after = String(batch[batch.length - 1].account_key);
+    if (batch.length < PAGE) break;
   }
-  return map;
+  return { signals: map, partial: null };
 }
 
 /** Score a raw row, then build the RoutableRecord the rules evaluate. */
@@ -247,7 +279,26 @@ export async function rerouteAll(
   const scope = opts.scope ?? 'unscored';
   const maxRecords = opts.maxRecords ?? Infinity;
   const service = getServiceSupabase();
-  const signals = await loadAccountSignals(service);
+  /*
+    REFUSE TO SCORE on a partial signal read.
+
+    A missing account_key does not read as "unknown", it reads as "not a key
+    account" — so scoring the book against half the flags writes wrong bands and
+    wrong lanes to the database, and the next run sees `scored_at` set and skips
+    them. The damage would outlive the failure that caused it, which is why this is
+    the one place that aborts rather than degrading.
+  */
+  const { signals, partial: signalsPartial } = await loadAccountSignals(service);
+  if (signalsPartial) {
+    return {
+      total: 0,
+      byLane: {},
+      byBand: {},
+      scope,
+      reachedCap: false,
+      truncated: `key-account signals could not be fully read (${signalsPartial}) — refusing to score against partial flags, because a missing account reads as "not a key account" and the wrong band would be written and then marked done.`,
+    };
+  }
   const nowMs = Date.now();
 
   // group record ids by outcome signature (disposition + priority)
@@ -393,6 +444,16 @@ export interface RoutingPreview {
     recordType: string[];
     country: string[];
   };
+  /**
+   * Why this preview is incomplete, when it is.
+   *
+   * The whole promise of this function is "what materializing would write", and a
+   * scan that stopped early or scored against half the key-account flags breaks that
+   * promise while still returning a full-looking set of tallies. It writes nothing,
+   * so it may degrade — but somebody about to press the button on a real run has to
+   * know the numbers under it are partial.
+   */
+  partial?: string | null;
 }
 
 /**
@@ -414,7 +475,10 @@ export async function getRoutingPreview(
   };
   const supabase = await getReadSupabase();
   try {
-    const signals = await loadAccountSignals(supabase);
+    const { signals, partial: signalsPartial } = await loadAccountSignals(supabase);
+    let partial: string | null = signalsPartial
+      ? `key-account flags are only partly loaded (${signalsPartial}), so the band split understates key accounts`
+      : null;
     const nowMs = Date.now();
 
     const lane = new Map<string, number>();
@@ -439,7 +503,15 @@ export async function getRoutingPreview(
         // the lane and band preview disagree with what the run actually does.
         .order('id', { ascending: true })
         .range(from, from + 999);
-      if (error) return empty;
+      /*
+        Was `return empty` — a preview showing zeros of everything, which reads as
+        "nothing would be routed" rather than "the scan failed". Keep what was
+        counted and say it is incomplete.
+      */
+      if (error) {
+        partial = `the scan stopped after ${total} records (${error.message})`;
+        break;
+      }
       for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
         const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
         const d = routeRecord(record, rules);
@@ -479,9 +551,11 @@ export async function getRoutingPreview(
         recordType: sorted(facet.recordType),
         country: sorted(facet.country),
       },
+      partial,
     };
-  } catch {
-    return empty;
+  } catch (err) {
+    // `empty` alone would show a confident set of zeros. Name the cause.
+    return { ...empty, partial: err instanceof Error ? err.message : String(err) };
   }
 }
 

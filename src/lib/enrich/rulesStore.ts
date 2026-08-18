@@ -87,7 +87,13 @@ export async function getPrioritisationRuns(limit = 10): Promise<PrioritisationR
       .select('*')
       .order('started_at', { ascending: false })
       .limit(limit);
-    if (error) return [];
+    if (error) {
+      // An empty run history reads as "this has never run", which is a different
+      // problem from "the history could not be read". Display-only, so it degrades
+      // — but not without a trace.
+      console.error(`getPrioritisationRuns: ${error.message}`);
+      return [];
+    }
 
     return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
       id: r.id as string,

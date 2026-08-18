@@ -114,8 +114,8 @@ export async function saveAssignmentRules(input: unknown): Promise<{ ok: boolean
  * it cannot drift — a counter would need resetting at midnight and would be
  * wrong after any manual reassignment.
  */
-export async function getAssignableUsers(): Promise<AssignableUser[]> {
-  if (!isSupabaseServiceConfigured()) return [];
+export async function getAssignableUsers(): Promise<{ users: AssignableUser[]; unavailable: string | null }> {
+  if (!isSupabaseServiceConfigured()) return { users: [], unavailable: 'Supabase service role is not configured.' };
 
   try {
     const service = getServiceSupabase();
@@ -126,23 +126,43 @@ export async function getAssignableUsers(): Promise<AssignableUser[]> {
       .from('assignees')
       .select('id, name, role, bu, verticals, regions, daily_lead_quota, preferred_verticals, is_active, user_id')
       .eq('is_active', true);
-    if (error) return [];
+    /*
+      An empty roster and a failed roster read are opposite problems.
+
+      `api/leads` answers "No active users are available to receive leads" on a
+      zero-length result, which is correct advice for an empty roster and sends
+      somebody to check a roster that is perfectly fine when the read merely timed
+      out. Distinguished rather than guessed.
+    */
+    if (error) return { users: [], unavailable: `roster could not be read: ${error.message}` };
 
     const since = new Date();
     since.setHours(0, 0, 0, 0);
 
-    const { data: todays } = await service
+    const { data: todays, error: loadError } = await service
       .from('canonical_projects')
       .select('assignee_id')
       .not('assignee_id', 'is', null)
       .gte('owner_assigned_at', since.toISOString());
+    /*
+      This error was DISCARDED — the destructure did not even name it.
+
+      `assignedToday` is what stops somebody being given more than their daily
+      quota. A failed read leaves `load` empty, so every person reads as having
+      taken nothing today and the allocator happily fills all 25 slots again. The
+      failure direction is over-assignment, which spends Apollo credits and puts
+      duplicate work in front of a person, so it cannot be silent.
+    */
+    if (loadError) {
+      return { users: [], unavailable: `today's assignment counts could not be read: ${loadError.message}` };
+    }
 
     const load = new Map<string, number>();
     for (const r of (todays ?? []) as { assignee_id: string }[]) {
       load.set(r.assignee_id, (load.get(r.assignee_id) ?? 0) + 1);
     }
 
-    return ((profiles ?? []) as Record<string, unknown>[]).map((p) => ({
+    const users = ((profiles ?? []) as Record<string, unknown>[]).map((p) => ({
       id: p.id as string,
       name: (p.name as string) ?? 'Unnamed',
       userId: (p.user_id as string) ?? null,
@@ -155,8 +175,9 @@ export async function getAssignableUsers(): Promise<AssignableUser[]> {
       assignedToday: load.get(p.id as string) ?? 0,
       isActive: Boolean(p.is_active),
     }));
-  } catch {
-    return [];
+    return { users, unavailable: null };
+  } catch (err) {
+    return { users: [], unavailable: err instanceof Error ? err.message : String(err) };
   }
 }
 

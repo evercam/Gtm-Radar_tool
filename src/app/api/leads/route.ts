@@ -96,11 +96,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, message: 'Your role does not allow this action.' }, { status: 403 });
     }
 
-    const [{ rules }, users, { policy }] = await Promise.all([
+    const [{ rules }, { users, unavailable: rosterUnavailable }, { policy }] = await Promise.all([
       getAssignmentRules(),
       getAssignableUsers(),
       getAllocationPolicy(),
     ]);
+    /*
+      A failed roster read is not an empty roster.
+
+      Both produce zero users, and the message below sends somebody to go and add
+      people to a roster that is fine. Worse, the second read inside
+      getAssignableUsers is today's assignment counts — if THAT failed, everyone
+      would read as having taken nothing today and this pass would hand out full
+      quotas on top of what was already assigned.
+    */
+    if (rosterUnavailable) {
+      return NextResponse.json({
+        ok: false,
+        message: `Nothing was assigned — the roster could not be read (${rosterUnavailable}). This is a failed read, not an empty roster: retry rather than adding people.`,
+      });
+    }
     if (users.length === 0) {
       return NextResponse.json({ ok: false, message: 'No active users are available to receive leads.' });
     }

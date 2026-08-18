@@ -220,7 +220,12 @@ export async function getActiveRuns(): Promise<IngestionRun[]> {
       .eq('status', 'running')
       .order('started_at', { ascending: false })
       .limit(20);
-    if (error) return [];
+    if (error) {
+      // An empty "Running now" panel while a run is in flight is a lie the Source
+      // Hub tells confidently. Display-only, so it degrades with a log.
+      console.error(`getActiveRuns: ${error.message}`);
+      return [];
+    }
     return ((data ?? []) as Record<string, unknown>[]).map(fromRow);
   } catch {
     return [];
