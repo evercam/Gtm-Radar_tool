@@ -47,8 +47,18 @@ export default async function ControlCenterPage() {
     );
   }
 
+  /*
+    The policy is fetched FIRST, on its own, because the queue count needs it.
+
+    It used to be one of twelve promises here, with the queue count awaited
+    afterwards — so a 6.6-second count was serialised behind the whole batch for no
+    reason other than argument order. Pulling the policy out (0.9 s) lets the count
+    join the batch, and the page waits for the slowest read rather than for two in
+    sequence.
+  */
+  const { config: enrichPolicy } = await getEnrichmentPolicy();
+
   const [
-    { config: enrichPolicy },
     { isDefault: scoringIsDefault },
     migrated,
     credStatuses,
@@ -60,8 +70,8 @@ export default async function ControlCenterPage() {
     claudeReady,
     apolloReady,
     lastCron,
+    { total: queueTotal },
   ] = await Promise.all([
-    getEnrichmentPolicy(),
     getScoringPolicy(),
     hasPriorityColumns(),
     getAllCredentialStatuses(),
@@ -73,15 +83,14 @@ export default async function ControlCenterPage() {
     isClaudeConfigured(),
     isApolloConfigured(),
     getLastCronRun(),
+    getEnrichmentQueue({
+      recordTypes: enrichPolicy.recordTypes,
+      minPriority: enrichPolicy.minPriorityScore,
+      reenrichAfterDays: enrichPolicy.reenrichAfterDays,
+      onlyMissingContact: enrichPolicy.onlyMissingContact,
+      limit: 1,
+    }),
   ]);
-
-  const { total: queueTotal } = await getEnrichmentQueue({
-    recordTypes: enrichPolicy.recordTypes,
-    minPriority: enrichPolicy.minPriorityScore,
-    reenrichAfterDays: enrichPolicy.reenrichAfterDays,
-    onlyMissingContact: enrichPolicy.onlyMissingContact,
-    limit: 1,
-  });
 
   const keyed = SOURCE_CATALOG.filter((s) => s.auth === 'keyed');
   const keyedConfigured = keyed.filter((s) => {

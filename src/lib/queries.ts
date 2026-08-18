@@ -1577,29 +1577,98 @@ export async function getDispositionRollup(): Promise<DispositionRollup> {
   };
 }
 
+/**
+ * Band counts for the Operations page.
+ *
+ * THIS WAS REPORTING NUMBERS THAT WERE TOO SMALL, and the speed was the lesser
+ * problem. It walked the whole table with `.range(from, from + 999)` — offset
+ * paging, so each page asks Postgres to produce and discard everything before it —
+ * and swallowed the failure with `if (error) break`. Deep in a 492 MB table the
+ * pages start hitting the statement timeout, the loop stopped, and whatever it had
+ * counted so far was returned as the total.
+ *
+ * Measured against the live table, 71.9 s to produce:
+ *
+ *              shown      actual
+ *   total     77,000     109,552     <- exactly 77 pages of 1,000
+ *   scored    71,614     101,284
+ *   P1         1,533       2,189
+ *   P3        40,058      56,815
+ *
+ * So the Operations page understated the book by 32,552 records and P1 by 656,
+ * with nothing anywhere saying the walk had stopped early. A partial total
+ * presented as a total is the exact failure mode this file keeps rediscovering.
+ *
+ * It is now derived from `pipeline_rollup()`, which already groups by priority_band
+ * and is an index-only scan — 0.5 s instead of 71.9 s, and complete. No new
+ * migration needed.
+ *
+ * NOT from `disposition_rollup()`, which was the obvious candidate and is the wrong
+ * one. That RPC also counts `count(*)` over the whole table and `max(routed_at)`,
+ * and a bare count(*) here takes 5.4 s on its own — so it sits right at the 8-second
+ * statement timeout and falls over intermittently. app_events records it both ways,
+ * and building this on it produced `total: 0` and 41.5 s on the first attempt,
+ * because the fallback path's own count had failed and every caller writes `?? 0`.
+ */
 export async function getPriorityRollup(): Promise<{ band: string; count: number; scored: number; total: number }[]> {
-  const supabase = await getReadSupabase();
   const counts = new Map<string, number>();
   let total = 0;
   let scored = 0;
-  for (let from = 0; from < 1_000_000; from += 1000) {
-    const { data, error } = await supabase
-      .from('canonical_projects')
-      .select('priority_band')
-      // Ordered, because an unordered `.range()` walk repeats and skips rows —
-      // here it would misstate how much of the book has been scored at all.
-      .order('id', { ascending: true })
-      .range(from, from + 999);
-    if (error) break;
-    for (const r of (data ?? []) as { priority_band: string | null }[]) {
-      total += 1;
-      if (r.priority_band) {
-        scored += 1;
-        counts.set(r.priority_band, (counts.get(r.priority_band) ?? 0) + 1);
+
+  try {
+    const { data, error } = await getServiceSupabase().rpc('pipeline_rollup');
+    if (!error && Array.isArray(data)) {
+      for (const row of data as Record<string, unknown>[]) {
+        // bigint arrives as a string over PostgREST.
+        const n = Number(row.n) || 0;
+        total += n;
+        const band = row.priority_band as string | null;
+        /*
+          A band outside P1-P4 counts toward `scored` and shows in no row, which is
+          what the walk did: `scored` has always meant "carries a band" here, not
+          "carries a score". Keeping that meaning matters — the callers compare
+          scored against total to show how much of the book has been triaged.
+        */
+        if (band) {
+          scored += n;
+          counts.set(band, (counts.get(band) ?? 0) + n);
+        }
       }
+      return ['P1', 'P2', 'P3', 'P4'].map((band) => ({ band, count: counts.get(band) ?? 0, scored, total }));
     }
-    if (!data || data.length < 1000) break;
+  } catch {
+    // Fall through.
   }
+
+  /*
+    The aggregate is unavailable, so count the bands directly rather than walking.
+
+    Five head counts, no rows transferred — slower than the RPC and still nothing
+    like the 110-page walk this replaced. Crucially a failure here leaves the figure
+    at zero rather than at a plausible smaller number: `null` from a failed count is
+    visibly nothing, where a truncated walk looked like an answer.
+  */
+  const supabase = getServiceSupabase();
+  const countWhere = async (apply?: (q: ReturnType<typeof supabase.from>) => unknown) => {
+    const base = supabase.from('canonical_projects').select('id', { count: 'exact', head: true });
+    const { count, error } = await (apply ? (apply(base as never) as typeof base) : base);
+    return error ? null : count ?? 0;
+  };
+
+  const [all, ...bands] = await Promise.all([
+    countWhere(),
+    ...['P1', 'P2', 'P3', 'P4'].map((band) =>
+      countWhere((q) => (q as unknown as { eq: (c: string, v: string) => unknown }).eq('priority_band', band))
+    ),
+  ]);
+
+  total = all ?? 0;
+  ['P1', 'P2', 'P3', 'P4'].forEach((band, i) => {
+    const n = bands[i] ?? 0;
+    counts.set(band, n);
+    scored += n;
+  });
+
   return ['P1', 'P2', 'P3', 'P4'].map((band) => ({ band, count: counts.get(band) ?? 0, scored, total }));
 }
 
