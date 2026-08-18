@@ -74,29 +74,77 @@ const MAX_PAGES = 200;
  * with "type instantiation is excessively deep", and the casts to silence it
  * were worse than the problem.
  */
-interface PagedQuery {
-  order: (
-    column: string,
-    opts: { ascending: boolean }
-  ) => { range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> };
+interface KeysetPage extends PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> {
+  /** The keyset predicate. Returns the same shape so it can be applied or not. */
+  gt: (column: string, value: string) => KeysetPage;
 }
 
-async function pageAll(build: () => PagedQuery) {
+interface KeysetQuery {
+  order: (column: string, opts: { ascending: boolean }) => { limit: (n: number) => KeysetPage };
+}
+
+/**
+ * Pages a select to exhaustion by KEYSET, not by offset.
+ *
+ * Only a fallback now — summarise_pipeline aggregates in SQL — but it carried the
+ * same fault queries.ts documented and fixed in getSourceStats, and left unfixed
+ * it is a trap for whoever calls it next.
+ *
+ * `.range(p * PAGE, …)` is OFFSET/LIMIT, so Postgres produces and discards every
+ * row before the window: page 110 pays for the previous 109,000 and the cost grows
+ * with the square of the table. `id > last` reads the same 1,000 rows wherever it
+ * sits, so it stays flat as the table grows.
+ *
+ * BE CLEAR ABOUT WHAT THIS DID AND DID NOT FIX. Measured against 109,552 rows,
+ * this walk takes ~106 s, where offset paging with eight pages in flight took
+ * ~72 s. Keyset is SLOWER here, because it is necessarily sequential — each page
+ * needs the previous page's last id — and 110 round trips cost more than the
+ * scans they avoid at this size. It is kept because it does not degrade
+ * quadratically as the table grows and it cannot skip or repeat rows across a page
+ * boundary, not because it made anything faster today.
+ *
+ * The lesson being that no pagination strategy fixes this: 109,552 rows should not
+ * cross the wire to produce twelve numbers. That is what pipeline_rollup is for,
+ * and this path exists only so the tool still answers before that migration is
+ * applied.
+ */
+async function pageAll(build: () => KeysetQuery) {
   const rows: Record<string, unknown>[] = [];
-  let truncated = false;
-  for (let p = 0; ; p += 1) {
-    if (p >= MAX_PAGES) {
-      truncated = true;
+  let truncated = true;
+  let after = '';
+
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    let q = build().order('id', { ascending: true }).limit(PAGE);
+    // A total order is required either way, or a page boundary repeats and skips
+    // rows — which would misreport every total this feeds.
+    if (after) q = q.gt('id', after);
+
+    const { data, error } = await q;
+    if (error) throw new McpToolError('query_failed', error.message);
+
+    const batch = (data ?? []) as Record<string, unknown>[];
+    if (batch.length === 0) {
+      truncated = false;
       break;
     }
-    // A stable sort key is required, or ranges overlap and rows repeat.
-    const { data, error } = await build().order('id', { ascending: true }).range(p * PAGE, (p + 1) * PAGE - 1);
-    if (error) throw new McpToolError('query_failed', error.message);
-    const batch = (data ?? []) as Record<string, unknown>[];
-    if (batch.length === 0) break;
+
+    // Pushed in chunks rather than spread whole: one spread of 100k+ arguments
+    // overflows the call stack.
     rows.push(...batch);
-    if (batch.length < PAGE) break;
+
+    if (batch.length < PAGE) {
+      truncated = false;
+      break;
+    }
+    after = batch[batch.length - 1].id as string;
   }
+
+  /*
+    `truncated` starts true and is cleared only on reaching a genuine end, so the
+    page cap can never be mistaken for the end of the table. The direction is
+    deliberate: a partial total reported as a total is the failure this helper
+    exists to prevent, so the unsafe value is the one that has to be earned.
+  */
   return { rows, truncated };
 }
 
@@ -346,29 +394,74 @@ export const MCP_TOOLS: McpTool[] = [
     schema: { groupBy: z.enum(['phase', 'band', 'vertical', 'bu', 'party']).default('phase') },
     async run(a) {
       const groupBy = (a.groupBy as string) ?? 'phase';
-      const { rows, truncated } = await pageAll(
-        () =>
-          s()
-            .from('canonical_projects')
-            .select('current_phase, priority_band, vertical, bu, icp_code, apollo_exported_at, assignee_id') as unknown as PagedQuery
-      );
+
+      /*
+        The normalised group key for one grouping row.
+
+        Shared by both paths below, which is the point: phase and party are
+        normalised in TypeScript — 117 raw phase strings map to 11 through
+        lib/phase.ts — so the SQL aggregate groups by the RAW columns and the
+        folding happens here. One definition of what a phase is, rather than a
+        second one in SQL that would drift from it.
+      */
       const keyOf = (r: Record<string, unknown>) => {
         if (groupBy === 'phase') return normalisePhase(r.current_phase as string) ?? '(unknown)';
         if (groupBy === 'band') return (r.priority_band as string) ?? '(unscored)';
         if (groupBy === 'party') return partyLabel(r.icp_code as string) ?? '(unknown)';
         return (r[groupBy] as string) ?? '(none)';
       };
+
       const tally: Record<string, { total: number; assigned: number; exported: number }> = {};
-      for (const r of rows) {
+      const add = (r: Record<string, unknown>, n: number, assigned: boolean, exported: boolean) => {
         const k = keyOf(r);
         tally[k] ??= { total: 0, assigned: 0, exported: 0 };
-        tally[k].total += 1;
-        if (r.assignee_id) tally[k].assigned += 1;
-        if (r.apollo_exported_at) tally[k].exported += 1;
+        tally[k].total += n;
+        if (assigned) tally[k].assigned += n;
+        if (exported) tally[k].exported += n;
+      };
+
+      let records = 0;
+      let truncated = false;
+
+      /*
+        Count in the database. One round trip, one hash aggregate.
+
+        This tool used to pull all 109,552 rows across the wire to produce twelve
+        numbers, which took 64-81 seconds and timed out in any client with a
+        sensible request deadline. Nothing about twelve numbers requires the rows
+        to leave Postgres.
+      */
+      const { data: rollup, error: rollupError } = await s().rpc('pipeline_rollup');
+
+      if (!rollupError && Array.isArray(rollup)) {
+        for (const g of rollup as Record<string, unknown>[]) {
+          const n = Number(g.n) || 0;
+          records += n;
+          add(g, n, Boolean(g.assigned), Boolean(g.exported));
+        }
+      } else {
+        /*
+          The migration is not applied yet, so fall back to walking the table.
+
+          Slow — this is the 64-81 second path — but a slow exact answer beats
+          `migration_required` on a tool whose whole job is the totals, and the
+          fallback disappears the moment the function exists. Any other error also
+          lands here rather than failing outright, on the same reasoning.
+        */
+        const paged = await pageAll(
+          () =>
+            s()
+              .from('canonical_projects')
+              .select('id, current_phase, priority_band, vertical, bu, icp_code, apollo_exported_at, assignee_id') as unknown as KeysetQuery
+        );
+        truncated = paged.truncated;
+        records = paged.rows.length;
+        for (const r of paged.rows) add(r, 1, Boolean(r.assignee_id), Boolean(r.apollo_exported_at));
       }
+
       const { config } = await getEnrichmentPolicy();
       return {
-        records: rows.length,
+        records,
         // Loud, because a partial total read as a total is worse than no total.
         ...(truncated
           ? { truncated: true, warning: `Stopped at the ${MAX_PAGES * PAGE}-row page cap — counts are a floor.` }

@@ -660,3 +660,75 @@ fields empty**. It registers itself and opens the approval page here.
 reads as and when it was last used, and disconnects any of them. A connection that
 nobody recognises is the thing to look for; there is no legitimate way for one to
 appear without somebody having approved it while signed in.
+
+---
+
+## PENDING — `20260818120000_pipeline_rollup_rpc.sql`
+
+**Run this to make `summarise_pipeline` usable from a connector.** It is additive:
+one function and two grants, no table touched, nothing dropped. The tool keeps
+working without it — just slowly, on the fallback path.
+
+`summarise_pipeline` pulled the whole table across the wire to produce twelve
+numbers. Measured against 109,552 rows: **64 s, 72 s and 81 s** on three runs, and
+one of those exceeded Supabase's statement timeout outright. Any connector gives
+up long before that, so the tool reads as broken even when it eventually answers.
+
+Two separate faults, and fixing either alone leaves it slow:
+
+| Fault | Why it costs |
+|---|---|
+| `.range(p*1000, …)` offset paging | Postgres produces and discards every row before the window, so page 110 pays for the previous 109,000 |
+| Transferring 109,552 rows at all | Even by keyset, 110 sequential round trips at ~700 ms is ~77 s |
+
+Both are now moot: the grouping happens in SQL and one round trip returns ~12
+rows instead of 109,552.
+
+### Why it groups by the raw columns
+
+Phase and party are normalised in TypeScript, not SQL — 117 raw phase strings map
+to 11 through an exact table plus regex rules in `lib/phase.ts`, and that mapping
+is **not invertible**, so there is no list of raw values to put in a `WHERE`
+clause. The function therefore groups by the raw columns and the caller folds the
+result into the normalised vocabulary. That keeps ONE definition of what a phase
+is rather than a second one in SQL that would drift from it.
+
+Exactness is unchanged. Every row is still counted; the counting moves to where
+the rows already are, and the page-cap `truncated` warning becomes permanently
+false because there is no cap to hit.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818120000_pipeline_rollup_rpc.sql
+```
+
+`create or replace function`, so re-running it is safe.
+
+Verified against a throwaway Postgres with all 32 prior migrations applied and
+1,000 synthetic rows — the function's arithmetic agrees with the table it counts:
+
+```
+ table_rows | rollup_sum | roll_assigned | real_assigned | roll_exported | real_exported | rollup_rows
+       1000 |       1000 |           333 |           333 |           250 |           250 |          12
+```
+
+Twelve rows out for a thousand in, which is the whole point. `npm run
+test:migrations` passes the chain and re-applies it cleanly.
+
+### Confirming it worked
+
+Ask the tool and watch the clock:
+
+```bash
+npm run test:mcp
+```
+
+Before: four failures, all `summarise_pipeline` — the suite allows 60 s and the
+tool needed 64-81 s. After: it should answer in a couple of seconds and those four
+pass. The totals must not change; if `records` no longer equals the row count in
+`canonical_projects`, stop and say so rather than trusting the faster number.
+
+**`list_sources` is NOT fixed by this** and still takes ~73 s. It walks the same
+table through `getSourceStats` in `lib/queries.ts`, which already uses keyset
+paging, so it needs its own aggregate. Same shape of fix, separate change.
