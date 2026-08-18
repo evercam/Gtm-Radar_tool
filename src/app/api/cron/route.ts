@@ -5,6 +5,8 @@ import { getEnrichmentPolicy } from '@/lib/policies';
 import { isCronSecret } from '@/lib/auth/cronSecret';
 import { isDue } from '@/lib/cron';
 import { logEventAsync } from '@/lib/observability/events';
+import { SIGNAL_LEAD, signalLeadFor } from '@/lib/sourceCatalog';
+import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -157,7 +159,17 @@ async function callInternal(request: NextRequest, path: string, body: Record<str
   }
 }
 
-async function runIngest(request: NextRequest, at: Date): Promise<JobResult> {
+/**
+ * @param outOfTime Checked BETWEEN dispatches, not just before the step.
+ *
+ * The outer chain already refuses to START a step whose budget is gone, but that
+ * cannot help a step which overruns once inside it. On 2026-08-18 this one did:
+ * 492 seconds against a 240-second budget, so the platform killed the handler
+ * mid-loop, twelve sources were never dispatched, and — because the function died
+ * before returning — nothing anywhere recorded that they had been missed. The run
+ * looked like "9 sources, 9 succeeded".
+ */
+async function runIngest(request: NextRequest, at: Date, outOfTime: () => boolean = () => false): Promise<JobResult> {
   const { configs, tableMissing } = await getAllSourceConfigs();
   if (tableMissing) return { job: 'ingest', ok: false, message: 'source_config is missing — run the migration.' };
 
@@ -185,27 +197,85 @@ async function runIngest(request: NextRequest, at: Date): Promise<JobResult> {
     into the same table, against a shared statement timeout, while every row updates
     48 indexes.
 
-    Two at a time. Not one, because the fetches are IO-bound and mostly waiting on
-    other people's APIs — serialising entirely would make a slow publisher block
-    every source behind it, and news-search alone takes 125 seconds. Not more,
-    because the whole point is to stop the pile-up at the write.
+    FIVE, raised from two on 2026-08-18. Two was too few and the cost was hidden.
 
-    This is the fix that needs no migration. Dropping the two unread GIN indexes
-    (20260813120000) attacks the per-row cost from the other side; they compound.
+    The first run with the cap ingested NINE sources where the previous day managed
+    twenty-one, and reported success. Serialising made the ingest step take 492
+    seconds against this handler's 240-second budget, so twelve sources were never
+    called at all — including neso-tec, neso-embedded and the RSS feeds. The worst
+    part is which ones: the interconnection queues are the earliest signal the tool
+    has, and they were first out.
+
+    Two was defensible when every upsert updated 48 indexes. Dropping the two unread
+    GIN indexes (20260813120000) removed most of that per-row cost, and the evidence
+    is that it was enough on its own: on 2026-08-18, with those indexes gone,
+    nyc-permits wrote 10,000 rows and planning-ie fetched 10,000 with ZERO statement
+    timeouts across the whole run, where 500 rows used to fail. The contention this
+    cap was defending against is largely gone, so the cap can afford to breathe.
+
+    Five, not back to unbounded: twenty-five simultaneous upserts is what caused the
+    original pile-up, and nothing about dropping two indexes makes that wise.
   */
-  const INGEST_CONCURRENCY = 2;
+  const INGEST_CONCURRENCY = 5;
+
+  /*
+    EARLIEST-SPEAKING SOURCES FIRST.
+
+    The budget can still bind — news-search alone can take 45 seconds and a
+    publisher can be slow — so the order decides what gets dropped when it does.
+    Left to `Object.values(configs)` that order is arbitrary, and on 18 August it
+    dropped the interconnection queues while ingesting RSS news feeds.
+
+    `signalLead` already encodes how early each source speaks, so sorting by it puts
+    the grid queues and planning portals ahead of press releases and permits. If
+    something has to be skipped, it should be the source whose information arrives
+    too late to sell on anyway.
+  */
+  const ordered = [...due].sort(
+    (a, b) =>
+      SIGNAL_LEAD[signalLeadFor(SOURCE_SLUGS[a.slug]?.sourceKey)].order -
+      SIGNAL_LEAD[signalLeadFor(SOURCE_SLUGS[b.slug]?.sourceKey)].order
+  );
+
   const results: JobResult[] = [];
-  const queue = [...due];
+  const queue = [...ordered];
+  const attempted: string[] = [];
   const worker = async () => {
     for (;;) {
+      // Stop DISPATCHING when the budget is gone, rather than being killed with
+      // work half-done and no record of what was left. Anything already in flight
+      // is its own function invocation and finishes on its own.
+      if (outOfTime()) return;
       const next = queue.shift();
       if (!next) return;
+      attempted.push(next.slug);
       results.push(await callInternal(request, `/api/ingest/${next.slug}`, {}));
     }
   };
   await Promise.all(Array.from({ length: Math.min(INGEST_CONCURRENCY, queue.length) }, worker));
 
+  /*
+    Say which sources were never reached.
+
+    The 18 August run ingested nine of twenty-one and answered "Ran 9 source(s), 9
+    succeeded" — true, and it reads as the whole job. Twelve sources were missing
+    from the sentence entirely, so the only way to notice was to count rows in the
+    database the next day. A run that does not finish its list has to name what it
+    left, which is the same rule the queue and the scoring pass now follow.
+  */
+  const skipped = ordered.filter((c) => !attempted.includes(c.slug)).map((c) => c.slug);
   const ok = results.filter((r) => r.ok).length;
+  if (skipped.length > 0) {
+    return {
+      job: 'ingest',
+      ok: false,
+      message:
+        `Ran ${results.length} of ${ordered.length} due source(s), ${ok} succeeded — ` +
+        `${skipped.length} NOT REACHED before the time budget: ${skipped.join(', ')}. ` +
+        `They stay due and the next run picks them up first.`,
+      detail: results,
+    };
+  }
   return {
     job: 'ingest',
     ok: ok > 0 || results.length === 0,
@@ -317,7 +387,7 @@ export async function POST(request: NextRequest) {
   // prioritisation picks which are worth spending on, enrichment finds the
   // contact, assignment gives it an owner, and only then is there anything to
   // export. Running them in any other order just delays everything by a day.
-  await step('ingest', job === 'ingest' || job === 'daily', () => runIngest(request, at));
+  await step('ingest', job === 'ingest' || job === 'daily', () => runIngest(request, at, outOfTime));
   // Between ingest and prioritisation, because prioritisation selects on band and
   // score: a record ingested this morning has neither until this runs, so it is
   // invisible to every enrichment rule. The chain had no scoring step at all —

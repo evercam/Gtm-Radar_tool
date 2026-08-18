@@ -134,5 +134,78 @@ console.log('\nThe ingest pool runs every source, once, at most N at a time');
   t('an empty due-list spawns no workers', (await drain(0, 2)).peak === 0);
 }
 
+/*
+  Budget-aware dispatch, and the order things get dropped in.
+
+  On 2026-08-18 the pool of two made the ingest step take 492 seconds against a
+  240-second budget. The platform killed the handler mid-loop, so twelve of
+  twenty-one due sources were never dispatched AND the function died before it could
+  say so — the run reported "9 source(s), 9 succeeded". The only way to notice was
+  counting rows in the database the next morning.
+
+  Two things had to change and both are asserted here: the loop stops dispatching
+  when the budget is gone (so it returns with a list instead of being killed), and
+  the queue is ordered earliest-speaking-source first (so what gets dropped is press
+  releases, not the interconnection queues that are the earliest signal we have).
+
+  Mirrors runIngest in src/app/api/cron/route.ts.
+*/
+console.log('\nA budget cut names what it did not reach');
+{
+  const drain = async (n, cap, stopAfter) => {
+    const queue = Array.from({ length: n }, (_, i) => ({ slug: `s${i}` }));
+    const ordered = [...queue];
+    const attempted = [];
+    const results = [];
+    let done = 0;
+    const outOfTime = () => done >= stopAfter;
+    const worker = async () => {
+      for (;;) {
+        if (outOfTime()) return;
+        const next = queue.shift();
+        if (!next) return;
+        attempted.push(next.slug);
+        await new Promise((r) => setTimeout(r, 1));
+        done += 1;
+        results.push(next.slug);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(cap, queue.length) }, worker));
+    const skipped = ordered.filter((c) => !attempted.includes(c.slug)).map((c) => c.slug);
+    return { attempted: attempted.length, skipped };
+  };
+
+  const r = await drain(21, 5, 9);
+  t('it stops dispatching once the budget is gone', r.attempted < 21, `dispatched ${r.attempted}`);
+  t('and reports every source it never reached', r.skipped.length === 21 - r.attempted, `${r.skipped.length} skipped of ${21 - r.attempted}`);
+  t('so nothing is missing from the account', r.attempted + r.skipped.length === 21);
+
+  // With budget to spare, nothing is skipped and the old behaviour is unchanged.
+  const full = await drain(21, 5, 999);
+  t('a run with time to spare skips nothing', full.skipped.length === 0, `${full.skipped.length} skipped`);
+  t('and still dispatches every source', full.attempted === 21);
+}
+
+console.log('\nThe earliest-speaking sources are dispatched first');
+{
+  const { SIGNAL_LEAD, signalLeadFor } = await import('../src/lib/sourceCatalog.ts');
+  const { SOURCE_SLUGS } = await import('../src/lib/sourceSlugs.ts');
+  const slugs = ['nyc-permits', 'miso-queue', 'data-center-dynamics', 'planning-ie', 'find-a-tender', 'neso-tec', 'gem'];
+  const ordered = [...slugs].sort(
+    (a, b) =>
+      SIGNAL_LEAD[signalLeadFor(SOURCE_SLUGS[a]?.sourceKey)].order -
+      SIGNAL_LEAD[signalLeadFor(SOURCE_SLUGS[b]?.sourceKey)].order
+  );
+  t('grid queues go first', ordered[0] === 'miso-queue' || ordered[0] === 'neso-tec', ordered.join(' > '));
+  /*
+    The specific inversion from 18 August: the run ingested data-center-dynamics and
+    the other RSS feeds while never reaching neso-tec or neso-embedded.
+  */
+  t('a grid queue outranks an RSS feed', ordered.indexOf('neso-tec') < ordered.indexOf('data-center-dynamics'), ordered.join(' > '));
+  t('and outranks a building permit', ordered.indexOf('miso-queue') < ordered.indexOf('nyc-permits'));
+  t('planning outranks permits', ordered.indexOf('planning-ie') < ordered.indexOf('nyc-permits'));
+  t('already-built assets go last', ordered[ordered.length - 1] === 'gem', ordered.join(' > '));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
