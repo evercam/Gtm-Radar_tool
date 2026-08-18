@@ -24,6 +24,97 @@ after the migration had been run, which is exactly how somebody ends up
 re-running SQL or deciding the file cannot be trusted. If you add a migration
 here, mark it `PENDING` while it is, and change the heading the day it lands.
 
+---
+
+## ALWAYS VACUUM AFTER A MIGRATION THAT REWRITES THE TABLE
+
+This cost an afternoon on 2026-08-18 and it will happen again, because the table
+looks perfectly healthy while it is happening.
+
+`20260818220000_phase_normalised.sql` added a `GENERATED ALWAYS AS … STORED`
+column. That is not a metadata change — Postgres writes an entirely new heap for
+all 109,552 rows. The new heap arrives with an **empty visibility map**, so no
+page is marked all-visible and every index-only scan silently falls back to
+reading the heap. All 492 MB of it.
+
+**Autovacuum will never fix this.** It triggers on dead tuples, and a rewrite
+creates none. Measured immediately afterwards: 6,218 dead tuples out of 109,552
+(5.7%, well under the 20% threshold) and autovacuum had run that morning — so
+every statistic autovacuum watches said the table was fine, while counts were
+taking eight seconds and failing.
+
+### The symptom
+
+Indexed lookups stay fast, because they touch few pages. COUNTS are slow, because
+they touch all of them. That combination is the tell:
+
+```
+filter + sort + limit 25            0.5 s   <- fine, looks healthy
+count where phase = 'Operating'     8.6 s   <- timed out
+bare count(*)                       2.3 s
+```
+
+### The check
+
+`pg_stat_user_tables` cannot show this — that is what sent the diagnosis down the
+wrong path for an afternoon. `pg_class` shows it directly:
+
+```sql
+select relpages, relallvisible,
+       round(100.0 * relallvisible / greatest(relpages, 1), 1) as pct_all_visible
+from pg_class where relname = 'canonical_projects';
+```
+
+Near **0%** means the map is empty. Near **100%** means it is healthy.
+
+### The fix
+
+```sql
+vacuum (analyze, verbose) canonical_projects;
+```
+
+`VACUUM`, **not `VACUUM FULL`** — plain vacuum takes no exclusive lock, so reads
+and writes continue and it is safe to run during the day. `VACUUM FULL` rewrites
+the table under an exclusive lock, which blocks the ingest AND leaves you with a
+fresh empty visibility map, i.e. exactly where you started.
+
+The `analyze` half matters too: a brand-new column has no statistics at all, so
+the planner is choosing plans for it blind.
+
+Expect a minute or two on 492 MB, and expect the SQL editor to report a timeout it
+did not actually suffer — the gateway gives up well before the server does. Do not
+re-run blindly; re-check `pct_all_visible` instead.
+
+### What it recovered
+
+```
+                                    before   after
+bare count(*)                        2.3 s   1.3 s
+count where phase = 'Operating'      8.6 s   0.8 s   <- was failing outright
+count where phase is not null        4.8 s   1.1 s
+disposition_rollup()               3.8-6.6s  1.4 s   <- was timing out at random
+source_stats()                       6.6 s   1.6 s
+```
+
+`disposition_rollup()` is the one that mattered: it had been failing intermittently
+and falling back to ~35 filtered counts, which is how the Operations page once
+reported `total: 0`.
+
+### Why this is a runbook note and not automation
+
+There is no cron step for it. `VACUUM` cannot run inside a transaction block, and
+PostgREST wraps every RPC in one, so the app cannot trigger it — a scheduled job
+calling a `vacuum_*()` function would fail at runtime rather than quietly do
+nothing, but it would still be broken.
+
+Autovacuum already handles the steady state: the nightly ingest's inserts do trip
+it, which is why dead tuples stay low. This is specifically a **one-off after
+rewriting DDL**, so it belongs in the same checklist as the migration that caused
+it. If you want it automated anyway, `pg_cron` inside the database is the only
+place it can live.
+
+---
+
 ## The order
 
 If you are rebuilding from scratch, run these top to bottom. Each file is
