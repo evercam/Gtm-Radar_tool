@@ -5,6 +5,7 @@ import { getEnrichmentPolicy } from '@/lib/policies';
 import { isCronSecret } from '@/lib/auth/cronSecret';
 import { isDue } from '@/lib/cron';
 import { logEventAsync } from '@/lib/observability/events';
+import { refreshKpiSnapshots } from '@/lib/kpi';
 import { SIGNAL_LEAD, signalLeadFor } from '@/lib/sourceCatalog';
 import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 
@@ -61,8 +62,8 @@ export const maxDuration = 300;
   Ingest is excluded deliberately — it is the expensive, rate-limited part and it
   has its own per-source schedules.
 */
-type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'brief' | 'assign' | 'export' | 'cycle' | 'daily';
-const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'brief', 'assign', 'export', 'cycle', 'daily'];
+type JobName = 'ingest' | 'score' | 'prioritise' | 'enrich' | 'brief' | 'assign' | 'export' | 'kpi' | 'cycle' | 'daily';
+const JOBS: JobName[] = ['ingest', 'score', 'prioritise', 'enrich', 'brief', 'assign', 'export', 'kpi', 'cycle', 'daily'];
 
 interface JobResult {
   job: string;
@@ -418,6 +419,27 @@ export async function POST(request: NextRequest) {
     const { config: policy } = await getEnrichmentPolicy();
     return callInternal(request, '/api/export/apollo', { limit: policy.apolloBatchSize });
   });
+
+  /*
+    KPI snapshots, LAST because they describe everything above.
+
+    Refreshed here rather than on demand because the team summary takes 35-46
+    seconds to build — it reads the whole 109,552-row book — and the KPI row sits at
+    the top of the dashboard, so on-demand meant somebody watched a skeleton for it.
+    Three windows, computed once, read in milliseconds thereafter.
+
+    Called directly rather than through callInternal: it needs no request context, and
+    an HTTP hop to our own function would give it that function's timeout as well as
+    this one's for no benefit.
+
+    Runs on both daily and cycle, which between them are the only two scheduled runs
+    (06:00 and 14:20 in vercel.json) — that cadence is what the twelve-hour freshness
+    window in lib/kpi.ts is sized against.
+  */
+  await step('kpi', job === 'kpi' || job === 'cycle' || job === 'daily', async () => ({
+    job: 'kpi',
+    ...(await refreshKpiSnapshots()),
+  }));
 
   /*
     Retention, here because the daily job is the only thing that runs reliably

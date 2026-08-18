@@ -943,3 +943,71 @@ npm run test:mcp
 The last two failures should pass. The numbers must not move: **26 sources,
 109,552 records total**. A faster figure that is also a different figure is a bug,
 not a win — and the null-completeness note above is exactly where that would show up.
+
+---
+
+## PENDING — `20260818200000_kpi_snapshots.sql`
+
+**The last slow thing on the dashboard.** After the rollups landed, `getKpiSummary`
+became the slowest read by a wide margin — and the KPI row sits at the *top* of the
+page, so it is what somebody watches a skeleton for.
+
+Measured today:
+
+| View | Rows | Time |
+|---|---|---|
+| team, 7 days | 21,426 | 6.9 s |
+| team, 30 days | 109,552 | **45.9 s** |
+| team, 90 days | 109,552 | 19.5 s |
+| **one seller, 30 days** | **30** | **1.3 s** |
+
+That last row is the whole design. A seller's own numbers are already fast, because
+the `owner_user_id` filter cuts 109,552 rows to 30. This was never a general
+performance problem — it is **three values**: the team view at each window the
+dashboard offers. So they are computed once and stored.
+
+### Why a snapshot and not a SQL aggregate
+
+The other three fixes pushed the arithmetic into SQL. This one deliberately does not.
+The code behind this summary derives a funnel position, a furthest-stage-reached
+fan-out, an SLA breach against wall-clock `now`, contact-latency percentiles and three
+breakdowns — logic whose failure mode is a *plausible wrong number*, not an error.
+`lib/kpi.ts` already carries the scar of exactly that: every KPI on the dashboard was
+once silently a random 72% sample.
+
+Re-expressing that in SQL would mean two definitions of the funnel, in two languages,
+obliged to agree forever. A snapshot avoids the duplication entirely, because the thing
+that fills it **is** the existing TypeScript. There is no second implementation to drift.
+
+### The cost is freshness, and the cards say so
+
+These figures become as recent as the last refresh rather than live. Two mitigations:
+
+- The cron refreshes all three windows on both scheduled runs (06:00 and 14:20).
+- The summary carries `computed_at`, and the card subtitle now reads
+  **"Last 30 days · 109,552 records · as of 14:20"** — a clock time today, a date once
+  it is older, so a two-day-old snapshot cannot read as this afternoon.
+
+A twelve-hour freshness window sits inside that cadence, so an inline rebuild is the
+exception rather than most mornings. Per-seller views are never cached; at 1.3 s they
+gain nothing but staleness.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818200000_kpi_snapshots.sql
+```
+
+### Verified working
+
+Against the live database, once the table existed:
+
+```
+refreshKpiSnapshots([7])   ->  Refreshed 7d in 28.5s
+getKpiSummary({days:7})    ->  0.2 s, total 21,426, as of 18:54
+same call computed live    ->  9.9 s, total 21,426
+```
+
+Identical figures, 50x faster. Nothing breaks before the migration: the read misses,
+the summary is computed inline exactly as before, and the write fails quietly — a slow
+dashboard rather than a broken one.

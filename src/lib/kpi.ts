@@ -43,6 +43,14 @@ export interface FunnelStage {
 export interface KpiSummary {
   total: number;
   funnel: FunnelStage[];
+  /**
+   * When these figures were computed, if they came from a snapshot.
+   *
+   * Absent means computed just now, for this request. Present means the cards must
+   * say so — "as of 14:20" — because presenting stored numbers as live is a worse
+   * bug than the slowness the snapshot fixed.
+   */
+  computedAt?: string | null;
 
   enrichment: {
     attempted: number;
@@ -234,7 +242,123 @@ function furthestStage(r: Record<string, unknown>, position: JourneyStage | 'LOS
   return reached;
 }
 
+/**
+ * How long a snapshot is served before it is rebuilt on demand.
+ *
+ * Twelve hours, chosen against the schedule rather than picked as a round number:
+ * vercel.json runs the daily job at 06:00 and the cycle job at 14:20, so a
+ * twelve-hour window is normally refilled by a cron before it lapses and an inline
+ * rebuild is the exception. Shorter would mean somebody pays the 35-46 second
+ * rebuild most mornings; much longer and the figures drift further than "as of
+ * this morning" can honestly cover.
+ */
+const SNAPSHOT_FRESH_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * The team summary, from the snapshot when there is a usable one.
+ *
+ * ONLY the team view is cached, and only because only the team view is slow —
+ * measured at 45.9 s for 30 days against 1.3 s for one seller, whose owner filter
+ * cuts 109,552 rows to 30. Caching the fast case would add staleness for nothing.
+ */
 export async function getKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiSummary> {
+  if (!isSupabaseServiceConfigured()) return EMPTY;
+
+  // A seller's own numbers are already fast, so they are always computed live.
+  if (window.ownerId) return computeKpiSummary(window);
+
+  const snapshot = await readKpiSnapshot(window.days);
+  if (snapshot && Date.now() - new Date(snapshot.computedAt).getTime() < SNAPSHOT_FRESH_MS) {
+    return { ...snapshot.summary, computedAt: snapshot.computedAt };
+  }
+
+  /*
+    No snapshot, or a stale one: compute it and store it, so the next reader is fast
+    even if the cron has not run since deploy.
+
+    The write is best-effort and its result is ignored. A workspace that has not
+    applied the migration has no table to write to, and the correct outcome there is a
+    slow dashboard, not a broken one.
+  */
+  const fresh = await computeKpiSummary(window);
+  if (!fresh.tableMissing && fresh.total > 0) void writeKpiSnapshot(window.days, fresh, null);
+  return fresh;
+}
+
+/** Reads one stored summary, or null. Never throws — a missing table is just a miss. */
+async function readKpiSnapshot(days: number): Promise<{ summary: KpiSummary; computedAt: string } | null> {
+  try {
+    const { data, error } = await getServiceSupabase()
+      .from('kpi_snapshots')
+      .select('summary, computed_at')
+      .eq('window_days', days)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as { summary: KpiSummary; computed_at: string };
+    if (!row.summary || typeof row.summary.total !== 'number') return null;
+    return { summary: row.summary, computedAt: row.computed_at };
+  } catch {
+    return null;
+  }
+}
+
+/** Stores one summary. Best-effort by design — see getKpiSummary. */
+async function writeKpiSnapshot(days: number, summary: KpiSummary, durationMs: number | null): Promise<boolean> {
+  try {
+    const { error } = await getServiceSupabase().from('kpi_snapshots').upsert(
+      {
+        window_days: days,
+        // `computedAt` is stripped before storing: it describes when a snapshot was
+        // taken, so storing one inside another would preserve the FIRST computation's
+        // timestamp forever and the cards would report an age that never moves.
+        summary: { ...summary, computedAt: undefined },
+        computed_at: new Date().toISOString(),
+        duration_ms: durationMs,
+      },
+      { onConflict: 'window_days' }
+    );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rebuilds every window the dashboard offers. Called by the cron.
+ *
+ * Sequential on purpose. Each window already reads the table with six concurrent
+ * slices, and running three of those at once would put eighteen queries on the
+ * database — which is how the slice concurrency measurement produced statement
+ * timeouts in the first place.
+ */
+export async function refreshKpiSnapshots(windows: number[] = [7, 30, 90]): Promise<{ ok: boolean; message: string }> {
+  if (!isSupabaseServiceConfigured()) return { ok: false, message: 'Supabase service role is not configured.' };
+
+  const done: string[] = [];
+  const failed: string[] = [];
+  for (const days of windows) {
+    const started = Date.now();
+    const summary = await computeKpiSummary({ days });
+    const took = Date.now() - started;
+    if (summary.tableMissing) {
+      failed.push(`${days}d (read failed)`);
+      continue;
+    }
+    const stored = await writeKpiSnapshot(days, summary, took);
+    if (stored) done.push(`${days}d in ${(took / 1000).toFixed(1)}s`);
+    else failed.push(`${days}d (write failed — is the kpi_snapshots migration applied?)`);
+  }
+
+  return {
+    ok: failed.length === 0,
+    message: [done.length ? `Refreshed ${done.join(', ')}.` : null, failed.length ? `Failed: ${failed.join(', ')}.` : null]
+      .filter(Boolean)
+      .join(' '),
+  };
+}
+
+/** Computes a summary from the rows. The only place the arithmetic lives. */
+async function computeKpiSummary(window: KpiWindow = { days: 30 }): Promise<KpiSummary> {
   if (!isSupabaseServiceConfigured()) return EMPTY;
 
   const since = new Date(Date.now() - window.days * 86_400_000).toISOString();

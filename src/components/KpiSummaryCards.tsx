@@ -18,6 +18,23 @@ import { Card, CardHeader, CardBody, Badge, Stat, ProgressBar } from '@/componen
  * `scope` says whose figures these are, so "12% conversion" is never ambiguous
  * about whether it means you or the company.
  */
+
+/**
+ * How old the figures are, in the shortest form that is still unambiguous.
+ *
+ * A clock time for today ("as of 14:20") because that is how somebody thinks about
+ * this morning's numbers, and a date once it is older, because "as of 14:20" on a
+ * two-day-old snapshot would read as today and be actively misleading — which is the
+ * one outcome this label exists to prevent.
+ */
+function asOf(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return 'unknown';
+  const today = new Date().toDateString() === at.toDateString();
+  return today
+    ? at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
 export default function KpiSummaryCards({
   kpi,
   days,
@@ -51,7 +68,19 @@ export default function KpiSummaryCards({
     <Card>
       <CardHeader
         title={scope === 'you' ? 'Your performance' : 'Team performance'}
-        subtitle={`Last ${days} days · ${kpi.total.toLocaleString()} records`}
+        /*
+          The age of the figures is part of the subtitle, not a footnote.
+
+          The team summary is served from a snapshot refreshed by the cron, because
+          building it live reads the whole 109,552-row book and took 35-46 seconds.
+          That trade is only honest if the card says so — numbers presented as live
+          when they are hours old are a worse bug than the slowness they replaced.
+
+          Absent for a seller's own figures, which are still computed per request.
+        */
+        subtitle={`Last ${days} days · ${kpi.total.toLocaleString()} records${
+          kpi.computedAt ? ` · as of ${asOf(kpi.computedAt)}` : ''
+        }`}
         action={
           canExport ? (
             <a href={`/api/kpi/export?days=${days}`} className="text-brand text-[11px] underline">
