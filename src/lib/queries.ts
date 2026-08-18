@@ -768,6 +768,39 @@ export interface SourceStat {
 export async function getSourceStats(): Promise<Record<string, SourceStat>> {
   const supabase = await getReadSupabase();
   const agg: Record<string, { count: number; sum: number; last: string | null }> = {};
+
+  /*
+    Counted in the database — 75.8 seconds before this, reading all 109,552 rows to
+    produce about 25. It was the slowest read in the app and the reason the last two
+    test-mcp checks failed against their 60-second ceiling.
+
+    The average is deliberately NOT computed in SQL. This function's average counts a
+    null completeness as zero and still divides by every row (`Number(x) || 0`
+    below); avg() would skip the nulls instead, which is a different number. So SQL
+    returns the sum and the count, and the division stays exactly where it was — a
+    performance fix must not quietly move a dashboard figure.
+  */
+  try {
+    const { data, error } = await getServiceSupabase().rpc('source_stats');
+    if (!error && Array.isArray(data)) {
+      const out: Record<string, SourceStat> = {};
+      for (const r of data as Record<string, unknown>[]) {
+        const key = r.source_key as string;
+        // bigint and numeric both arrive as strings over PostgREST; Number() before
+        // any arithmetic or the totals become concatenated digits.
+        const count = Number(r.n) || 0;
+        const sum = Number(r.completeness_sum) || 0;
+        out[key] = {
+          count,
+          avgCompleteness: count ? Math.round(sum / count) : 0,
+          lastIngested: (r.last_ingested as string) ?? null,
+        };
+      }
+      return out;
+    }
+  } catch {
+    // Fall through to the walk below.
+  }
   const PAGE = 1000;
 
   /*

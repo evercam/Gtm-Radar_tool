@@ -884,3 +884,62 @@ third index — it is a small summary table maintained on write, because a
 
 The dashboard should paint in a second or two rather than hanging. Note the two
 functions must also be **rewired to call the RPC** — the migration alone is inert.
+
+---
+
+## PENDING — `20260818180000_source_stats_rollup.sql`
+
+**The last whole-table walk.** `getSourceStats` reads all 109,552 rows to produce
+about 25 — measured at 75.8 s and 97.3 s. It is the slowest read in the app, it
+powers the `list_sources` MCP tool, and it is why the last two `npm run test:mcp`
+checks fail against their 60-second ceiling.
+
+Same fix as the other two aggregates, and the least risky of the three: there is no
+derived state here, just a count, a sum and a max.
+
+| Adds | Why |
+|---|---|
+| `source_stats()` | one row per source instead of 109,552 |
+| `idx_projects_source_stats` | ~5 MB, so the aggregate is an index-only scan rather than a 492 MB seq scan |
+
+### One thing deliberately left in TypeScript
+
+The function returns a raw **sum and count**, not an average, and the caller keeps
+dividing. That is not an oversight. `getSourceStats` computes its average as
+`sum += Number(population_percentage) || 0` over **every** row — a null completeness
+counts as zero and still divides by the row. SQL `avg()` skips nulls instead, which
+is arguably more correct and is definitely a **different number**. Changing a
+dashboard figure while claiming to make it faster is how a performance fix becomes a
+data bug. If that definition should change, it should change on purpose, in one
+place.
+
+### On adding a second index
+
+This is a separate index rather than widening `idx_projects_rollup_wide`, because
+Postgres cannot add columns to an existing index — widening means dropping and
+rebuilding it, which is a full rebuild on a 492 MB table under a write lock, during
+which the dashboard loses the index it now depends on. Three columns are not worth
+that.
+
+It does mean a second index maintained on every upsert while the nightly ingest is
+still fighting write timeouts. Small — a narrow btree against the four GIN indexes
+over jsonb that `20260813120000` dropped to relieve exactly that — but real.
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818180000_source_stats_rollup.sql
+```
+
+`create index if not exists` and `create or replace function`, so re-running is
+safe. Build it when the nightly ingest is not running.
+
+### Confirming it worked
+
+```bash
+npm run test:mcp
+```
+
+The last two failures should pass. The numbers must not move: **26 sources,
+109,552 records total**. A faster figure that is also a different figure is a bug,
+not a win — and the null-completeness note above is exactly where that would show up.
