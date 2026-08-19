@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import Link from 'next/link';
 import { requirePermission } from '@/lib/auth/session';
 import { isSupabaseServiceConfigured, getServiceSupabase } from '@/lib/supabase/server';
@@ -71,8 +72,7 @@ async function readSetupState(
     computes a full grouped aggregate in 1.5 s, six times faster than one unfiltered
     count. The database was never slow — the page was asking eleven times.
   */
-  const rollup = service ? await service.rpc('setup_state_rollup').maybeSingle() : null;
-  const r = rollup?.data as Record<string, number> | null | undefined;
+  const r = await setupStateRollupOnce();
 
   let total: number, scored: number, routed: number, enriched: number, assigned: number;
   let exported: number, withPhone: number, withEmail: number, verified: number, queued: number;
@@ -144,6 +144,31 @@ async function readSetupState(
   };
 }
 
+/**
+ * The setup-state counts, at most once per render.
+ *
+ * Two sections need them — the setup tiles and the unassigned pool — and each was
+ * calling the RPC itself. On a render where the rollup is unavailable that meant
+ * paying its statement timeout TWICE before falling back, which is how a change
+ * meant to speed this page up made it slower than the eleven queries it replaced.
+ *
+ * `cache()` is per-request, so this is deduplication rather than caching: no
+ * staleness, and no argument to key on because the rollup takes none.
+ *
+ * Returns null when the rollup is unavailable — no service role, migration not
+ * applied, or the scan timed out — and every caller falls back to its own query.
+ */
+const setupStateRollupOnce = cache(async (): Promise<Record<string, number> | null> => {
+  if (!isSupabaseServiceConfigured()) return null;
+  try {
+    const { data, error } = await getServiceSupabase().rpc('setup_state_rollup').maybeSingle();
+    if (error || !data) return null;
+    return data as Record<string, number>;
+  } catch {
+    return null;
+  }
+});
+
 interface TeamLoad {
   assignedToday: number;
   openLeads: number;
@@ -191,11 +216,11 @@ async function getTeamLoad(): Promise<{
       6.7 s, because `status not in (…)` cannot use an index well; folded into
       setup_state_rollup it is one FILTER clause on a scan that was happening anyway.
     */
-    const rollup = await service.rpc('setup_state_rollup').maybeSingle();
+    const rollup = await setupStateRollupOnce();
     let unassigned: number;
 
-    if (rollup.data) {
-      unassigned = Number((rollup.data as Record<string, number>).unassigned_open ?? 0);
+    if (rollup) {
+      unassigned = Number(rollup.unassigned_open ?? 0);
     } else {
       // Migration not applied: the original query, with its original predicate.
       const { count, error: countError } = await service
