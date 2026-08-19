@@ -14,7 +14,7 @@
  *     --import ./scripts/lib/register-alias.mjs scripts/verify-rls.mjs
  */
 
-const { getPool, withUser, withService, closePool, isDbConfigured } = await import('../src/lib/db/pool.ts');
+const { withUser, withService, closePool, isDbConfigured } = await import('../src/lib/db/pool.ts');
 
 let passed = 0, failed = 0;
 const check = (n, c, d) => {

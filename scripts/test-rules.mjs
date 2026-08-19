@@ -38,7 +38,7 @@ const rec=(id,o={})=>({id,bu:'uk',vertical:'data_center',country:'GB',record_typ
   priority_score:50,priority_band:'P2',estimated_value:null,contact_email:null,
   created_at:new Date().toISOString(),status:'RAW',...o});
 
-let pass=0,fail=0; const t=(n,c)=>{c?(pass++,console.log('  PASS',n)):(fail++,console.log('  FAIL',n));};
+let pass=0,fail=0; const t=(n,c)=>{if(c){pass++;console.log('  PASS',n);}else{fail++;console.log('  FAIL',n);}};
 
 console.log('Rule selection');
 const R=(id,priority,cond,limit)=>({id,name:id,priority,enabled:true,conditions:cond,

@@ -42,6 +42,25 @@ async function call(job, { token = SECRET, method = 'POST' } = {}) {
   return { status: res.status, body };
 }
 
+/*
+  Reachable, or say so and stop.
+
+  This file talks to a running server. Without one, the first `fetch` threw an
+  uncaught ECONNREFUSED and the process died on a stack trace — which is why it
+  was never wired into `npm test`: a suite cannot carry a test that crashes when
+  its dependency is absent. Probing first turns "no server" into a skip, the same
+  contract test-export-flag.mjs already uses, so the file can live in the suite
+  and actually run wherever a server IS up.
+*/
+const reachable = await fetch(`${BASE}/api/cron`, { method: 'POST' }).then(
+  () => true,
+  () => false
+);
+if (!reachable) {
+  console.log(`No server at ${BASE} — start it with \`npm run dev\` and pass BASE. Skipping.`);
+  process.exit(0);
+}
+
 group('An unauthenticated scheduler gets nothing');
 {
   const noHeader = await call('daily', { token: null });
