@@ -337,6 +337,17 @@ export async function POST(request: NextRequest) {
     if (noEmail) because.push(`${noEmail} with no email address`);
     if (unverified) because.push(`${unverified} whose email is not verified`);
     if (blocked) because.push(`${blocked} flagged do-not-contact`);
+    /*
+      Counted at the filter above and reported here for the same reason
+      `withheldNames` is reported: a gate that hides what it removed is
+      indistinguishable from a bug that loses records. Cold arrivals are the ONE
+      gate not visible in the counts below — those are SQL over the assigned book,
+      and the arrival verdict is computed in JS from the admin-editable phase
+      table. Left out, a person whose whole day is mid-build projects got
+      "Nothing eligible." with no reason attached, which is the exact ambiguous
+      sentence this block exists to prevent.
+    */
+    if (coldSkipped) because.push(`${coldSkipped} past the selling window (mid-build or later)`);
     // Named, because "held back at quota" is the one reason that fixes itself
     // tomorrow and the one reason nothing else on the page surfaces.
     if (overQuota.length) because.push(`held back at daily quota: ${overQuota.join(', ')}`);
@@ -363,7 +374,7 @@ export async function POST(request: NextRequest) {
       existing: 0,
       failed: 0,
       // The same breakdown as data, so a caller does not have to parse prose.
-      blockedBy: { assigned, alreadySent, noEmail, unverified, doNotContact: blocked, atQuota: overQuota },
+      blockedBy: { assigned, alreadySent, noEmail, unverified, doNotContact: blocked, cold: coldSkipped, atQuota: overQuota },
     });
   }
 
