@@ -463,18 +463,20 @@ export interface RoutingPreview {
  * Uses the identical scoring + routing path as rerouteAll, so what the preview
  * shows is exactly what materializing would write.
  */
-export async function getRoutingPreview(
-  rules: RoutingRule[],
+/**
+ * The scored groups for one scoring configuration. THE EXPENSIVE HALF.
+ *
+ * Split out from the routing so it can be cached under the scoring config alone —
+ * measured at ~42 s against 111,353 records, of which ~31 s is transferring the rows.
+ * Applying the RULES to its output is milliseconds, so a rule edit no longer pays
+ * for a scan whose result the rules cannot change. See getCachedRoutingPreview.
+ *
+ * `partial` is set when the scan stopped early, so a caller can refuse to cache an
+ * incomplete picture rather than serving one until the scoring policy next changes.
+ */
+export async function buildRoutingScoreGroups(
   scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
-): Promise<RoutingPreview> {
-  const empty: RoutingPreview = {
-    total: 0,
-    byLane: [],
-    byRule: [],
-    byBand: [],
-    avgPriority: 0,
-    facets: { bu: [], icp: [], vertical: [], recordType: [], country: [] },
-  };
+): Promise<{ groups: RoutingScoreGroup[]; total: number; partial: string | null }> {
   const supabase = await getReadSupabase();
   try {
     const { signals, partial: signalsPartial } = await loadAccountSignals(supabase);
@@ -483,18 +485,21 @@ export async function getRoutingPreview(
       : null;
     const nowMs = Date.now();
 
-    const lane = new Map<string, number>();
-    const rule = new Map<string, number>();
-    const band = new Map<string, number>();
-    const facet = {
-      bu: new Set<string>(),
-      icp: new Set<string>(),
-      vertical: new Set<string>(),
-      recordType: new Set<string>(),
-      country: new Set<string>(),
-    };
+    /*
+      Accumulated as DISTINCT ROUTING INPUTS, not per row.
+
+      Rules only ever match on the RoutableRecord fields plus the scored priority —
+      six discrete columns, two booleans, and three 0..100 numbers — so 111,353 rows
+      contain far fewer distinct decisions than records. Measured on the live table:
+      3,937 combinations, a 28x collapse, with population_percentage taking only 38
+      distinct values and priority_score 74 rather than the theoretical 101 each.
+
+      Grouping here is what lets a RULE EDIT skip the scan entirely: the groups depend
+      only on the scoring config, so they can be cached under it and re-routed in
+      milliseconds when the rules change. See getCachedRoutingPreview.
+    */
+    const groups = new Map<string, RoutingScoreGroup>();
     let total = 0;
-    let scoreSum = 0;
 
     /*
       Read in parallel slices of the id space, not as one sequential walk.
@@ -558,17 +563,16 @@ export async function getRoutingPreview(
 
         for (const r of rows) {
           const { record, priority } = toScoredRecord(r, signals, scoringConfig, nowMs);
-          const d = routeRecord(record, rules);
-          const key = `${d.route}/${d.stage}`;
-          lane.set(key, (lane.get(key) ?? 0) + 1);
-          rule.set(d.reason, (rule.get(d.reason) ?? 0) + 1);
-          band.set(priority.band, (band.get(priority.band) ?? 0) + 1);
-          if (record.bu) facet.bu.add(record.bu);
-          if (record.icp_code) facet.icp.add(record.icp_code);
-          if (record.vertical) facet.vertical.add(record.vertical);
-          if (record.record_type) facet.recordType.add(record.record_type);
-          if (record.country) facet.country.add(record.country);
-          scoreSum += priority.score;
+          /*
+            Keyed on the scored record itself. Every field routeRecord can read is in
+            here, so two records with the same key are guaranteed the same
+            disposition — which is what makes routing the group instead of the row
+            exact rather than approximate.
+          */
+          const key = `${canonicalJson(record)}|${priority.score}|${priority.band}`;
+          const hit = groups.get(key);
+          if (hit) hit.n += 1;
+          else groups.set(key, { record, score: priority.score, band: priority.band, n: 1 });
           total += 1;
         }
 
@@ -577,38 +581,113 @@ export async function getRoutingPreview(
       }
     });
 
-    const byLane = Array.from(lane.entries())
-      .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
-      .sort((a, b) => b.count - a.count);
-    const byRule = Array.from(rule.entries())
-      .map(([r, count]) => ({ rule: r, count }))
-      .sort((a, b) => b.count - a.count);
-    const byBand = ['P1', 'P2', 'P3', 'P4'].map((b) => ({ band: b, count: band.get(b) ?? 0 }));
-    const sorted = (s: Set<string>) => Array.from(s).sort((a, b) => a.localeCompare(b));
-    return {
-      total,
-      byLane,
-      byRule,
-      byBand,
-      avgPriority: total ? Math.round(scoreSum / total) : 0,
-      facets: {
-        bu: sorted(facet.bu),
-        icp: sorted(facet.icp),
-        vertical: sorted(facet.vertical),
-        recordType: sorted(facet.recordType),
-        country: sorted(facet.country),
-      },
-      partial,
-    };
+    return { groups: Array.from(groups.values()), total, partial };
   } catch (err) {
-    // `empty` alone would show a confident set of zeros. Name the cause.
-    return { ...empty, partial: err instanceof Error ? err.message : String(err) };
+    /*
+      No groups and a stated cause. Returning an empty set silently would let the
+      caller render a confident set of zeros — "nothing would be routed" rather than
+      "the scan failed" — which is the failure the slice walk above already guards
+      against mid-scan.
+    */
+    return { groups: [], total: 0, partial: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * The routing preview: score the table, then apply the rules.
+ *
+ * Kept as one call with its original signature so every existing caller is
+ * unaffected. The two halves it composes are separately cacheable, which is what
+ * getCachedRoutingPreview exploits.
+ */
+export async function getRoutingPreview(
+  rules: RoutingRule[],
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
+): Promise<RoutingPreview> {
+  const { groups, total, partial } = await buildRoutingScoreGroups(scoringConfig);
+  return { ...previewFromScoreGroups(groups, total, rules), partial };
 }
 
 /* -------------------------------------------------------------------------- */
 /* Routing preview, cached                                                    */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * One distinct routing input, and how many records share it.
+ *
+ * The whole preview is derivable from these: lanes and rules by routing each group,
+ * bands and facets by reading its fields, the mean priority by weighting `score` by
+ * `n`. So the expensive half (read 111k rows, score each) can be cached under the
+ * SCORING config alone, and the cheap half (apply the rules) re-run per edit.
+ */
+export interface RoutingScoreGroup {
+  record: RoutableRecord;
+  score: number;
+  band: string;
+  n: number;
+}
+
+/**
+ * The preview, from pre-scored groups. No database access.
+ *
+ * This is the half that depends on the RULES, and it is the reason a rule edit no
+ * longer costs 42 seconds: it routes ~3,937 combinations rather than 111,353 rows.
+ * Exact, not sampled — the group key contains every field routeRecord can read, so
+ * all records in a group necessarily share a disposition.
+ */
+export function previewFromScoreGroups(
+  groups: RoutingScoreGroup[],
+  total: number,
+  rules: RoutingRule[]
+): Omit<RoutingPreview, 'partial'> {
+  const lane = new Map<string, number>();
+  const rule = new Map<string, number>();
+  const band = new Map<string, number>();
+  const facet = {
+    bu: new Set<string>(),
+    icp: new Set<string>(),
+    vertical: new Set<string>(),
+    recordType: new Set<string>(),
+    country: new Set<string>(),
+  };
+  let scoreSum = 0;
+
+  for (const g of groups) {
+    const d = routeRecord(g.record, rules);
+    const key = `${d.route}/${d.stage}`;
+    // `+ g.n`, not `+ 1` — the group stands for n records.
+    lane.set(key, (lane.get(key) ?? 0) + g.n);
+    rule.set(d.reason, (rule.get(d.reason) ?? 0) + g.n);
+    band.set(g.band, (band.get(g.band) ?? 0) + g.n);
+    if (g.record.bu) facet.bu.add(g.record.bu);
+    if (g.record.icp_code) facet.icp.add(g.record.icp_code);
+    if (g.record.vertical) facet.vertical.add(g.record.vertical);
+    if (g.record.record_type) facet.recordType.add(g.record.record_type);
+    if (g.record.country) facet.country.add(g.record.country);
+    scoreSum += g.score * g.n;
+  }
+
+  const sorted = (s: Set<string>) => Array.from(s).sort((a, b) => a.localeCompare(b));
+  return {
+    total,
+    byLane: Array.from(lane.entries())
+      .map(([k, count]) => ({ route: k.split('/')[0], stage: k.split('/')[1], count }))
+      .sort((a, b) => b.count - a.count),
+    byRule: Array.from(rule.entries())
+      .map(([r, count]) => ({ rule: r, count }))
+      .sort((a, b) => b.count - a.count),
+    byBand: ['P1', 'P2', 'P3', 'P4'].map((b) => ({ band: b, count: band.get(b) ?? 0 })),
+    avgPriority: total ? Math.round(scoreSum / total) : 0,
+    facets: {
+      bu: sorted(facet.bu),
+      icp: sorted(facet.icp),
+      vertical: sorted(facet.vertical),
+      recordType: sorted(facet.recordType),
+      country: sorted(facet.country),
+    },
+  };
+}
+
 
 /**
  * JSON with object keys in a fixed order, all the way down.
@@ -632,19 +711,18 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * The cache key: everything the preview is a function of.
+ * The cache key for the SCORED GROUPS: the scoring configuration alone.
  *
- * Keyed on the INPUTS rather than on a policy row id or a single "current" slot,
- * because this screen is where the rules are edited. A snapshot is only ever served
- * for the exact rules and scoring it was built from, so an edited rule is a miss by
- * construction — there is no invalidation step anybody can forget. Flipping a rule
- * back restores a warm preview for free.
+ * Deliberately not (rules, scoring). The groups are a pure function of the scoring
+ * config and the table contents — routing is applied on top afterwards, in 26 ms —
+ * so including the rules would throw away a 42-second scan every time somebody edits
+ * a rule on the screen whose purpose is editing rules. That was the first design and
+ * this is the correction.
  */
-export function routingPreviewFingerprint(
-  rules: RoutingRule[],
+export function routingScoringFingerprint(
   scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
 ): string {
-  return createHash('sha256').update(canonicalJson({ rules, scoringConfig })).digest('hex');
+  return createHash('sha256').update(canonicalJson({ scoringConfig })).digest('hex');
 }
 
 export interface CachedRoutingPreview extends RoutingPreview {
@@ -655,93 +733,113 @@ export interface CachedRoutingPreview extends RoutingPreview {
 }
 
 /**
- * The routing preview, from a snapshot when one matches these exact inputs.
+ * The routing preview, with the expensive half served from cache.
  *
- * Measured at 41.5 s live against 111,353 records, of which ~31 s is transferring the
- * rows — see the migration for why that floor cannot be tuned away and why this is a
- * snapshot rather than a SQL aggregate.
+ * Two stages with different inputs, cached at the seam between them:
  *
- * NO FRESHNESS WINDOW, unlike kpi_snapshots. That deliberately differs: a KPI card
- * goes stale because the underlying leads move, so twelve hours is a judgement about
- * drift. This preview is a pure function of (rules, scoring, table contents), and the
- * first two are in the key — so a snapshot is wrong only when the TABLE has changed.
- * Expiring it on a timer would mean paying 41 s on a schedule to recompute a number
- * that had not moved. The cron refreshes it after ingestion instead, which is when the
- * table actually changes, and `computedAt` is surfaced so the page can say "as of"
- * rather than implying live data.
+ *   score 111,353 rows into ~5,958 groups   keyed on the scoring config    ~42 s
+ *   route those groups with the rules       recomputed every call          ~26 ms
+ *
+ * So a RULE EDIT costs one row read and 26 ms rather than a full rebuild, and the
+ * result is always current for the rules in force — there is no such thing as a
+ * cached preview of the previous ruleset, which is the state that would actually be
+ * dangerous on a screen that gates a bulk re-route.
+ *
+ * NO FRESHNESS WINDOW, unlike kpi_snapshots. The scoring config is in the key, so
+ * stored groups are wrong only when the TABLE has changed; expiring them on a timer
+ * would mean paying 42 s on a schedule to recompute figures that had not moved. The
+ * cron refreshes after ingestion instead, and `computedAt` is surfaced so the page
+ * can say "as of" rather than implying live data.
  */
 export async function getCachedRoutingPreview(
   rules: RoutingRule[],
   scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
 ): Promise<CachedRoutingPreview> {
-  const fingerprint = routingPreviewFingerprint(rules, scoringConfig);
+  const fingerprint = routingScoringFingerprint(scoringConfig);
 
-  const hit = await readRoutingPreviewSnapshot(fingerprint);
-  if (hit) return { ...hit.preview, computedAt: hit.computedAt, source: 'snapshot' };
+  const hit = await readRoutingScoreGroups(fingerprint);
+  if (hit) {
+    return {
+      ...previewFromScoreGroups(hit.groups, hit.total, rules),
+      partial: null,
+      computedAt: hit.computedAt,
+      source: 'snapshot',
+    };
+  }
 
   /*
-    No snapshot for these inputs: compute it and store it, so the next reader is fast
-    even if the cron has not run since the rules were last edited.
+    No groups for this scoring config: build them and store them, so the next reader
+    is fast even if the cron has not run since the policy changed.
 
-    The write is best-effort and its result ignored — a workspace without the migration
-    has no table to write to, and the right outcome there is a slow page, not a broken
-    one. A PARTIAL preview is never stored: `partial` means the scan stopped early, and
-    caching that would serve an incomplete picture of a re-route until the rules changed.
+    The write is best-effort and its result ignored — a workspace without the
+    migration has no table to write to, and the right outcome there is a slow page,
+    not a broken one. A PARTIAL scan is never stored: the slice walk keeps what it
+    counted and says so, and caching that would serve an incomplete picture of a
+    re-route until the scoring policy next changed. Measured: the scan comes back
+    short some runs under load, at roughly 91% of the table.
   */
   const started = Date.now();
-  const fresh = await getRoutingPreview(rules, scoringConfig);
-  if (!fresh.partial && fresh.total > 0) {
-    void writeRoutingPreviewSnapshot(fingerprint, fresh, Date.now() - started);
-  }
-  return { ...fresh, computedAt: null, source: 'computed' };
+  const { groups, total, partial } = await buildRoutingScoreGroups(scoringConfig);
+  if (!partial && total > 0) void writeRoutingScoreGroups(fingerprint, groups, total, Date.now() - started);
+
+  return { ...previewFromScoreGroups(groups, total, rules), partial, computedAt: null, source: 'computed' };
 }
 
-/** Reads one stored preview, or null. Never throws — a missing table is just a miss. */
-async function readRoutingPreviewSnapshot(
+/** Reads one stored group set, or null. Never throws — a missing table is just a miss. */
+async function readRoutingScoreGroups(
   fingerprint: string
-): Promise<{ preview: RoutingPreview; computedAt: string } | null> {
+): Promise<{ groups: RoutingScoreGroup[]; total: number; computedAt: string } | null> {
   try {
     const { data, error } = await getServiceSupabase()
-      .from('routing_preview_snapshots')
-      .select('preview, computed_at')
-      .eq('fingerprint', fingerprint)
+      .from('routing_score_groups')
+      .select('groups, total, computed_at')
+      .eq('scoring_fingerprint', fingerprint)
       .maybeSingle();
     if (error || !data) return null;
-    const row = data as { preview: RoutingPreview; computed_at: string };
-    // A row whose shape predates a change to RoutingPreview is a miss, not a crash.
-    if (!row.preview || typeof row.preview.total !== 'number' || !Array.isArray(row.preview.byLane)) return null;
+    const row = data as { groups: RoutingScoreGroup[]; total: number; computed_at: string };
+    // A row whose shape predates a change to RoutingScoreGroup is a miss, not a crash.
+    if (!Array.isArray(row.groups) || row.groups.length === 0 || typeof row.total !== 'number') return null;
+    if (!row.groups[0]?.record || typeof row.groups[0]?.n !== 'number') return null;
 
     /*
-      Touch last_read_at so pruning can tell a live fingerprint from the fossil of an
-      abandoned rule edit. Fire-and-forget: this is bookkeeping, and failing it must
-      not fail the read it is describing.
+      Touch last_read_at so pruning can tell a live scoring config from the fossil of
+      an abandoned policy edit. Fire-and-forget: bookkeeping must not fail the read it
+      describes.
     */
     void getServiceSupabase()
-      .from('routing_preview_snapshots')
+      .from('routing_score_groups')
       .update({ last_read_at: new Date().toISOString() })
-      .eq('fingerprint', fingerprint)
+      .eq('scoring_fingerprint', fingerprint)
       .then(
         () => undefined,
         () => undefined
       );
 
-    return { preview: row.preview, computedAt: row.computed_at };
+    return { groups: row.groups, total: row.total, computedAt: row.computed_at };
   } catch {
     return null;
   }
 }
 
-/** Stores one preview. Best-effort by design — see getCachedRoutingPreview. */
-async function writeRoutingPreviewSnapshot(
+/** Stores one group set. Best-effort by design — see getCachedRoutingPreview. */
+async function writeRoutingScoreGroups(
   fingerprint: string,
-  preview: RoutingPreview,
+  groups: RoutingScoreGroup[],
+  total: number,
   durationMs: number | null
 ): Promise<boolean> {
   try {
     const now = new Date().toISOString();
-    const { error } = await getServiceSupabase().from('routing_preview_snapshots').upsert(
-      { fingerprint, preview, computed_at: now, last_read_at: now, duration_ms: durationMs },
-      { onConflict: 'fingerprint' }
+    const { error } = await getServiceSupabase().from('routing_score_groups').upsert(
+      {
+        scoring_fingerprint: fingerprint,
+        groups,
+        total,
+        computed_at: now,
+        last_read_at: now,
+        duration_ms: durationMs,
+      },
+      { onConflict: 'scoring_fingerprint' }
     );
     return !error;
   } catch {
@@ -750,49 +848,46 @@ async function writeRoutingPreviewSnapshot(
 }
 
 /**
- * Rebuilds the snapshot for the CURRENT rules, and prunes abandoned ones.
+ * Rebuilds the groups for the CURRENT scoring policy, and prunes abandoned ones.
  *
  * Called by the cron after ingestion, because ingestion is when the table changes and
- * therefore the only thing that can make a stored preview wrong (the rules and scoring
- * are in the key, so they cannot).
+ * therefore the only thing that can make stored groups wrong — the scoring config is
+ * in the key, so it cannot.
  *
- * Only the current ruleset is rebuilt. Refreshing every stored fingerprint would mean
- * paying 41 s per abandoned rule edit, and nothing is going to read those.
+ * Only the current policy is rebuilt. Refreshing every stored fingerprint would mean
+ * 42 s per abandoned policy edit, and nothing is going to read those.
  */
-export async function refreshRoutingPreviewSnapshot(): Promise<{ ok: boolean; message: string }> {
-  const [{ rules }, scoringSet] = await Promise.all([getRoutingPolicy(), getScoringPolicies()]);
-  const fingerprint = routingPreviewFingerprint(rules, scoringSet);
+export async function refreshRoutingScoreGroups(): Promise<{ ok: boolean; message: string }> {
+  const scoringSet = await getScoringPolicies();
+  const fingerprint = routingScoringFingerprint(scoringSet);
 
   const started = Date.now();
-  const preview = await getRoutingPreview(rules, scoringSet);
+  const { groups, total, partial } = await buildRoutingScoreGroups(scoringSet);
   const took = Date.now() - started;
 
-  if (preview.partial) {
-    return { ok: false, message: `Routing preview scan was incomplete (${preview.partial}) — snapshot left alone.` };
+  if (partial) {
+    return { ok: false, message: `Routing scan was incomplete (${partial}) — stored groups left alone.` };
   }
-  const wrote = await writeRoutingPreviewSnapshot(fingerprint, preview, took);
-  if (!wrote) {
-    return { ok: false, message: 'Could not write the snapshot — is the routing_preview_snapshots migration applied?' };
+  if (!(await writeRoutingScoreGroups(fingerprint, groups, total, took))) {
+    return { ok: false, message: 'Could not write the groups — is the routing_score_groups migration applied?' };
   }
 
   /*
-    Fossils of abandoned rule edits. Pruned by LAST READ, not by age: the snapshot for
-    the current ruleset is the one being served and must survive indefinitely, so
-    expiring on computed_at would discard the only row that matters and make the next
-    visit pay 41 s.
+    Fossils of abandoned scoring-policy edits. Pruned by LAST READ, not by age: the
+    current policy's groups are the ones being served and must survive indefinitely.
   */
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const pruned = await getServiceSupabase()
-    .from('routing_preview_snapshots')
+    .from('routing_score_groups')
     .delete()
     .lt('last_read_at', cutoff)
-    .neq('fingerprint', fingerprint)
-    .select('fingerprint');
+    .neq('scoring_fingerprint', fingerprint)
+    .select('scoring_fingerprint');
 
   const prunedCount = pruned.data?.length ?? 0;
   return {
     ok: true,
-    message: `Routing preview snapshot rebuilt in ${(took / 1000).toFixed(1)}s (${preview.total.toLocaleString()} records)${prunedCount ? `, pruned ${prunedCount} stale` : ''}.`,
+    message: `Routing groups rebuilt in ${(took / 1000).toFixed(1)}s (${total.toLocaleString()} records into ${groups.length.toLocaleString()} groups)${prunedCount ? `, pruned ${prunedCount} stale` : ''}.`,
   };
 }
 

@@ -6,7 +6,7 @@ import { isCronSecret } from '@/lib/auth/cronSecret';
 import { isDue } from '@/lib/cron';
 import { logEventAsync } from '@/lib/observability/events';
 import { refreshKpiSnapshots } from '@/lib/kpi';
-import { refreshRoutingPreviewSnapshot } from '@/lib/queries';
+import { refreshRoutingScoreGroups } from '@/lib/queries';
 import { SIGNAL_LEAD, signalLeadFor } from '@/lib/sourceCatalog';
 import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 
@@ -460,7 +460,7 @@ export async function POST(request: NextRequest) {
   */
   await step('routing-preview', job === 'kpi' || job === 'cycle' || job === 'daily', async () => ({
     job: 'routing-preview',
-    ...(await refreshRoutingPreviewSnapshot()),
+    ...(await refreshRoutingScoreGroups()),
   }));
 
   /*
