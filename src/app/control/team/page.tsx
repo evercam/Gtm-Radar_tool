@@ -296,21 +296,48 @@ export default async function TeamPage() {
     );
   }
 
+  /*
+    Two waves, by what actually depends on what.
+
+    Five of these were a Promise.all of three followed by two more awaited one at a
+    time, and getRoster/getAuthSettings depend on nothing in the first group — so the
+    page was serialising ~500 ms for no reason. Measured individually: getUserProfiles
+    314 ms, getRoster 297 ms, getAssignmentRules 265 ms, getAuthSettings 229 ms.
+  */
   const [
     { users, tableMissing: usersMissing },
     { byUser, unassigned, tableMissing: leadsMissing, truncated: loadTruncated },
     assignment,
-  ] = await Promise.all([getUserProfiles(), getTeamLoad(), getAssignmentRules()]);
+    roster,
+    authSettings,
+  ] = await Promise.all([
+    getUserProfiles(),
+    getTeamLoad(),
+    getAssignmentRules(),
+    getRoster(),
+    getAuthSettings(),
+  ]);
   const { rules: assignmentRules, isDefault } = assignment;
-  const roster = await getRoster();
-  const authSettings = await getAuthSettings();
-  const setupState = await readSetupState(roster.rows, assignmentRules);
+
+  /*
+    Second wave: the two things that needed the first.
+
+    readSetupState takes the roster and the rules, so it could not start earlier.
+    loadApolloUsers takes nothing — only the FILTERING of its result needs the roster
+    — and it was the single most expensive call on the page after the rollup (2.5 s,
+    an external API), sitting behind everything else in the chain. Started alongside
+    readSetupState it costs what it costs instead of adding to the total.
+  */
+  const [setupState, apolloUsersRaw] = await Promise.all([
+    readSetupState(roster.rows, assignmentRules),
+    loadApolloUsers(),
+  ]);
 
   // Resolved here rather than in the browser: the roster editor needs it on
   // first paint, and loadApolloUsers caches per process so this is one call
   // per server lifetime, not one per page view.
   const onRoster = new Set(roster.rows.filter((r) => r.email).map((r) => r.email!.trim().toLowerCase()));
-  const apolloRaw = (await loadApolloUsers()).filter((u) => {
+  const apolloRaw = apolloUsersRaw.filter((u) => {
     const name = (u.name ?? `${u.first_name ?? ''} ${u.last_name ?? ''}`).trim();
     const email = (u.email ?? '').trim().toLowerCase();
     // Without both halves a lead owned by them could never be matched back on
