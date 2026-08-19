@@ -1155,7 +1155,7 @@ Paste into the Supabase SQL editor:
 supabase/migrations/20260818220000_phase_normalised.sql
 ```
 
-**What was wrong.** `search_projects` could not filter on phase honestly. The
+**What was wrong.** `gtm_search_projects` could not filter on phase honestly. The
 117-spelling → 11-phase mapping lived only in TypeScript, so the tool fetched the
 top `limit × 40` rows by priority score and folded them in memory. Every project
 in the requested phase below that score cutoff was invisible, and the tool
@@ -1198,7 +1198,7 @@ the duration. On production, as things stand, it is a no-op.
 ### The trigram indexes are optional — read this first
 
 They were originally justified by a measured 9.5 s statement timeout on
-`search_projects(query:)`. **That measurement was wrong**, and the reason is worth
+`gtm_search_projects(query:)`. **That measurement was wrong**, and the reason is worth
 recording: it was taken while the `phase_normalised` column was being added out-of-band,
 which holds an ACCESS EXCLUSIVE lock on the whole table. The query was queued behind
 DDL, not scanning slowly. Re-measured afterwards on fresh, deliberately non-matching

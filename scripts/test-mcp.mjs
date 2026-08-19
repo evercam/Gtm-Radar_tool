@@ -120,10 +120,25 @@ console.log('\nThe tool contract');
   const names = tools.map((t) => t.name).sort();
   check('nine tools are advertised', tools.length === 9, names.join(', '));
 
-  const verbs = tools.map((t) => t.name);
+  /*
+    Every name is `gtm_` + a verb, and both halves are checked.
+
+    The prefix exists because an agent holds tools from several servers at once and
+    `get_project` says nothing about whose project. The verb tests below therefore
+    read the name AFTER the namespace — strip it once here rather than teaching
+    four regexes about it, and assert the prefix itself so dropping it fails loudly
+    instead of quietly reverting the namespacing.
+  */
+  const NS = 'gtm_';
+  check(
+    'every tool is namespaced',
+    tools.every((t) => t.name.startsWith(NS)),
+    names.filter((n) => !n.startsWith(NS)).join(', ')
+  );
+  const verbs = tools.map((t) => t.name.slice(NS.length));
 
   check(
-    'every tool is verb-first',
+    'every tool is verb-first after the namespace',
     verbs.every((v) => /^(search|get|list|summarise)_/.test(v)),
     names.join(', ')
   );
@@ -137,7 +152,7 @@ console.log('\nThe tool contract');
     The safety boundary: this server is read-only by design.
 
     Anchored on the leading verb rather than matched anywhere in the name, because
-    a substring test flags `list_export_runs` — which only READS export history.
+    a substring test flags `gtm_list_export_runs` — which only READS export history.
   */
   check(
     'no tool leads with a mutating verb',
@@ -166,8 +181,8 @@ console.log('\nThe tool contract');
 
 console.log('\nReading real data');
 {
-  const sum = payload(await send('tools/call', { name: 'summarise_pipeline', arguments: { groupBy: 'phase' } }));
-  check('summarise_pipeline returns totals', typeof sum?.records === 'number' && sum.records > 0, JSON.stringify(sum)?.slice(0, 140));
+  const sum = payload(await send('tools/call', { name: 'gtm_summarise_pipeline', arguments: { groupBy: 'phase' } }));
+  check('gtm_summarise_pipeline returns totals', typeof sum?.records === 'number' && sum.records > 0, JSON.stringify(sum)?.slice(0, 140));
   check('grouped by normalised phase', Array.isArray(sum?.groups) && sum.groups.length > 0 && sum.groups.length <= 12, `${sum?.groups?.length} groups`);
 
   /*
@@ -189,25 +204,25 @@ console.log('\nReading real data');
     check('and no truncation was reported', !sum?.truncated, JSON.stringify(sum?.warning));
   }
 
-  const roster = payload(await send('tools/call', { name: 'list_assignees', arguments: {} }));
-  check('list_assignees returns people', Array.isArray(roster?.people), JSON.stringify(roster)?.slice(0, 120));
+  const roster = payload(await send('tools/call', { name: 'gtm_list_assignees', arguments: {} }));
+  check('gtm_list_assignees returns people', Array.isArray(roster?.people), JSON.stringify(roster)?.slice(0, 120));
 
-  const hand = payload(await send('tools/call', { name: 'get_handover_status', arguments: {} }));
-  check('get_handover_status reports per person', Array.isArray(hand?.people), JSON.stringify(hand)?.slice(0, 120));
+  const hand = payload(await send('tools/call', { name: 'gtm_get_handover_status', arguments: {} }));
+  check('gtm_get_handover_status reports per person', Array.isArray(hand?.people), JSON.stringify(hand)?.slice(0, 120));
 
-  const runs = payload(await send('tools/call', { name: 'list_export_runs', arguments: { limit: 3 } }));
-  check('list_export_runs returns history', Array.isArray(runs?.runs), JSON.stringify(runs)?.slice(0, 120));
+  const runs = payload(await send('tools/call', { name: 'gtm_list_export_runs', arguments: { limit: 3 } }));
+  check('gtm_list_export_runs returns history', Array.isArray(runs?.runs), JSON.stringify(runs)?.slice(0, 120));
 
-  const found = payload(await send('tools/call', { name: 'search_projects', arguments: { limit: 3 } }));
-  check('search_projects returns projects', Array.isArray(found?.projects) && found.projects.length > 0, JSON.stringify(found)?.slice(0, 140));
+  const found = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { limit: 3 } }));
+  check('gtm_search_projects returns projects', Array.isArray(found?.projects) && found.projects.length > 0, JSON.stringify(found)?.slice(0, 140));
   check(
     'each row carries the normalised phase',
     (found?.projects ?? []).every((p) => 'phase' in p && 'phaseRaw' in p)
   );
 
   if (found?.projects?.[0]?.ref) {
-    const one = payload(await send('tools/call', { name: 'get_project', arguments: { ref: found.projects[0].ref } }));
-    check('get_project resolves by ref', one?.ref === found.projects[0].ref, JSON.stringify(one)?.slice(0, 140));
+    const one = payload(await send('tools/call', { name: 'gtm_get_project', arguments: { ref: found.projects[0].ref } }));
+    check('gtm_get_project resolves by ref', one?.ref === found.projects[0].ref, JSON.stringify(one)?.slice(0, 140));
     check('and includes the rendered brief', typeof one?.brief === 'string' && one.brief.length > 40);
   }
 }
@@ -230,7 +245,7 @@ console.log('\nPaging walks the whole set exactly once');
 
   while (pages < 5) {
     const args = { band: 'P1', limit: PAGE, ...(cursor ? { cursor } : {}) };
-    const page = payload(await send('tools/call', { name: 'search_projects', arguments: args }));
+    const page = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: args }));
     if (pages === 0) check('the first page returns rows', (page?.projects ?? []).length > 0, JSON.stringify(page)?.slice(0, 140));
     for (const p of page?.projects ?? []) seen.push(p.id);
     pages += 1;
@@ -242,7 +257,7 @@ console.log('\nPaging walks the whole set exactly once');
   check('no row was served twice', new Set(seen).size === seen.length, `${seen.length} rows, ${new Set(seen).size} distinct`);
 
   // The same rows, unpaged, must be the same set — nothing fell through a boundary.
-  const flat = payload(await send('tools/call', { name: 'search_projects', arguments: { band: 'P1', limit: seen.length } }));
+  const flat = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { band: 'P1', limit: seen.length } }));
   const flatIds = (flat?.projects ?? []).map((p) => p.id);
   check(
     'and the paged walk matches the unpaged one',
@@ -250,32 +265,32 @@ console.log('\nPaging walks the whole set exactly once');
     `paged ${seen.length} vs flat ${flatIds.length}`
   );
 
-  const bogus = await send('tools/call', { name: 'search_projects', arguments: { cursor: 'not-a-real-cursor' } });
+  const bogus = await send('tools/call', { name: 'gtm_search_projects', arguments: { cursor: 'not-a-real-cursor' } });
   const err = payload(bogus);
   check('a bogus cursor is refused with a code', err?.code === 'invalid_cursor', JSON.stringify(err)?.slice(0, 140));
 }
 
 console.log('\nFilters actually filter');
 {
-  const p1 = payload(await send('tools/call', { name: 'search_projects', arguments: { band: 'P1', limit: 5 } }));
+  const p1 = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { band: 'P1', limit: 5 } }));
   check('band filter holds', (p1?.projects ?? []).every((p) => p.band === 'P1'), JSON.stringify(p1?.projects?.map((p) => p.band)));
 
-  const op = payload(await send('tools/call', { name: 'search_projects', arguments: { phase: 'Operating', limit: 5 } }));
+  const op = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { phase: 'Operating', limit: 5 } }));
   check('normalised phase filter holds', (op?.projects ?? []).every((p) => p.phase === 'Operating'), JSON.stringify(op?.projects?.map((p) => p.phase)));
 
-  const sent = payload(await send('tools/call', { name: 'search_projects', arguments: { exported: true, limit: 5 } }));
+  const sent = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { exported: true, limit: 5 } }));
   check('exported filter holds', (sent?.projects ?? []).every((p) => Boolean(p.exportedAt)));
 }
 
 console.log('\nWhere the data comes from');
 {
-  const src = payload(await send('tools/call', { name: 'list_sources', arguments: { withRecordsOnly: true } }));
-  check('list_sources returns contributing sources', Array.isArray(src?.sources) && src.sources.length > 0, JSON.stringify(src)?.slice(0, 140));
+  const src = payload(await send('tools/call', { name: 'gtm_list_sources', arguments: { withRecordsOnly: true } }));
+  check('gtm_list_sources returns contributing sources', Array.isArray(src?.sources) && src.sources.length > 0, JSON.stringify(src)?.slice(0, 140));
   check('withRecordsOnly means what it says', (src?.sources ?? []).every((x) => x.records > 0));
   check('and the total matches the rows', src?.totalRecords === (src?.sources ?? []).reduce((n, x) => n + x.records, 0));
 
-  const ing = payload(await send('tools/call', { name: 'list_ingestion_runs', arguments: { limit: 5 } }));
-  check('list_ingestion_runs returns pulls', Array.isArray(ing?.runs), JSON.stringify(ing)?.slice(0, 140));
+  const ing = payload(await send('tools/call', { name: 'gtm_list_ingestion_runs', arguments: { limit: 5 } }));
+  check('gtm_list_ingestion_runs returns pulls', Array.isArray(ing?.runs), JSON.stringify(ing)?.slice(0, 140));
   /*
     Ingestion runs are fetches FROM a source; export runs are sends TO Apollo.
     They are different tables and different questions, and conflating them is the
@@ -286,7 +301,7 @@ console.log('\nWhere the data comes from');
 
 console.log('\nThe NHS construction leads are reachable');
 {
-  const nhs = payload(await send('tools/call', { name: 'search_projects', arguments: { buildingType: 'Healthcare', limit: 50 } }));
+  const nhs = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { buildingType: 'Healthcare', limit: 50 } }));
   check('buildingType finds them', Array.isArray(nhs?.projects), JSON.stringify(nhs)?.slice(0, 140));
   check(
     'and every hit really is one',
@@ -300,44 +315,44 @@ console.log('\nThe NHS construction leads are reachable');
     JSON.stringify((nhs?.projects ?? []).map((p) => p.buildingType).filter((b) => /survey|maintenance/i.test(b ?? '')))
   );
 
-  const bySource = payload(await send('tools/call', { name: 'search_projects', arguments: { source: 'find_a_tender_uk', limit: 5 } }));
+  const bySource = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { source: 'find_a_tender_uk', limit: 5 } }));
   check('source filter holds', (bySource?.projects ?? []).every((p) => p.source === 'find_a_tender_uk'));
 
-  const rich = payload(await send('tools/call', { name: 'search_projects', arguments: { minValue: 1_000_000, limit: 5 } }));
+  const rich = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { minValue: 1_000_000, limit: 5 } }));
   check('minValue filter holds', (rich?.projects ?? []).every((p) => (p.value ?? 0) >= 1_000_000));
 }
 
 console.log('\nErrors are structured, not opaque');
 {
-  const bad = await send('tools/call', { name: 'get_project', arguments: {} });
+  const bad = await send('tools/call', { name: 'gtm_get_project', arguments: {} });
   const body = payload(bad);
   check('a missing argument is reported with a code', body?.code === 'missing_argument', JSON.stringify(body));
-  const ghost = payload(await send('tools/call', { name: 'get_project', arguments: { ref: 'NOPE-000' } }));
+  const ghost = payload(await send('tools/call', { name: 'gtm_get_project', arguments: { ref: 'NOPE-000' } }));
   check('an unknown ref says not_found', ghost?.code === 'not_found', JSON.stringify(ghost));
-  const who = payload(await send('tools/call', { name: 'search_projects', arguments: { assignee: 'Nobody McGhost' } }));
+  const who = payload(await send('tools/call', { name: 'gtm_search_projects', arguments: { assignee: 'Nobody McGhost' } }));
   check('an unknown assignee lists the real ones', who?.code === 'assignee_not_found' && Array.isArray(who?.details?.available), JSON.stringify(who)?.slice(0, 160));
-  const acct = payload(await send('tools/call', { name: 'get_account', arguments: { accountKey: 'no-such-account-key' } }));
+  const acct = payload(await send('tools/call', { name: 'gtm_get_account', arguments: { accountKey: 'no-such-account-key' } }));
   check('an unknown account says not_found', acct?.code === 'not_found', JSON.stringify(acct)?.slice(0, 140));
 }
 
 console.log('\nEvery tool is reachable from another tool');
 {
   /*
-    get_account takes an accountKey, and for a while nothing in this server ever
+    gtm_get_account takes an accountKey, and for a while nothing in this server ever
     RETURNED one — so an agent could see the tool, read its schema, and have no
     way to obtain a valid argument for it. A tool nobody can call is not a tool.
 
     This asserts the handle round-trips: search hands out an accountKey, and
-    get_account accepts it.
+    gtm_get_account accepts it.
   */
   const withKey = payload(
-    await send('tools/call', { name: 'search_projects', arguments: { hasContact: true, limit: 60 } })
+    await send('tools/call', { name: 'gtm_search_projects', arguments: { hasContact: true, limit: 60 } })
   );
   const key = (withKey?.projects ?? []).map((p) => p.accountKey).find(Boolean);
-  check('search_projects hands out an accountKey', Boolean(key), 'no project in the sample carried one');
+  check('gtm_search_projects hands out an accountKey', Boolean(key), 'no project in the sample carried one');
   if (key) {
-    const linked = payload(await send('tools/call', { name: 'get_account', arguments: { accountKey: key } }));
-    check('and get_account accepts it', linked?.accountKey === key, JSON.stringify(linked)?.slice(0, 160));
+    const linked = payload(await send('tools/call', { name: 'gtm_get_account', arguments: { accountKey: key } }));
+    check('and gtm_get_account accepts it', linked?.accountKey === key, JSON.stringify(linked)?.slice(0, 160));
     check('returning that account’s projects', Array.isArray(linked?.projects), JSON.stringify(linked)?.slice(0, 140));
   }
 }

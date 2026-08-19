@@ -121,7 +121,7 @@ interface KeysetQuery {
 /**
  * Pages a select to exhaustion by KEYSET, not by offset.
  *
- * Only a fallback now — summarise_pipeline aggregates in SQL — but it carried the
+ * Only a fallback now — gtm_summarise_pipeline aggregates in SQL — but it carried the
  * same fault queries.ts documented and fixed in getSourceStats, and left unfixed
  * it is a trap for whoever calls it next.
  *
@@ -246,10 +246,10 @@ function afterCursor(c: Cursor): string {
 
 export const MCP_TOOLS: McpTool[] = [
   {
-    name: 'search_projects',
+    name: 'gtm_search_projects',
     title: 'Search projects',
     description:
-      'Find construction projects in the pipeline, highest priority score first. Filters are combined with AND. Returns a summary row per project — use get_project for the full record. Phase filtering uses the normalised vocabulary, not the raw source wording. When truncated is true a nextCursor is returned: call again with that cursor and identical filters to get the following page.',
+      'Find construction projects in the pipeline, highest priority score first. Filters are combined with AND. Returns a summary row per project — use gtm_get_project for the full record. Phase filtering uses the normalised vocabulary, not the raw source wording. When truncated is true a nextCursor is returned: call again with that cursor and identical filters to get the following page.',
     permission: 'leads.view.all',
     annotations: READ_ONLY,
     schema: {
@@ -349,7 +349,7 @@ export const MCP_TOOLS: McpTool[] = [
       /*
         The migration may not be applied yet, so fall back to the old fold.
 
-        Same reasoning as summarise_pipeline's rollup fallback: a slow, caveated
+        Same reasoning as gtm_summarise_pipeline's rollup fallback: a slow, caveated
         answer beats `migration_required` from a tool whose whole job is finding
         projects, and the branch disappears once the column exists. Matched on the
         column name so an unrelated failure still surfaces as itself.
@@ -405,7 +405,7 @@ export const MCP_TOOLS: McpTool[] = [
           ref: r.ref_code,
           name: r.canonical_name,
           company: r.company_name_raw,
-          // The handle get_account takes. Without it that tool is unreachable.
+          // The handle gtm_get_account takes. Without it that tool is unreachable.
           accountKey: r.account_key,
           party: partyLabel(r.icp_code as string),
           bu: r.bu,
@@ -430,7 +430,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_project',
+    name: 'gtm_get_project',
     title: 'Get one project in full',
     description:
       'Everything held on a single project, including the rendered call brief a rep would read: why now, the facts, timing, the full contact committee, priority reasoning and the source link. Accepts either the record id or the ref code.',
@@ -453,7 +453,7 @@ export const MCP_TOOLS: McpTool[] = [
       /*
         A superset of the search row, deliberately.
 
-        This drills down from search_projects, and it used to return TWELVE
+        This drills down from gtm_search_projects, and it used to return TWELVE
         fields where the summary returns twenty — band, score, value, location,
         building type and source all vanished on the way in. Following a search
         into one record lost information, which is backwards. Whatever the
@@ -492,7 +492,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_handover_status',
+    name: 'gtm_get_handover_status',
     title: 'Who received leads, and what is stuck',
     description:
       'Per roster member: leads already sent to Apollo, leads ready to send on the next run, and the first blocking reason for the rest. Uses the export\'s own eligibility gates, so "ready" is what would genuinely be sent.',
@@ -520,7 +520,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_export_runs',
+    name: 'gtm_list_export_runs',
     title: 'Recent Apollo export runs',
     description:
       'History of sends to Apollo, newest first — when, who triggered it, what scope, and the created/existing/failed counts. Apollo raises no notification of its own, so this is the only record that an export happened.',
@@ -556,7 +556,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_assignees',
+    name: 'gtm_list_assignees',
     title: 'The roster',
     description:
       'Who can receive leads, their daily quota, and the scope that decides which leads reach them. An empty bu/vertical/region list means no restriction on that axis, not "nothing".',
@@ -585,7 +585,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'summarise_pipeline',
+    name: 'gtm_summarise_pipeline',
     title: 'Pipeline totals',
     description:
       'Counts across the whole table, grouped by a dimension. Phase uses the normalised 11-value vocabulary. Paged, so totals are exact rather than a 1000-row sample.',
@@ -676,7 +676,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_sources',
+    name: 'gtm_list_sources',
     title: 'Where the data comes from',
     description:
       'Every source the tool can pull from, with how many records it has contributed, how complete they are, when it last delivered, and whether it is switched on. Use this to answer "why do we have no leads in X" before assuming the pipeline is broken.',
@@ -715,10 +715,10 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_ingestion_runs',
+    name: 'gtm_list_ingestion_runs',
     title: 'Recent source pulls',
     description:
-      'History of fetches FROM sources — distinct from list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
+      'History of fetches FROM sources — distinct from gtm_list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
     permission: 'sources.run',
     annotations: READ_ONLY,
     schema: {
@@ -752,7 +752,7 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_account',
+    name: 'gtm_get_account',
     title: 'One company and every project it touches',
     description:
       'A company-level view rather than a per-project one: the account record, its enrichment, and its linked projects, highest-scoring first. This is the view for "what else is this contractor doing" before a call. projectCount is the true total; the projects list is capped, so compare it against projectsShown before summarising a portfolio.',

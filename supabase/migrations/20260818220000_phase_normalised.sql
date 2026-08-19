@@ -171,7 +171,7 @@ CREATE INDEX IF NOT EXISTS canonical_projects_phase_normalised_idx
 /*
   Free-text search, kept flat as the table grows. Separate from phase, same tool.
 
-  `search_projects(query:)` runs ILIKE '%…%' across two columns. A LEADING
+  `gtm_search_projects(query:)` runs ILIKE '%…%' across two columns. A LEADING
   wildcard cannot use a btree, so this is a sequential scan of every row —
   currently ~400-800ms for a term that matches nothing, and linear in the table
   size from here. Trigram indexes are the only thing that helps a leading wildcard.

@@ -28,17 +28,21 @@ and everything in `npm test` is pure and offline.
 
 | Tool | Answers |
 | --- | --- |
-| `search_projects` | "Show me P1 pre-construction jobs in the USA that Anas holds and we haven't sent yet" |
-| `get_project` | Everything on one project, including the same call brief the export writes into Apollo |
-| `get_handover_status` | Who received leads, who is ready on the next run, and the first blocking reason for the rest |
-| `list_export_runs` | When we last sent to Apollo, what scope, and the created/existing/failed counts |
-| `list_assignees` | The roster, quotas, and the scope that decides who gets what |
-| `summarise_pipeline` | Counts across the whole table by phase, band, vertical, BU or party |
-| `list_sources` | Where the data comes from — records contributed, completeness, last delivery, on/off |
-| `list_ingestion_runs` | Pulls **from** sources, with the error when one failed (not the same as export runs) |
-| `get_account` | One company and every project linked to it — "what else is this contractor doing" |
+| `gtm_search_projects` | "Show me P1 pre-construction jobs in the USA that Anas holds and we haven't sent yet" |
+| `gtm_get_project` | Everything on one project, including the same call brief the export writes into Apollo |
+| `gtm_get_handover_status` | Who received leads, who is ready on the next run, and the first blocking reason for the rest |
+| `gtm_list_export_runs` | When we last sent to Apollo, what scope, and the created/existing/failed counts |
+| `gtm_list_assignees` | The roster, quotas, and the scope that decides who gets what |
+| `gtm_summarise_pipeline` | Counts across the whole table by phase, band, vertical, BU or party |
+| `gtm_list_sources` | Where the data comes from — records contributed, completeness, last delivery, on/off |
+| `gtm_list_ingestion_runs` | Pulls **from** sources, with the error when one failed (not the same as export runs) |
+| `gtm_get_account` | One company and every project linked to it — "what else is this contractor doing" |
 
-Filters on `search_projects` combine with AND. `phase` uses the normalised
+Every name carries a `gtm_` prefix. An agent usually holds tools from several
+servers at once, and `get_project` does not say whose project — the namespace is
+what stops it guessing between two of them.
+
+Filters on `gtm_search_projects` combine with AND. `phase` uses the normalised
 eleven-value vocabulary from `src/lib/phase.ts`, not the 117 raw source spellings
 — but each row returns `phaseRaw` too, so you can see what the feed actually said.
 
@@ -46,13 +50,13 @@ eleven-value vocabulary from `src/lib/phase.ts`, not the 117 raw source spelling
 `"Healthcare"` for all of it, `"Healthcare — refurbishment"` for one kind. See
 [nhs-health-infrastructure.md](nhs-health-infrastructure.md).
 
-Two run histories exist and they answer different questions. `list_ingestion_runs`
-is what we fetched **from** a source; `list_export_runs` is what we sent **to**
+Two run histories exist and they answer different questions. `gtm_list_ingestion_runs`
+is what we fetched **from** a source; `gtm_list_export_runs` is what we sent **to**
 Apollo. Reaching for the wrong one is the easiest mistake to make here.
 
 ## Paging, and knowing when you have everything
 
-`search_projects` returns at most 200 rows. When more match, `truncated` is
+`gtm_search_projects` returns at most 200 rows. When more match, `truncated` is
 true and `nextCursor` carries an opaque position — call again with that cursor and
 **the same filters** to continue. The cursor is a keyset on
 `(priority_score, id)`, not an offset: it resumes at a known row rather than
