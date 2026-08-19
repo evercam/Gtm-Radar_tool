@@ -31,6 +31,20 @@ export async function resolve(specifier, context, next) {
   // should take.
   if (specifier === 'next/headers') return next(NEXT_HEADERS_STUB, context);
 
+  /*
+    `next/server` and friends, with the extension Node will not infer.
+
+    Next ships no "exports" map, so a bare `next/server` resolves as a plain path
+    to a file that does not exist — the real file is `next/server.js`. A bundler
+    adds the extension; Node's ESM loader does not, which is the same gap this
+    hook already closes for relative specifiers. Without this, any route handler
+    is unimportable from a script, and the HTTP transport cannot be tested at all.
+  */
+  if (/^next\/[a-z-]+$/.test(specifier)) {
+    const file = path.resolve(import.meta.dirname, '../../node_modules', `${specifier}.js`);
+    if (existsSync(file)) return next(pathToFileURL(file).href, context);
+  }
+
   if (specifier.startsWith('@/')) {
     const hit = firstExisting(path.join(SRC, specifier.slice(2)));
     return next(pathToFileURL(hit ?? path.join(SRC, `${specifier.slice(2)}.ts`)).href, context);

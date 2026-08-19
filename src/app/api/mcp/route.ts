@@ -72,7 +72,56 @@ const PROTOCOL_VERSION = '2025-06-18';
  * rather than echoing whatever a client claims, so an unknown future revision
  * gets our version back and a decision to make, instead of a false agreement.
  */
-const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18'];
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18'];
+
+/**
+ * What revision to answer `initialize` in.
+ *
+ * Exported and pure so it can be tested without a request, a token or a running
+ * server. That is the point of pulling it out: getting this wrong does not throw
+ * and does not fail a query — a client whose revision is flatly contradicted just
+ * refuses the session, and the symptom is "the connector does not work" with
+ * nothing in any log. The HTTP transport has no end-to-end test that can reach
+ * this (every path past the handshake needs a credential), so the decision is
+ * lifted to somewhere a test can hold it directly.
+ *
+ * Echo back what the client asked for when we speak it; otherwise answer with the
+ * NEWEST we support and let the client decide. Newest, not oldest: this value is
+ * the answer to "what is the best you can do", and the previous default of
+ * `2024-11-05` pushed an unrecognised client down to the oldest revision on the
+ * list rather than up.
+ */
+export function negotiateProtocolVersion(asked: unknown): string {
+  return typeof asked === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSION;
+}
+
+/**
+ * The `tools/list` payload for a caller holding `permissions`.
+ *
+ * Pure, exported, and separate from the handler for the same reason as above:
+ * the two things worth asserting about this list — that it hides tools the caller
+ * cannot call, and that every entry carries its annotations — are decisions, not
+ * plumbing, and reaching them through the handler would need a live credential.
+ */
+export function listToolsFor(permissions: string[]) {
+  const holder = { permissions };
+  return MCP_TOOLS.filter((t) => can(holder, t.permission)).map((t) => ({
+    name: t.name,
+    title: t.title,
+    description: t.description,
+    inputSchema: toolInputSchema(t),
+    /*
+      The read-only promise, in the form a client can act on.
+
+      It is stated in prose in three places in this repo and was nowhere a
+      machine could read it — which matters because a hosted client's research
+      mode calls connector tools with no per-call approval. With `readOnlyHint`
+      present, a client can auto-approve these and still stop at the first tool
+      that does not carry it.
+    */
+    annotations: t.annotations,
+  }));
+}
 
 /**
  * CORS, so a browser-based MCP client can talk to this at all.
@@ -224,11 +273,8 @@ export async function POST(request: NextRequest) {
       refuse the session, and being wrong about that is a connection failure with
       no visible cause.
     */
-    const asked = (body.params?.protocolVersion as string) ?? '';
-    const speaking = SUPPORTED_PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSION;
-
     return rpcResult(id, {
-      protocolVersion: speaking,
+      protocolVersion: negotiateProtocolVersion(body.params?.protocolVersion),
       capabilities: { tools: {} },
       serverInfo: { name: 'gtm-radar', version: '1.0.0' },
     });
@@ -242,25 +288,7 @@ export async function POST(request: NextRequest) {
       against the list it is given, so advertising a tool it cannot use produces
       a confident plan that dies halfway through.
     */
-    const allowed = MCP_TOOLS.filter((t) => can(holder, t.permission));
-    return rpcResult(id, {
-      tools: allowed.map((t) => ({
-        name: t.name,
-        title: t.title,
-        description: t.description,
-        inputSchema: toolInputSchema(t),
-        /*
-          The read-only promise, in the form a client can act on.
-
-          It is stated in prose in three places in this repo and was nowhere a
-          machine could read it — which matters because a hosted client's
-          research mode calls connector tools with no per-call approval. With
-          `readOnlyHint` present, a client can auto-approve these and still stop
-          at the first tool that does not carry it.
-        */
-        annotations: t.annotations,
-      })),
-    });
+    return rpcResult(id, { tools: listToolsFor(auth.permissions) });
   }
 
   if (method === 'tools/call') {

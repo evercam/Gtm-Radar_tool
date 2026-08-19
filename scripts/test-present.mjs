@@ -199,5 +199,40 @@ check('an array of scalars', presentResult(['a', 'b']).includes('- a'));
 check('a string', presentResult('hello') === 'hello');
 check('an empty array', presentResult([]) === '_Nothing to show._');
 
+/*
+  The rendered table is capped; the object beside it is not.
+
+  Every result travels twice — once as this markdown in `content`, once exactly
+  in `structuredContent` — and at 200 rows the second copy is the one nobody
+  reads. So the markdown is a readable head with a footer pointing at the rest.
+
+  Untested until now, and invisibly so: every other case in this file uses one or
+  two rows, so none of them ever entered the capped branch. A later edit to
+  table() could have uncapped it and the whole file would still have passed.
+*/
+group('A long table is capped for reading, not for computing');
+{
+  const CAP = 25;
+  const rows = Array.from({ length: 60 }, (_, i) => ({ ref: `R-${i}`, name: `Project ${i}`, score: i }));
+  const rendered = presentResult({ count: rows.length, projects: rows });
+  const bodyRows = rendered.split('\n').filter((l) => /^\| R-\d+ /.test(l));
+
+  check(`only ${CAP} rows are rendered`, bodyRows.length === CAP, `${bodyRows.length} rendered`);
+  check('the first row is kept', rendered.includes('| R-0 '));
+  check('the last row is not', !rendered.includes('| R-59 '));
+  check(
+    'and the footer says how many were held back, and where they are',
+    /Showing 25 of 60/.test(rendered) && /structuredContent/.test(rendered),
+    rendered.split('\n').slice(-1)[0]
+  );
+
+  // The cap is a rendering decision. It must not reach back into the data.
+  check('the caller still holds every row', rows.length === 60);
+
+  const short = presentResult({ projects: rows.slice(0, CAP) });
+  check('a table exactly at the cap renders whole', short.split('\n').filter((l) => /^\| R-\d+ /.test(l)).length === CAP);
+  check('and says nothing about omissions', !/Showing/.test(short), short.split('\n').slice(-1)[0]);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
