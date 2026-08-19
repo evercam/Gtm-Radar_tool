@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { getReadSupabase, getServiceSupabase } from '@/lib/supabase/server';
 import { acrossSlices } from '@/lib/db/slices';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CanonicalProjectRow } from '@/lib/supabase/types';
 import { DEFAULT_RULES, route as routeRecord, type RoutingRule, type RoutableRecord } from '@/lib/routing';
 import { scorePriority, DEFAULT_PRIORITY_CONFIG, type PriorityConfig, type PriorityVerdict } from '@/lib/priority';
-import { configForBu, getEnrichmentPolicy, type ScoringPolicySet } from '@/lib/policies';
+import { configForBu, getEnrichmentPolicy, getScoringPolicies, type ScoringPolicySet } from '@/lib/policies';
 import { recordReachable } from '@/lib/export/reachability';
 import { planSupply, adviseRebalance, type SupplyPlan, type RebalanceAdvice } from '@/lib/supply';
 import { getDemandPlan } from '@/lib/enrich/demand';
@@ -603,6 +604,196 @@ export async function getRoutingPreview(
     // `empty` alone would show a confident set of zeros. Name the cause.
     return { ...empty, partial: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Routing preview, cached                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * JSON with object keys in a fixed order, all the way down.
+ *
+ * The fingerprint below hashes this, and `JSON.stringify` preserves insertion order —
+ * so the same ruleset arriving with its keys in a different order (a different code
+ * path building the object, a round trip through a form, a reordered column list from
+ * PostgREST) would hash differently and miss the cache on every load. The bug would
+ * present as "the snapshot never works" with nothing wrong in the snapshot.
+ *
+ * Array order is PRESERVED, deliberately: routing rules are evaluated in order, so two
+ * rulesets differing only in sequence are genuinely different previews.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/**
+ * The cache key: everything the preview is a function of.
+ *
+ * Keyed on the INPUTS rather than on a policy row id or a single "current" slot,
+ * because this screen is where the rules are edited. A snapshot is only ever served
+ * for the exact rules and scoring it was built from, so an edited rule is a miss by
+ * construction — there is no invalidation step anybody can forget. Flipping a rule
+ * back restores a warm preview for free.
+ */
+export function routingPreviewFingerprint(
+  rules: RoutingRule[],
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
+): string {
+  return createHash('sha256').update(canonicalJson({ rules, scoringConfig })).digest('hex');
+}
+
+export interface CachedRoutingPreview extends RoutingPreview {
+  /** When the underlying scan ran. Null when it just ran, inline, for this request. */
+  computedAt: string | null;
+  /** How the caller got here, so the page can be honest about what it is showing. */
+  source: 'snapshot' | 'computed';
+}
+
+/**
+ * The routing preview, from a snapshot when one matches these exact inputs.
+ *
+ * Measured at 41.5 s live against 111,353 records, of which ~31 s is transferring the
+ * rows — see the migration for why that floor cannot be tuned away and why this is a
+ * snapshot rather than a SQL aggregate.
+ *
+ * NO FRESHNESS WINDOW, unlike kpi_snapshots. That deliberately differs: a KPI card
+ * goes stale because the underlying leads move, so twelve hours is a judgement about
+ * drift. This preview is a pure function of (rules, scoring, table contents), and the
+ * first two are in the key — so a snapshot is wrong only when the TABLE has changed.
+ * Expiring it on a timer would mean paying 41 s on a schedule to recompute a number
+ * that had not moved. The cron refreshes it after ingestion instead, which is when the
+ * table actually changes, and `computedAt` is surfaced so the page can say "as of"
+ * rather than implying live data.
+ */
+export async function getCachedRoutingPreview(
+  rules: RoutingRule[],
+  scoringConfig: PriorityConfig | ScoringPolicySet = DEFAULT_PRIORITY_CONFIG
+): Promise<CachedRoutingPreview> {
+  const fingerprint = routingPreviewFingerprint(rules, scoringConfig);
+
+  const hit = await readRoutingPreviewSnapshot(fingerprint);
+  if (hit) return { ...hit.preview, computedAt: hit.computedAt, source: 'snapshot' };
+
+  /*
+    No snapshot for these inputs: compute it and store it, so the next reader is fast
+    even if the cron has not run since the rules were last edited.
+
+    The write is best-effort and its result ignored — a workspace without the migration
+    has no table to write to, and the right outcome there is a slow page, not a broken
+    one. A PARTIAL preview is never stored: `partial` means the scan stopped early, and
+    caching that would serve an incomplete picture of a re-route until the rules changed.
+  */
+  const started = Date.now();
+  const fresh = await getRoutingPreview(rules, scoringConfig);
+  if (!fresh.partial && fresh.total > 0) {
+    void writeRoutingPreviewSnapshot(fingerprint, fresh, Date.now() - started);
+  }
+  return { ...fresh, computedAt: null, source: 'computed' };
+}
+
+/** Reads one stored preview, or null. Never throws — a missing table is just a miss. */
+async function readRoutingPreviewSnapshot(
+  fingerprint: string
+): Promise<{ preview: RoutingPreview; computedAt: string } | null> {
+  try {
+    const { data, error } = await getServiceSupabase()
+      .from('routing_preview_snapshots')
+      .select('preview, computed_at')
+      .eq('fingerprint', fingerprint)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as { preview: RoutingPreview; computed_at: string };
+    // A row whose shape predates a change to RoutingPreview is a miss, not a crash.
+    if (!row.preview || typeof row.preview.total !== 'number' || !Array.isArray(row.preview.byLane)) return null;
+
+    /*
+      Touch last_read_at so pruning can tell a live fingerprint from the fossil of an
+      abandoned rule edit. Fire-and-forget: this is bookkeeping, and failing it must
+      not fail the read it is describing.
+    */
+    void getServiceSupabase()
+      .from('routing_preview_snapshots')
+      .update({ last_read_at: new Date().toISOString() })
+      .eq('fingerprint', fingerprint)
+      .then(
+        () => undefined,
+        () => undefined
+      );
+
+    return { preview: row.preview, computedAt: row.computed_at };
+  } catch {
+    return null;
+  }
+}
+
+/** Stores one preview. Best-effort by design — see getCachedRoutingPreview. */
+async function writeRoutingPreviewSnapshot(
+  fingerprint: string,
+  preview: RoutingPreview,
+  durationMs: number | null
+): Promise<boolean> {
+  try {
+    const now = new Date().toISOString();
+    const { error } = await getServiceSupabase().from('routing_preview_snapshots').upsert(
+      { fingerprint, preview, computed_at: now, last_read_at: now, duration_ms: durationMs },
+      { onConflict: 'fingerprint' }
+    );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rebuilds the snapshot for the CURRENT rules, and prunes abandoned ones.
+ *
+ * Called by the cron after ingestion, because ingestion is when the table changes and
+ * therefore the only thing that can make a stored preview wrong (the rules and scoring
+ * are in the key, so they cannot).
+ *
+ * Only the current ruleset is rebuilt. Refreshing every stored fingerprint would mean
+ * paying 41 s per abandoned rule edit, and nothing is going to read those.
+ */
+export async function refreshRoutingPreviewSnapshot(): Promise<{ ok: boolean; message: string }> {
+  const [{ rules }, scoringSet] = await Promise.all([getRoutingPolicy(), getScoringPolicies()]);
+  const fingerprint = routingPreviewFingerprint(rules, scoringSet);
+
+  const started = Date.now();
+  const preview = await getRoutingPreview(rules, scoringSet);
+  const took = Date.now() - started;
+
+  if (preview.partial) {
+    return { ok: false, message: `Routing preview scan was incomplete (${preview.partial}) — snapshot left alone.` };
+  }
+  const wrote = await writeRoutingPreviewSnapshot(fingerprint, preview, took);
+  if (!wrote) {
+    return { ok: false, message: 'Could not write the snapshot — is the routing_preview_snapshots migration applied?' };
+  }
+
+  /*
+    Fossils of abandoned rule edits. Pruned by LAST READ, not by age: the snapshot for
+    the current ruleset is the one being served and must survive indefinitely, so
+    expiring on computed_at would discard the only row that matters and make the next
+    visit pay 41 s.
+  */
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const pruned = await getServiceSupabase()
+    .from('routing_preview_snapshots')
+    .delete()
+    .lt('last_read_at', cutoff)
+    .neq('fingerprint', fingerprint)
+    .select('fingerprint');
+
+  const prunedCount = pruned.data?.length ?? 0;
+  return {
+    ok: true,
+    message: `Routing preview snapshot rebuilt in ${(took / 1000).toFixed(1)}s (${preview.total.toLocaleString()} records)${prunedCount ? `, pruned ${prunedCount} stale` : ''}.`,
+  };
 }
 
 export interface RecordRow {

@@ -56,19 +56,60 @@ async function readSetupState(
 
   const [{ config: policy }] = await Promise.all([getEnrichmentPolicy()]);
 
-  const [total, scored, routed, enriched, assigned, exported, withPhone, withEmail, verified, queued] =
-    await Promise.all([
-      count(),
-      count({ column: 'priority_band', op: 'notNull' }),
-      count({ column: 'route', op: 'notNull' }),
-      count({ column: 'status', op: 'eq', value: 'ENRICHED' }),
-      count({ column: 'assignee_id', op: 'notNull' }),
-      count({ column: 'apollo_exported_at', op: 'notNull' }),
-      count({ column: 'contact_phone', op: 'notNull' }),
-      count({ column: 'contact_email', op: 'notNull' }),
-      count({ column: 'email_verified', op: 'eq', value: true }),
-      count({ column: 'status', op: 'eq', value: 'PENDING_ENRICHMENT' }),
-    ]);
+  /*
+    Eleven counts, one scan.
+
+    These were ten parallel `count: 'exact', head: true` queries plus an eleventh in
+    getTeamLoad. Measured against 111,353 rows: the UNFILTERED count(*) alone was
+    9.4 s cold and 7.6 s warm, the unassigned count 6.7 s, and all ten in parallel
+    9.7 s — barely better than the single worst, because ten queries scanning the same
+    table contend for the same buffers. The filtered ones are cheap; count(*) with no
+    predicate has to visit every tuple and no index shortcuts it.
+
+    setup_state_rollup() does the lot in one pass with FILTER clauses, and the
+    yardstick for expecting that to work was already in the repo: pipeline_rollup
+    computes a full grouped aggregate in 1.5 s, six times faster than one unfiltered
+    count. The database was never slow — the page was asking eleven times.
+  */
+  const rollup = service ? await service.rpc('setup_state_rollup').maybeSingle() : null;
+  const r = rollup?.data as Record<string, number> | null | undefined;
+
+  let total: number, scored: number, routed: number, enriched: number, assigned: number;
+  let exported: number, withPhone: number, withEmail: number, verified: number, queued: number;
+
+  if (r) {
+    total = Number(r.total ?? 0);
+    scored = Number(r.scored ?? 0);
+    routed = Number(r.routed ?? 0);
+    enriched = Number(r.enriched ?? 0);
+    assigned = Number(r.assigned ?? 0);
+    exported = Number(r.exported ?? 0);
+    withPhone = Number(r.with_phone ?? 0);
+    withEmail = Number(r.with_email ?? 0);
+    verified = Number(r.verified ?? 0);
+    queued = Number(r.queued ?? 0);
+  } else {
+    /*
+      The migration is not applied yet, so fall back to the eleven queries.
+
+      Same shape as summarise_pipeline's rollup fallback: a slow correct page beats
+      `migration_required` on a screen whose job is to show whether setup is
+      complete, and the branch disappears once the function exists.
+    */
+    [total, scored, routed, enriched, assigned, exported, withPhone, withEmail, verified, queued] =
+      await Promise.all([
+        count(),
+        count({ column: 'priority_band', op: 'notNull' }),
+        count({ column: 'route', op: 'notNull' }),
+        count({ column: 'status', op: 'eq', value: 'ENRICHED' }),
+        count({ column: 'assignee_id', op: 'notNull' }),
+        count({ column: 'apollo_exported_at', op: 'notNull' }),
+        count({ column: 'contact_phone', op: 'notNull' }),
+        count({ column: 'contact_email', op: 'notNull' }),
+        count({ column: 'email_verified', op: 'eq', value: true }),
+        count({ column: 'status', op: 'eq', value: 'PENDING_ENRICHMENT' }),
+      ]);
+  }
 
   const receiving = roster.filter((r) => r.is_active);
   const targetedRoles = new Set(assignmentRules.filter((r) => r.toRole).map((r) => r.toRole as string));
@@ -140,19 +181,38 @@ async function getTeamLoad(): Promise<{
     // "1,000" while 22,438 leads sat unowned, and would have read 1,000 at any
     // size above that. `head: true` asks for the count and no rows, so this stays
     // flat in transferred data however large the pool grows.
-    const { count, error: countError } = await service
-      .from('canonical_projects')
-      .select('id', { count: 'exact', head: true })
-      .not('status', 'in', OPEN)
-      .is('owner_user_id', null);
+    /*
+      The unassigned pool, from the same rollup the setup tiles use.
 
-    if (countError) {
-      return {
-        byUser,
-        unassigned: 0,
-        tableMissing: /does not exist|schema cache/i.test(countError.message),
-        truncated: false,
-      };
+      Still COUNTED and never enumerated — the recorded bug here was tallying it by
+      fetching rows under a `.limit(5000)` that PostgREST silently clamps to 1,000, so
+      the tile read exactly "1,000" while 22,438 leads sat unowned. That lesson stands;
+      this only changes WHERE the count happens. As its own `head: true` query it was
+      6.7 s, because `status not in (…)` cannot use an index well; folded into
+      setup_state_rollup it is one FILTER clause on a scan that was happening anyway.
+    */
+    const rollup = await service.rpc('setup_state_rollup').maybeSingle();
+    let unassigned: number;
+
+    if (rollup.data) {
+      unassigned = Number((rollup.data as Record<string, number>).unassigned_open ?? 0);
+    } else {
+      // Migration not applied: the original query, with its original predicate.
+      const { count, error: countError } = await service
+        .from('canonical_projects')
+        .select('id', { count: 'exact', head: true })
+        .not('status', 'in', OPEN)
+        .is('owner_user_id', null);
+
+      if (countError) {
+        return {
+          byUser,
+          unassigned: 0,
+          tableMissing: /does not exist|schema cache/i.test(countError.message),
+          truncated: false,
+        };
+      }
+      unassigned = count ?? 0;
     }
 
     // Assigned rows genuinely need row-level detail — `owner_assigned_at` for
@@ -194,7 +254,7 @@ async function getTeamLoad(): Promise<{
       if (p === MAX_PAGES - 1) truncated = true;
     }
 
-    return { byUser, unassigned: count ?? 0, tableMissing: false, truncated };
+    return { byUser, unassigned, tableMissing: false, truncated };
   } catch {
     return { byUser, unassigned: 0, tableMissing: true, truncated: false };
   }

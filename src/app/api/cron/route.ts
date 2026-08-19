@@ -6,6 +6,7 @@ import { isCronSecret } from '@/lib/auth/cronSecret';
 import { isDue } from '@/lib/cron';
 import { logEventAsync } from '@/lib/observability/events';
 import { refreshKpiSnapshots } from '@/lib/kpi';
+import { refreshRoutingPreviewSnapshot } from '@/lib/queries';
 import { SIGNAL_LEAD, signalLeadFor } from '@/lib/sourceCatalog';
 import { SOURCE_SLUGS } from '@/lib/sourceSlugs';
 
@@ -439,6 +440,27 @@ export async function POST(request: NextRequest) {
   await step('kpi', job === 'kpi' || job === 'cycle' || job === 'daily', async () => ({
     job: 'kpi',
     ...(await refreshKpiSnapshots()),
+  }));
+
+  /*
+    The routing preview, for the same reason and on the same two runs.
+
+    Measured at 41.5 s against 111,353 records, ~31 s of it just transferring the rows,
+    which is why /control/routing reads a snapshot instead — see the
+    routing_preview_snapshots migration.
+
+    Refreshed HERE rather than on a timer because the rules and scoring are in the cache
+    key, so they cannot make a stored preview stale. Only the RECORDS can, and this runs
+    after ingestion. Rebuilding on a clock would mean paying 41 s on a schedule to
+    recompute a figure that had not moved.
+
+    Piggybacks on the kpi cadence rather than adding a schedule: both read the whole
+    table, and putting them on the same two runs keeps the heavy scans in the two
+    windows already budgeted for them instead of spreading them across the day.
+  */
+  await step('routing-preview', job === 'kpi' || job === 'cycle' || job === 'daily', async () => ({
+    job: 'routing-preview',
+    ...(await refreshRoutingPreviewSnapshot()),
   }));
 
   /*
