@@ -20,6 +20,8 @@
     "ingest:nhs": "node --env-file=.env.local --experimental-transform-types --no-warnings --import ./scripts/lib/register-alias.mjs scripts/ingest-nhs-infra.mjs",
     "mcp": "node --env-file=.env.local --experimental-transform-types --no-warnings --import ./scripts/lib/register-alias.mjs scripts/mcp-server.mjs",
     "test:mcp": "node --env-file=.env.local --experimental-transform-types --no-warnings --import ./scripts/lib/register-alias.mjs scripts/test-mcp.mjs",
+    "test:phase-parity": "node --env-file=.env.local --experimental-transform-types --no-warnings --import ./scripts/lib/register-alias.mjs scripts/test-phase-parity.mjs",
+    "gen:phase-sql": "node --experimental-transform-types --no-warnings --import ./scripts/lib/register-alias.mjs scripts/generate-phase-sql.mjs",
     "test:migrations": "bash scripts/test-migrations.sh"
   },
   "dependencies": {

@@ -53,10 +53,19 @@ interface RpcRequest {
   params?: Record<string, unknown>;
 }
 
-const PROTOCOL_VERSION = '2024-11-05';
+/**
+ * What a client is told when it names a revision we do not know, or names none.
+ *
+ * The NEWEST we speak, not the oldest. It was `2024-11-05`, which meant the
+ * fallback actively pushed such a client down to the oldest revision on the list
+ * — the wrong direction for a value whose whole job is "here is the best I can
+ * do". Older clients are unaffected: they name their own revision and get it
+ * echoed back by the negotiation below.
+ */
+const PROTOCOL_VERSION = '2025-06-18';
 
 /**
- * Revisions this server can be spoken to in.
+ * Revisions this server can be spoken to in, oldest first.
  *
  * All of them, in practice, because the surface used here — initialize,
  * tools/list, tools/call, ping — is unchanged across them. Listed explicitly
@@ -240,6 +249,16 @@ export async function POST(request: NextRequest) {
         title: t.title,
         description: t.description,
         inputSchema: toolInputSchema(t),
+        /*
+          The read-only promise, in the form a client can act on.
+
+          It is stated in prose in three places in this repo and was nowhere a
+          machine could read it — which matters because a hosted client's
+          research mode calls connector tools with no per-call approval. With
+          `readOnlyHint` present, a client can auto-approve these and still stop
+          at the first tool that does not carry it.
+        */
+        annotations: t.annotations,
       })),
     });
   }

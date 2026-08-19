@@ -260,6 +260,23 @@ const NUMERIC = /^(count|total|records|score|value|totalValue|fetched|inserted|u
 /* Rendering                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * How many rows of a list get rendered as markdown.
+ *
+ * EVERY RESULT TRAVELS TWICE — once as this markdown, in `content`, and once as
+ * the exact object, in `structuredContent`. That is deliberate and worth the
+ * duplication at ordinary sizes, but a 200-row search put the same two hundred
+ * projects in the context window twice, and the second copy is the one nobody
+ * reads: the table is what an assistant renders, the object is what it computes
+ * from.
+ *
+ * So the markdown is a readable head and the object stays complete. Nothing is
+ * lost — the rows past this line are still in `structuredContent`, and the footer
+ * says so in the same breath, so an assistant summarising the table knows it is
+ * looking at a prefix rather than the answer.
+ */
+const MAX_RENDERED_ROWS = 25;
+
 function table(rows: Record<string, unknown>[]): string {
   // Union of keys across rows, not just the first — a later row may carry a field
   // an earlier one left off, and taking only the first row's keys would drop it.
@@ -269,13 +286,20 @@ function table(rows: Record<string, unknown>[]): string {
   const columns = orderColumns(keys);
   if (columns.length === 0) return '';
 
+  const shown = rows.slice(0, MAX_RENDERED_ROWS);
   const header = `| ${columns.map(label).join(' | ')} |`;
   const rule = `| ${columns.map((c) => (NUMERIC.test(c) ? '--:' : '---')).join(' | ')} |`;
-  const body = rows.map(
+  const body = shown.map(
     (row) => `| ${columns.map((c) => cellSafe(cell(c, row[c], row), c === 'error' ? 100 : 80)).join(' | ')} |`
   );
 
-  return [header, rule, ...body].join('\n');
+  const omitted = rows.length - shown.length;
+  const footer =
+    omitted > 0
+      ? [`\n_Showing ${shown.length} of ${rows.length}. The remaining ${omitted} are in structuredContent, in full._`]
+      : [];
+
+  return [header, rule, ...body, ...footer].join('\n');
 }
 
 /**

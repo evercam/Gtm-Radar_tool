@@ -119,9 +119,12 @@ console.log('\nThe tool contract');
   const tools = list?.result?.tools ?? [];
   const names = tools.map((t) => t.name).sort();
   check('nine tools are advertised', tools.length === 9, names.join(', '));
+
+  const verbs = tools.map((t) => t.name);
+
   check(
     'every tool is verb-first',
-    tools.every((t) => /^(search|get|list|summarise)_/.test(t.name)),
+    verbs.every((v) => /^(search|get|list|summarise)_/.test(v)),
     names.join(', ')
   );
   check(
@@ -138,13 +141,26 @@ console.log('\nThe tool contract');
   */
   check(
     'no tool leads with a mutating verb',
-    !tools.some((t) => /^(create|update|delete|remove|export|assign|send|write|set|run|trigger|sync)_/.test(t.name)),
+    !verbs.some((v) => /^(create|update|delete|remove|export|assign|send|write|set|run|trigger|sync)_/.test(v)),
     names.join(', ')
   );
   check(
     'and every tool leads with a reading verb',
-    tools.every((t) => /^(search|get|list|summarise)_/.test(t.name)),
+    verbs.every((v) => /^(search|get|list|summarise)_/.test(v)),
     names.join(', ')
+  );
+
+  /*
+    The read-only promise, in the form a client can act on.
+
+    A hosted client's research mode calls connector tools with no per-call
+    approval, so `readOnlyHint` is what lets it run these unattended — and what
+    will make the first mutating tool stand out rather than blend in.
+  */
+  check(
+    'every tool declares readOnlyHint',
+    tools.every((t) => t.annotations?.readOnlyHint === true),
+    tools.filter((t) => !t.annotations?.readOnlyHint).map((t) => t.name).join(', ')
   );
 }
 
@@ -194,6 +210,49 @@ console.log('\nReading real data');
     check('get_project resolves by ref', one?.ref === found.projects[0].ref, JSON.stringify(one)?.slice(0, 140));
     check('and includes the rendered brief', typeof one?.brief === 'string' && one.brief.length > 40);
   }
+}
+
+/*
+  Paging has to be exhaustive AND non-repeating.
+
+  The keyset resumes on (priority_score, id), and the reason for the id tiebreaker
+  is precisely this: priority_score is not unique, so resuming on score alone would
+  either re-serve every row sharing the boundary score or skip past them. Neither is
+  visible in a single page — you only see it by walking pages and comparing sets,
+  which is what this does.
+*/
+console.log('\nPaging walks the whole set exactly once');
+{
+  const PAGE = 4;
+  const seen = [];
+  let cursor;
+  let pages = 0;
+
+  while (pages < 5) {
+    const args = { band: 'P1', limit: PAGE, ...(cursor ? { cursor } : {}) };
+    const page = payload(await send('tools/call', { name: 'search_projects', arguments: args }));
+    if (pages === 0) check('the first page returns rows', (page?.projects ?? []).length > 0, JSON.stringify(page)?.slice(0, 140));
+    for (const p of page?.projects ?? []) seen.push(p.id);
+    pages += 1;
+    if (!page?.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+
+  check('paging produced more than one page', pages > 1, `stopped after ${pages}`);
+  check('no row was served twice', new Set(seen).size === seen.length, `${seen.length} rows, ${new Set(seen).size} distinct`);
+
+  // The same rows, unpaged, must be the same set — nothing fell through a boundary.
+  const flat = payload(await send('tools/call', { name: 'search_projects', arguments: { band: 'P1', limit: seen.length } }));
+  const flatIds = (flat?.projects ?? []).map((p) => p.id);
+  check(
+    'and the paged walk matches the unpaged one',
+    flatIds.length === seen.length && flatIds.every((id, i) => id === seen[i]),
+    `paged ${seen.length} vs flat ${flatIds.length}`
+  );
+
+  const bogus = await send('tools/call', { name: 'search_projects', arguments: { cursor: 'not-a-real-cursor' } });
+  const err = payload(bogus);
+  check('a bogus cursor is refused with a code', err?.code === 'invalid_cursor', JSON.stringify(err)?.slice(0, 140));
 }
 
 console.log('\nFilters actually filter');

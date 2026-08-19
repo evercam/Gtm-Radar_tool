@@ -20,6 +20,15 @@
  * An unrecognised value maps to null and is REPORTED rather than guessed into the
  * nearest bucket. A phase quietly filed as "Planned" when it means something else
  * is worse than one left blank: the blank is visible and the wrong answer is not.
+ *
+ * THIS FILE IS THE SOURCE. `EXACT` and `RULES` are exported because Postgres needs
+ * the same mapping — a phase column the database can index, so filtering on phase
+ * is a WHERE clause instead of fetching two thousand rows and folding them here.
+ * The SQL is GENERATED from these two structures by
+ * `scripts/generate-phase-sql.mjs`; it is never hand-written, because a second
+ * copy of a 117-value mapping is a copy that drifts. Change a rule here, re-run
+ * the generator, ship the migration. `scripts/test-phase-parity.mjs` asserts the
+ * two agree on every distinct value actually present in the table.
  */
 
 export const PROJECT_PHASES = [
@@ -47,7 +56,7 @@ const key = (raw: string): string => raw.trim().replace(/\s+/g, ' ').toLowerCase
  * Explicit beats clever: every value here was observed in the data, so a rule that
  * would have caught it by accident cannot quietly reclassify it later.
  */
-const EXACT: Record<string, ProjectPhase> = {
+export const EXACT: Record<string, ProjectPhase> = {
   // gem_energy_tracker
   proposed: 'Planned',
   announced: 'Planned',
@@ -151,7 +160,7 @@ const EXACT: Record<string, ProjectPhase> = {
  * rep: an application working through the process. Enumerating every one would be
  * a list that goes stale the moment the council adds a step.
  */
-const RULES: { pattern: RegExp; phase: ProjectPhase }[] = [
+export const RULES: { pattern: RegExp; phase: ProjectPhase }[] = [
   /*
     gem_energy_tracker suffixes its inferred states — "Shelved - Inferred 2 Y",
     "Cancelled - Inferred 4 Y" — so the prefix is what carries the meaning. Placed

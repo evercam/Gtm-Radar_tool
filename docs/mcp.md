@@ -50,6 +50,28 @@ Two run histories exist and they answer different questions. `list_ingestion_run
 is what we fetched **from** a source; `list_export_runs` is what we sent **to**
 Apollo. Reaching for the wrong one is the easiest mistake to make here.
 
+## Paging, and knowing when you have everything
+
+`search_projects` returns at most 200 rows. When more match, `truncated` is
+true and `nextCursor` carries an opaque position — call again with that cursor and
+**the same filters** to continue. The cursor is a keyset on
+`(priority_score, id)`, not an offset: it resumes at a known row rather than
+counting past one, so a project inserted mid-walk cannot shift the window and make
+a page skip or repeat.
+
+`truncated` is observed, not inferred. The query asks for one row more than it
+returns, so a search that happens to match exactly its limit is not reported as
+truncated.
+
+**`phase` needs `20260818220000_phase_normalised.sql`.** Before that migration the
+mapping exists only in TypeScript, so the tool falls back to scanning the top rows
+by score and folding phase in memory — which cannot see a matching project below
+the cutoff. That path attaches a `warning` saying so. After the migration the
+filter is an indexed `WHERE` and the warning disappears. If you edit a rule in
+`src/lib/phase.ts`, re-run `npm run gen:phase-sql` and ship the migration, or the
+column and the code will quietly disagree; `npm run test:phase-parity` is what
+catches it.
+
 ## Why it is read-only
 
 Every tool is a SELECT. Nothing assigns, exports, writes to Apollo, or edits a
@@ -64,7 +86,14 @@ friction, against a live CRM that other people also use.
 Adding a mutating tool later means adding an explicit confirmation argument and
 keeping the dry run — not relaxing this.
 
-## Two things to know if you extend it
+## Three things to know if you extend it
+
+**Declare your annotations.** `McpTool.annotations` is required, not optional, and
+the nine current tools spread a shared `READ_ONLY`. That is on purpose: a hosted
+client's research mode calls connector tools with no per-call approval, and
+`readOnlyHint` is how it knows these are safe to run unattended. A tool that is
+not read-only has to say so, and the compiler will not let it stay silent.
+
 
 **stdout is the protocol channel.** A single `console.log` anywhere in the import
 graph corrupts the JSON-RPC stream, and the client disconnects with no useful
