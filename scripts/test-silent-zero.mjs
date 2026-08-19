@@ -98,7 +98,35 @@ group('Callers act on the difference rather than rendering emptiness');
 
   check('the enrichment page has a distinct failed state', /queueFailed/.test(page));
   check('and does not print a null count as a number', /total === null/.test(page));
-  check('the control page does not print a null count as a number', /queueTotal === null/.test(control));
+
+  /*
+    The control page's queue count, guarded at every use.
+
+    This read `/queueTotal === null/` and started failing when the count was
+    extracted into `queueTotalOnce()` and the local renamed to `total`. Nothing
+    about the contract changed — both call sites still refuse to print an
+    unmeasurable count as a number — but the assertion was pinned to a SPELLING
+    rather than to the behaviour, so a pure rename read as a regression. That is
+    its own kind of silent failure: a test that cries wolf gets muted, and the
+    next real break goes with it.
+
+    So it now anchors on the accessor and checks each call site, which survives
+    renaming the variable and still fails if a guard is dropped.
+  */
+  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const queueUses = control.split('queueTotalOnce()').slice(1).map((s) => stripComments(s.slice(0, 400)));
+
+  check('the control page reads the queue count', queueUses.length > 0, `${queueUses.length} call sites`);
+  check(
+    'the control page does not print a null count as a number',
+    queueUses.length > 0 && queueUses.every((after) => /===\s*null/.test(after)),
+    `${queueUses.filter((a) => !/===\s*null/.test(a)).length} unguarded of ${queueUses.length}`
+  );
+  check(
+    'and never coalesces the queue count to zero',
+    !queueUses.some((after) => /\?\?\s*0/.test(after)),
+    'a `?? 0` would turn an unmeasurable count into "no work to do"'
+  );
 
   check('demand fill propagates failure', /failed: boolean/.test(demand) && /q\.failed/.test(demand));
   /*
