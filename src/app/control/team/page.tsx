@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import Link from 'next/link';
 import { requirePermission } from '@/lib/auth/session';
 import { isSupabaseServiceConfigured, getServiceSupabase } from '@/lib/supabase/server';
@@ -56,19 +57,59 @@ async function readSetupState(
 
   const [{ config: policy }] = await Promise.all([getEnrichmentPolicy()]);
 
-  const [total, scored, routed, enriched, assigned, exported, withPhone, withEmail, verified, queued] =
-    await Promise.all([
-      count(),
-      count({ column: 'priority_band', op: 'notNull' }),
-      count({ column: 'route', op: 'notNull' }),
-      count({ column: 'status', op: 'eq', value: 'ENRICHED' }),
-      count({ column: 'assignee_id', op: 'notNull' }),
-      count({ column: 'apollo_exported_at', op: 'notNull' }),
-      count({ column: 'contact_phone', op: 'notNull' }),
-      count({ column: 'contact_email', op: 'notNull' }),
-      count({ column: 'email_verified', op: 'eq', value: true }),
-      count({ column: 'status', op: 'eq', value: 'PENDING_ENRICHMENT' }),
-    ]);
+  /*
+    Eleven counts, one scan.
+
+    These were ten parallel `count: 'exact', head: true` queries plus an eleventh in
+    getTeamLoad. Measured against 111,353 rows: the UNFILTERED count(*) alone was
+    9.4 s cold and 7.6 s warm, the unassigned count 6.7 s, and all ten in parallel
+    9.7 s — barely better than the single worst, because ten queries scanning the same
+    table contend for the same buffers. The filtered ones are cheap; count(*) with no
+    predicate has to visit every tuple and no index shortcuts it.
+
+    setup_state_rollup() does the lot in one pass with FILTER clauses, and the
+    yardstick for expecting that to work was already in the repo: pipeline_rollup
+    computes a full grouped aggregate in 1.5 s, six times faster than one unfiltered
+    count. The database was never slow — the page was asking eleven times.
+  */
+  const r = await setupStateRollupOnce();
+
+  let total: number, scored: number, routed: number, enriched: number, assigned: number;
+  let exported: number, withPhone: number, withEmail: number, verified: number, queued: number;
+
+  if (r) {
+    total = Number(r.total ?? 0);
+    scored = Number(r.scored ?? 0);
+    routed = Number(r.routed ?? 0);
+    enriched = Number(r.enriched ?? 0);
+    assigned = Number(r.assigned ?? 0);
+    exported = Number(r.exported ?? 0);
+    withPhone = Number(r.with_phone ?? 0);
+    withEmail = Number(r.with_email ?? 0);
+    verified = Number(r.verified ?? 0);
+    queued = Number(r.queued ?? 0);
+  } else {
+    /*
+      The migration is not applied yet, so fall back to the eleven queries.
+
+      Same shape as summarise_pipeline's rollup fallback: a slow correct page beats
+      `migration_required` on a screen whose job is to show whether setup is
+      complete, and the branch disappears once the function exists.
+    */
+    [total, scored, routed, enriched, assigned, exported, withPhone, withEmail, verified, queued] =
+      await Promise.all([
+        count(),
+        count({ column: 'priority_band', op: 'notNull' }),
+        count({ column: 'route', op: 'notNull' }),
+        count({ column: 'status', op: 'eq', value: 'ENRICHED' }),
+        count({ column: 'assignee_id', op: 'notNull' }),
+        count({ column: 'apollo_exported_at', op: 'notNull' }),
+        count({ column: 'contact_phone', op: 'notNull' }),
+        count({ column: 'contact_email', op: 'notNull' }),
+        count({ column: 'email_verified', op: 'eq', value: true }),
+        count({ column: 'status', op: 'eq', value: 'PENDING_ENRICHMENT' }),
+      ]);
+  }
 
   const receiving = roster.filter((r) => r.is_active);
   const targetedRoles = new Set(assignmentRules.filter((r) => r.toRole).map((r) => r.toRole as string));
@@ -102,6 +143,31 @@ async function readSetupState(
     cronConfigured: Boolean(process.env.CRON_SECRET?.trim()),
   };
 }
+
+/**
+ * The setup-state counts, at most once per render.
+ *
+ * Two sections need them — the setup tiles and the unassigned pool — and each was
+ * calling the RPC itself. On a render where the rollup is unavailable that meant
+ * paying its statement timeout TWICE before falling back, which is how a change
+ * meant to speed this page up made it slower than the eleven queries it replaced.
+ *
+ * `cache()` is per-request, so this is deduplication rather than caching: no
+ * staleness, and no argument to key on because the rollup takes none.
+ *
+ * Returns null when the rollup is unavailable — no service role, migration not
+ * applied, or the scan timed out — and every caller falls back to its own query.
+ */
+const setupStateRollupOnce = cache(async (): Promise<Record<string, number> | null> => {
+  if (!isSupabaseServiceConfigured()) return null;
+  try {
+    const { data, error } = await getServiceSupabase().rpc('setup_state_rollup').maybeSingle();
+    if (error || !data) return null;
+    return data as Record<string, number>;
+  } catch {
+    return null;
+  }
+});
 
 interface TeamLoad {
   assignedToday: number;
@@ -140,19 +206,38 @@ async function getTeamLoad(): Promise<{
     // "1,000" while 22,438 leads sat unowned, and would have read 1,000 at any
     // size above that. `head: true` asks for the count and no rows, so this stays
     // flat in transferred data however large the pool grows.
-    const { count, error: countError } = await service
-      .from('canonical_projects')
-      .select('id', { count: 'exact', head: true })
-      .not('status', 'in', OPEN)
-      .is('owner_user_id', null);
+    /*
+      The unassigned pool, from the same rollup the setup tiles use.
 
-    if (countError) {
-      return {
-        byUser,
-        unassigned: 0,
-        tableMissing: /does not exist|schema cache/i.test(countError.message),
-        truncated: false,
-      };
+      Still COUNTED and never enumerated — the recorded bug here was tallying it by
+      fetching rows under a `.limit(5000)` that PostgREST silently clamps to 1,000, so
+      the tile read exactly "1,000" while 22,438 leads sat unowned. That lesson stands;
+      this only changes WHERE the count happens. As its own `head: true` query it was
+      6.7 s, because `status not in (…)` cannot use an index well; folded into
+      setup_state_rollup it is one FILTER clause on a scan that was happening anyway.
+    */
+    const rollup = await setupStateRollupOnce();
+    let unassigned: number;
+
+    if (rollup) {
+      unassigned = Number(rollup.unassigned_open ?? 0);
+    } else {
+      // Migration not applied: the original query, with its original predicate.
+      const { count, error: countError } = await service
+        .from('canonical_projects')
+        .select('id', { count: 'exact', head: true })
+        .not('status', 'in', OPEN)
+        .is('owner_user_id', null);
+
+      if (countError) {
+        return {
+          byUser,
+          unassigned: 0,
+          tableMissing: /does not exist|schema cache/i.test(countError.message),
+          truncated: false,
+        };
+      }
+      unassigned = count ?? 0;
     }
 
     // Assigned rows genuinely need row-level detail — `owner_assigned_at` for
@@ -194,7 +279,7 @@ async function getTeamLoad(): Promise<{
       if (p === MAX_PAGES - 1) truncated = true;
     }
 
-    return { byUser, unassigned: count ?? 0, tableMissing: false, truncated };
+    return { byUser, unassigned, tableMissing: false, truncated };
   } catch {
     return { byUser, unassigned: 0, tableMissing: true, truncated: false };
   }
@@ -211,21 +296,48 @@ export default async function TeamPage() {
     );
   }
 
+  /*
+    Two waves, by what actually depends on what.
+
+    Five of these were a Promise.all of three followed by two more awaited one at a
+    time, and getRoster/getAuthSettings depend on nothing in the first group — so the
+    page was serialising ~500 ms for no reason. Measured individually: getUserProfiles
+    314 ms, getRoster 297 ms, getAssignmentRules 265 ms, getAuthSettings 229 ms.
+  */
   const [
     { users, tableMissing: usersMissing },
     { byUser, unassigned, tableMissing: leadsMissing, truncated: loadTruncated },
     assignment,
-  ] = await Promise.all([getUserProfiles(), getTeamLoad(), getAssignmentRules()]);
+    roster,
+    authSettings,
+  ] = await Promise.all([
+    getUserProfiles(),
+    getTeamLoad(),
+    getAssignmentRules(),
+    getRoster(),
+    getAuthSettings(),
+  ]);
   const { rules: assignmentRules, isDefault } = assignment;
-  const roster = await getRoster();
-  const authSettings = await getAuthSettings();
-  const setupState = await readSetupState(roster.rows, assignmentRules);
+
+  /*
+    Second wave: the two things that needed the first.
+
+    readSetupState takes the roster and the rules, so it could not start earlier.
+    loadApolloUsers takes nothing — only the FILTERING of its result needs the roster
+    — and it was the single most expensive call on the page after the rollup (2.5 s,
+    an external API), sitting behind everything else in the chain. Started alongside
+    readSetupState it costs what it costs instead of adding to the total.
+  */
+  const [setupState, apolloUsersRaw] = await Promise.all([
+    readSetupState(roster.rows, assignmentRules),
+    loadApolloUsers(),
+  ]);
 
   // Resolved here rather than in the browser: the roster editor needs it on
   // first paint, and loadApolloUsers caches per process so this is one call
   // per server lifetime, not one per page view.
   const onRoster = new Set(roster.rows.filter((r) => r.email).map((r) => r.email!.trim().toLowerCase()));
-  const apolloRaw = (await loadApolloUsers()).filter((u) => {
+  const apolloRaw = apolloUsersRaw.filter((u) => {
     const name = (u.name ?? `${u.first_name ?? ''} ${u.last_name ?? ''}`).trim();
     const email = (u.email ?? '').trim().toLowerCase();
     // Without both halves a lead owned by them could never be matched back on

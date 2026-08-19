@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getRoutingPolicy, getRoutingPreview } from '@/lib/queries';
+import { getRoutingPolicy, getCachedRoutingPreview } from '@/lib/queries';
 import { getScoringPolicies, getScoringPolicy } from '@/lib/policies';
 import { DEFAULT_PRIORITY_CONFIG } from '@/lib/priority';
 import { scoringFields } from '@/lib/policyFields';
@@ -41,7 +41,15 @@ export default async function RoutingPage() {
     getScoringPolicy(),
   ]);
   const { isDefault: scoringIsDefault, overridden } = scoringSet;
-  const preview = await getRoutingPreview(rules, scoringSet);
+  /*
+    Cached, keyed on these exact rules and scoring.
+
+    Live, this was 41.5 s against 111,353 records — of which ~31 s is transferring the
+    rows, so it could not be tuned down. The key is the inputs, so editing a rule is a
+    miss and recomputes: this screen must never show a preview of the PREVIOUS ruleset,
+    which is the one moment it would be actively misleading rather than merely stale.
+  */
+  const preview = await getCachedRoutingPreview(rules, scoringSet);
 
   const maxLane = Math.max(1, ...preview.byLane.map((l) => l.count));
   const countsByRule = Object.fromEntries(preview.byRule.map((r) => [r.rule, r.count]));
@@ -63,8 +71,35 @@ export default async function RoutingPage() {
           ) : null}
         </div>
         <p className="text-muted mt-1 max-w-3xl text-sm">
-          Rules split every record into a lane — who owns it and what to do next. This is a live dry-run over all{' '}
+          Rules split every record into a lane — who owns it and what to do next. A dry-run over all{' '}
           {preview.total.toLocaleString()} records; nothing is written until you materialize at the bottom.
+        </p>
+        {/*
+          It used to say "a LIVE dry-run", and that stopped being true the moment this
+          was cached. Saying so is not decoration: this screen gates a bulk re-route, so
+          somebody about to materialize needs to know whether they are looking at the
+          table as it is now or as it was at 06:00.
+
+          Editing a rule always recomputes — the rules are in the cache key — so the only
+          thing that can be stale here is the RECORDS, which is exactly what this says.
+        */}
+        <p className="text-muted mt-1 text-xs">
+          {preview.computedAt ? (
+            <>
+              Record counts as of{' '}
+              <time dateTime={preview.computedAt}>
+                {new Date(preview.computedAt).toLocaleString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </time>
+              . Rule changes are previewed immediately; the record set refreshes after each ingestion.
+            </>
+          ) : (
+            <>Scored just now, against the current records.</>
+          )}
         </p>
       </div>
 
