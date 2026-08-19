@@ -1144,3 +1144,79 @@ same call computed live    ->  9.9 s, total 21,426
 Identical figures, 50x faster. Nothing breaks before the migration: the read misses,
 the summary is computed inline exactly as before, and the write fails quietly — a slow
 dashboard rather than a broken one.
+
+---
+
+## `20260818220000_phase_normalised.sql` — phase becomes filterable
+
+Paste into the Supabase SQL editor:
+
+```
+supabase/migrations/20260818220000_phase_normalised.sql
+```
+
+**What was wrong.** `gtm_search_projects` could not filter on phase honestly. The
+117-spelling → 11-phase mapping lived only in TypeScript, so the tool fetched the
+top `limit × 40` rows by priority score and folded them in memory. Every project
+in the requested phase below that score cutoff was invisible, and the tool
+reported `truncated: false` regardless — asking for `Operating` returned zero rows
+and read as "there are none".
+
+**What this adds.**
+
+| Object | Why |
+|---|---|
+| `normalise_phase(text)` | The same mapping, in SQL. **Generated** from `src/lib/phase.ts` by `npm run gen:phase-sql` — never hand-edited. |
+| `canonical_projects.phase_normalised` | Stored generated column, so the filter is an indexed `WHERE` instead of a scan. |
+| `…_phase_normalised_idx` | `(phase_normalised, priority_score DESC NULLS LAST, id)` — satisfies the predicate *and* the sort. |
+| `pg_trgm` + two GIN indexes | **Optional.** `query:` runs `ILIKE '%…%'`, and a leading wildcard cannot use a btree, so it scans every row — sub-second today, linear in table size from here. See the caveat below before applying. |
+
+**Nothing breaks before it is applied.** The tool detects the missing column, falls
+back to the old fold, and says so in a `warning` on the result rather than pretending
+the answer is complete.
+
+### ⚠️ The column is already on the live database
+
+`phase_normalised` and `normalise_phase()` were found present on production when this
+migration was written, applied out-of-band with **no migration file recording them** —
+so a fresh environment rebuilt from `supabase/migrations/` would not have had them.
+That drift is what this file closes.
+
+The live definition was checked and already agrees with `src/lib/phase.ts` on all 143
+distinct raw values in the table, so **nothing needs fixing in production** — this
+migration exists so the schema is reproducible from the repo.
+
+Because of that, the column is added **only if absent** rather than dropped and
+re-added. Dropping it would rewrite a 109k-row table under an ACCESS EXCLUSIVE lock to
+arrive at the column that was already there. `CREATE OR REPLACE FUNCTION` still
+refreshes the mapping, and the generated column picks that up without being touched.
+
+Consequence worth knowing: on an empty or fresh database this migration **does** create
+the column, and creating a STORED generated column on a large table takes that lock for
+the duration. On production, as things stand, it is a no-op.
+
+### The trigram indexes are optional — read this first
+
+They were originally justified by a measured 9.5 s statement timeout on
+`gtm_search_projects(query:)`. **That measurement was wrong**, and the reason is worth
+recording: it was taken while the `phase_normalised` column was being added out-of-band,
+which holds an ACCESS EXCLUSIVE lock on the whole table. The query was queued behind
+DDL, not scanning slowly. Re-measured afterwards on fresh, deliberately non-matching
+terms it runs in 0.4–0.8 s.
+
+So the indexes fix no outage. What remains true is that a leading-wildcard `ILIKE`
+cannot use a btree, so the search is a sequential scan whose cost grows with the table.
+Two GIN trigram indexes make that flat, at the cost of write overhead on every insert
+and update. Worth it if the table keeps growing or the search gets heavier use; not
+worth it today on the strength of a number that turned out to be lock contention.
+Drop those three statements if you would rather not pay for them yet.
+
+### Verify after applying
+
+```bash
+npm run test:phase-parity   # SQL vs TypeScript on every distinct value in the table
+npm run test:mcp            # the phase filter should stop emitting its warning
+```
+
+`test:phase-parity` is the one that matters: it is what stops the generated SQL and
+`phase.ts` drifting after someone edits a rule and forgets to regenerate.

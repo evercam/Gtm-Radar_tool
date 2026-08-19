@@ -143,6 +143,24 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
 
   let rows: RecordRow[] = [];
   let total = 0;
+  /*
+    Wall-clock timing for the telemetry below, and the three purity suppressions
+    it needs.
+
+    `react-hooks/purity` flags Date.now() in a component body because an impure
+    read "can produce unstable results that update unpredictably when the
+    component happens to re-render". That is the right rule and the wrong target
+    here: RecordsPage is an ASYNC SERVER COMPONENT. It runs once per request, on
+    the server, and awaits I/O — there is no re-render for a second reading to
+    disagree with, and the value is never compared across renders. It is measuring
+    how long getRecords took, which is the one thing a pure clock could not do.
+
+    Suppressed rather than worked around. Hiding the call behind a module-scope
+    helper would silence the rule by indirection while changing nothing, which is
+    worse: the next reader would not know the rule had an opinion. Restructuring
+    the telemetry to avoid a clock would mean losing the duration.
+  */
+  // eslint-disable-next-line react-hooks/purity -- async server component: runs once per request, never re-renders
   const queryStartedAt = Date.now();
   try {
     const res = await getRecords({
@@ -183,6 +201,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     logEventAsync({
       kind: 'filter',
       name: 'records.list',
+      // eslint-disable-next-line react-hooks/purity -- see the note at queryStartedAt
       durationMs: Date.now() - queryStartedAt,
       actor: user.email,
       detail: {
@@ -214,6 +233,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       kind: 'filter',
       name: 'records.list',
       ok: false,
+      // eslint-disable-next-line react-hooks/purity -- see the note at queryStartedAt
       durationMs: Date.now() - queryStartedAt,
       actor: user.email,
       detail: { page, sort, error: err instanceof Error ? err.message : String(err) },

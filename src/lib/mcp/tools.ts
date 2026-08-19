@@ -9,7 +9,7 @@ import { getAllSourceConfigs } from '@/lib/sources/config';
 import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import { renderRecordBrief } from '@/lib/export/recordBrief';
 import { normalisePhase, PROJECT_PHASES } from '@/lib/phase';
-import { partyLabel } from '@/lib/semantics';
+import { partyLabel, VERTICALS } from '@/lib/semantics';
 import type { Permission } from '@/lib/auth/roles';
 
 /**
@@ -32,6 +32,39 @@ import type { Permission } from '@/lib/auth/roles';
  * about to change.
  */
 
+/**
+ * The behavioural hints a client uses to decide whether to run a tool without
+ * asking. Part of the protocol rather than prose, which matters here: a hosted
+ * client's research mode invokes connector tools with no per-call approval, so
+ * "this only reads" has to be something it can check, not something written in
+ * a comment it will never see.
+ */
+export interface McpToolAnnotations {
+  /** No side effects. The whole server is this today; a mutating tool is not. */
+  readOnlyHint: boolean;
+  /** Calling twice changes nothing beyond calling once. */
+  idempotentHint: boolean;
+  /** Whether it reaches beyond a closed, known set of entities. */
+  openWorldHint: boolean;
+  /** Only meaningful when readOnlyHint is false; stated anyway so it is never absent. */
+  destructiveHint: boolean;
+}
+
+/**
+ * Every tool here is a SELECT against our own tables.
+ *
+ * Spread explicitly at each tool rather than defaulted in the transports, and
+ * REQUIRED on the interface below, so the first tool that is not read-only
+ * cannot inherit this by omission — it has to say so, and the compiler makes it.
+ * Same direction as `truncated` in pageAll: the unsafe value is the earned one.
+ */
+const READ_ONLY: McpToolAnnotations = {
+  readOnlyHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+  destructiveHint: false,
+};
+
 export interface McpTool {
   name: string;
   title: string;
@@ -40,6 +73,8 @@ export interface McpTool {
   schema: Record<string, z.ZodTypeAny>;
   /** What a caller must hold. Enforced over HTTP; stdio is already trusted. */
   permission: Permission;
+  /** Required, not optional — see READ_ONLY. */
+  annotations: McpToolAnnotations;
   run: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -86,7 +121,7 @@ interface KeysetQuery {
 /**
  * Pages a select to exhaustion by KEYSET, not by offset.
  *
- * Only a fallback now — summarise_pipeline aggregates in SQL — but it carried the
+ * Only a fallback now — gtm_summarise_pipeline aggregates in SQL — but it carried the
  * same fault queries.ts documented and fixed in getSourceStats, and left unfixed
  * it is a trap for whoever calls it next.
  *
@@ -159,17 +194,74 @@ async function pageAll(build: () => KeysetQuery) {
 const PROJECT_COLUMNS =
   'id, ref_code, canonical_name, company_name_raw, account_key, icp_code, bu, vertical, current_phase, priority_band, priority_score, estimated_value, estimated_value_currency, building_type, source_key, city, state_province, country, contact_name, contact_email, contact_phone, additional_contacts, assignee_id, apollo_exported_at';
 
+/**
+ * A page position, as an opaque string.
+ *
+ * Opaque on purpose: it encodes the sort key of the last row handed out
+ * (`priority_score`, then `id` to break ties), and a caller that parsed it would
+ * be depending on the sort order never changing. Base64url keeps it one token and
+ * visibly not-for-editing.
+ */
+interface Cursor {
+  /** The last row's score. Null is legitimate — unscored rows sort last. */
+  s: number | null;
+  i: string;
+}
+
+const encodeCursor = (c: Cursor): string => Buffer.from(JSON.stringify(c)).toString('base64url');
+
+function decodeCursor(raw: string): Cursor {
+  try {
+    const c = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Cursor;
+    if (typeof c?.i !== 'string' || (c.s !== null && typeof c.s !== 'number')) throw new Error('shape');
+    return c;
+  } catch {
+    throw new McpToolError('invalid_cursor', 'That cursor is not one this tool issued. Omit it to start from the first page.');
+  }
+}
+
+/**
+ * The keyset predicate for "everything after this row", under
+ * `ORDER BY priority_score DESC NULLS LAST, id ASC`.
+ *
+ * Keyset rather than an offset, for the reason pageAll documents: OFFSET makes
+ * Postgres produce and discard every row before the window, so deep pages get
+ * quadratically more expensive, and a row inserted mid-walk shifts the window and
+ * silently skips or repeats one. The cost here is that nulls-last has to be
+ * spelled out — there is no tuple comparison that models it — so the position is
+ * one of two cases:
+ *
+ *   scored row: everything scoring less, plus ties broken by id, plus the whole
+ *               unscored tail (which sorts after every scored row).
+ *   unscored:   already in the tail, so only later ids in it.
+ */
+function afterCursor(c: Cursor): string {
+  if (c.s === null) return `and(priority_score.is.null,id.gt.${c.i})`;
+  return [
+    `priority_score.lt.${c.s}`,
+    `and(priority_score.eq.${c.s},id.gt.${c.i})`,
+    'priority_score.is.null',
+  ].join(',');
+}
+
 export const MCP_TOOLS: McpTool[] = [
   {
-    name: 'search_projects',
+    name: 'gtm_search_projects',
     title: 'Search projects',
     description:
-      'Find construction projects in the pipeline. Filters are combined with AND. Returns a summary row per project — use get_project for the full record. Phase filtering uses the normalised vocabulary, not the raw source wording.',
+      'Find construction projects in the pipeline, highest priority score first. Filters are combined with AND. Returns a summary row per project — use gtm_get_project for the full record. Phase filtering uses the normalised vocabulary, not the raw source wording. When truncated is true a nextCursor is returned: call again with that cursor and identical filters to get the following page.',
     permission: 'leads.view.all',
+    annotations: READ_ONLY,
     schema: {
       query: z.string().optional().describe('Case-insensitive match on project name or company name'),
       bu: z.enum(['usa', 'uk', 'ireland', 'apac', 'export']).optional().describe('Business unit'),
-      vertical: z.string().optional().describe('e.g. construction, solar, procurement, oil_gas'),
+      /*
+        An enum, not a free string. It was the latter, described with three
+        examples — which meant a plausible-but-wrong guess ("energy", "solar_pv")
+        came back as an empty result set indistinguishable from a real one. The
+        list is the classifier's own, so it cannot drift from what is stored.
+      */
+      vertical: z.enum(VERTICALS).optional().describe('Classifier vertical'),
       phase: z.enum(PROJECT_PHASES).optional().describe('Normalised phase, not the raw source value'),
       band: z.enum(['P1', 'P2', 'P3', 'P4']).optional().describe('Priority band'),
       assignee: z.string().optional().describe('Roster member name; matched loosely'),
@@ -182,6 +274,10 @@ export const MCP_TOOLS: McpTool[] = [
         .describe('Substring of building_type. "Healthcare" finds the NHS construction leads.'),
       minValue: z.number().optional().describe('Minimum estimated_value'),
       limit: z.number().int().min(1).max(200).default(25),
+      cursor: z
+        .string()
+        .optional()
+        .describe('nextCursor from a previous call, to fetch the following page. Keep every other filter identical.'),
     },
     async run(a) {
       const limit = (a.limit as number) ?? 25;
@@ -203,45 +299,113 @@ export const MCP_TOOLS: McpTool[] = [
         assigneeId = hits[0].id;
       }
 
-      let q = s().from('canonical_projects').select(PROJECT_COLUMNS);
-      if (a.bu) q = q.eq('bu', a.bu as string);
-      if (a.vertical) q = q.eq('vertical', a.vertical as string);
-      if (a.band) q = q.eq('priority_band', a.band as string);
-      if (assigneeId) q = q.eq('assignee_id', assigneeId);
-      if (a.exported === true) q = q.not('apollo_exported_at', 'is', null);
-      if (a.exported === false) q = q.is('apollo_exported_at', null);
-      if (a.hasContact === true) q = q.or('contact_email.not.is.null,contact_phone.not.is.null');
-      if (a.source) q = q.eq('source_key', (a.source as string).trim());
-      if (a.buildingType) q = q.ilike('building_type', `%${(a.buildingType as string).trim()}%`);
-      if (a.minValue != null) q = q.gte('estimated_value', a.minValue as number);
-      if (a.query) {
-        const like = `%${(a.query as string).trim()}%`;
-        q = q.or(`canonical_name.ilike.${like},company_name_raw.ilike.${like}`);
+      const cursor = a.cursor ? decodeCursor(a.cursor as string) : null;
+
+      /*
+        Built as a thunk because the phase filter may have to be retried without
+        the indexed column — see runPage below. A single mutated builder cannot be
+        replayed.
+      */
+      const build = (usePhaseColumn: boolean) => {
+        let q = s().from('canonical_projects').select(PROJECT_COLUMNS);
+        if (a.bu) q = q.eq('bu', a.bu as string);
+        if (a.vertical) q = q.eq('vertical', a.vertical as string);
+        if (a.band) q = q.eq('priority_band', a.band as string);
+        if (assigneeId) q = q.eq('assignee_id', assigneeId);
+        if (a.exported === true) q = q.not('apollo_exported_at', 'is', null);
+        if (a.exported === false) q = q.is('apollo_exported_at', null);
+        if (a.hasContact === true) q = q.or('contact_email.not.is.null,contact_phone.not.is.null');
+        if (a.source) q = q.eq('source_key', (a.source as string).trim());
+        if (a.buildingType) q = q.ilike('building_type', `%${(a.buildingType as string).trim()}%`);
+        if (a.minValue != null) q = q.gte('estimated_value', a.minValue as number);
+        if (a.query) {
+          const like = `%${(a.query as string).trim()}%`;
+          q = q.or(`canonical_name.ilike.${like},company_name_raw.ilike.${like}`);
+        }
+        /*
+          Phase, as an indexed WHERE clause.
+
+          `phase_normalised` is a stored generated column running the same 117→11
+          mapping as lib/phase.ts, emitted from it by scripts/generate-phase-sql.mjs
+          and pinned by scripts/test-phase-parity.mjs. Before it existed this filter
+          could not be pushed into SQL at all: the tool fetched the top `limit * 40`
+          rows by score and folded them here, so every matching project below that
+          score cutoff was invisible and a short result read as a small total.
+        */
+        if (a.phase && usePhaseColumn) q = q.eq('phase_normalised', a.phase as string);
+        if (cursor) q = q.or(afterCursor(cursor));
+        return q.order('priority_score', { ascending: false, nullsFirst: false }).order('id', { ascending: true });
+      };
+
+      const wantPhase = (a.phase as string) ?? null;
+
+      /*
+        One row more than we intend to keep, so "there are more" is observed rather
+        than guessed. `rows.length === limit` used to stand in for it, which reports
+        a search returning exactly its limit as truncated.
+      */
+      let { data, error } = await build(true).limit(limit + 1);
+
+      /*
+        The migration may not be applied yet, so fall back to the old fold.
+
+        Same reasoning as gtm_summarise_pipeline's rollup fallback: a slow, caveated
+        answer beats `migration_required` from a tool whose whole job is finding
+        projects, and the branch disappears once the column exists. Matched on the
+        column name so an unrelated failure still surfaces as itself.
+      */
+      let degraded = false;
+      if (error && wantPhase && /phase_normalised/.test(error.message)) {
+        degraded = true;
+        ({ data, error } = await build(false).limit(Math.min(2000, limit * 40) + 1));
+      }
+      if (error) throw new McpToolError('query_failed', error.message);
+
+      const scanned = (data ?? []) as Record<string, unknown>[];
+      const cap = degraded ? Math.min(2000, limit * 40) : limit;
+      /* Fewer back than we asked for ⇒ we have seen every row matching the filters. */
+      const sawEverything = scanned.length <= cap;
+
+      let rows: Record<string, unknown>[];
+      let truncated: boolean;
+      let warning: string | null = null;
+
+      if (degraded) {
+        const matched = scanned.slice(0, cap).filter((r) => normalisePhase(r.current_phase as string) === wantPhase);
+        truncated = !sawEverything || matched.length > limit;
+        if (!sawEverything) {
+          warning =
+            `phase_normalised is missing, so this fell back to scanning the top ${cap} projects by score and folding phase in code. ` +
+            `Lower-scoring projects in "${wantPhase}" were not examined. Apply 20260818220000_phase_normalised.sql for an exhaustive answer.`;
+        }
+        rows = matched.slice(0, limit);
+      } else {
+        truncated = !sawEverything;
+        rows = scanned.slice(0, limit);
       }
 
       /*
-        Phase is normalised in code, not in SQL — 117 raw values map to 11, and
-        the mapping lives in lib/phase.ts. So filtering on phase over-fetches and
-        filters here, which is why the cap is generous but bounded.
+        The cursor is the LAST ROW HANDED OUT, so the next page resumes exactly
+        after it. Only issued when there is a next page — an agent can treat a
+        present nextCursor as "there is more" without comparing counts.
       */
-      const wantPhase = (a.phase as string) ?? null;
-      const { data, error } = await q
-        .order('priority_score', { ascending: false, nullsFirst: false })
-        .limit(wantPhase ? Math.min(2000, limit * 40) : limit);
-      if (error) throw new McpToolError('query_failed', error.message);
-
-      let rows = (data ?? []) as Record<string, unknown>[];
-      if (wantPhase) rows = rows.filter((r) => normalisePhase(r.current_phase as string) === wantPhase).slice(0, limit);
+      const last = rows[rows.length - 1];
+      const nextCursor =
+        truncated && last
+          ? encodeCursor({ s: (last.priority_score as number | null) ?? null, i: last.id as string })
+          : null;
 
       return {
         count: rows.length,
-        truncated: rows.length === limit,
+        truncated,
+        nextCursor,
+        ...(warning ? { warning } : {}),
         projects: rows.map((r) => ({
           id: r.id,
           ref: r.ref_code,
           name: r.canonical_name,
           company: r.company_name_raw,
-          // The handle get_account takes. Without it that tool is unreachable.
+          // The handle gtm_get_account takes. Without it that tool is unreachable.
           accountKey: r.account_key,
           party: partyLabel(r.icp_code as string),
           bu: r.bu,
@@ -266,11 +430,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_project',
+    name: 'gtm_get_project',
     title: 'Get one project in full',
     description:
       'Everything held on a single project, including the rendered call brief a rep would read: why now, the facts, timing, the full contact committee, priority reasoning and the source link. Accepts either the record id or the ref code.',
     permission: 'leads.view.all',
+    annotations: READ_ONLY,
     schema: {
       id: z.string().optional().describe('The record id (uuid)'),
       ref: z.string().optional().describe('The ref_code, e.g. USA-PROC-US-7FA612FB'),
@@ -285,6 +450,16 @@ export const MCP_TOOLS: McpTool[] = [
       if (!r) throw new McpToolError('not_found', `No project for ${a.id ? `id ${a.id}` : `ref ${a.ref}`}.`);
 
       const { rows: roster } = await getRoster();
+      /*
+        A superset of the search row, deliberately.
+
+        This drills down from gtm_search_projects, and it used to return TWELVE
+        fields where the summary returns twenty — band, score, value, location,
+        building type and source all vanished on the way in. Following a search
+        into one record lost information, which is backwards. Whatever the
+        summary carries, the detail carries too, under the same names so the two
+        shapes line up.
+      */
       return {
         id: r.id,
         ref: r.ref_code,
@@ -292,8 +467,21 @@ export const MCP_TOOLS: McpTool[] = [
         company: r.company_name_raw,
         accountKey: r.account_key,
         party: partyLabel(r.icp_code as string),
+        bu: r.bu,
+        vertical: r.vertical,
         phase: normalisePhase(r.current_phase as string),
         phaseRaw: r.current_phase,
+        band: r.priority_band,
+        score: r.priority_score,
+        value: r.estimated_value,
+        currency: r.estimated_value_currency,
+        buildingType: r.building_type,
+        source: r.source_key,
+        location: [r.city, r.state_province, r.country].filter(Boolean).join(', ') || null,
+        contacts:
+          (Array.isArray(r.additional_contacts) ? (r.additional_contacts as unknown[]).length : 0) +
+          (r.contact_name ? 1 : 0),
+        reachable: Boolean(r.contact_email || r.contact_phone),
         assignedTo: roster.find((x) => x.id === r.assignee_id)?.name ?? null,
         exportedAt: r.apollo_exported_at,
         apolloContactId: r.apollo_contact_id,
@@ -304,11 +492,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_handover_status',
+    name: 'gtm_get_handover_status',
     title: 'Who received leads, and what is stuck',
     description:
       'Per roster member: leads already sent to Apollo, leads ready to send on the next run, and the first blocking reason for the rest. Uses the export\'s own eligibility gates, so "ready" is what would genuinely be sent.',
     permission: 'kpi.view.team',
+    annotations: READ_ONLY,
     schema: {},
     async run() {
       const b = await getHandoverByPerson();
@@ -331,11 +520,20 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_export_runs',
+    name: 'gtm_list_export_runs',
     title: 'Recent Apollo export runs',
     description:
       'History of sends to Apollo, newest first — when, who triggered it, what scope, and the created/existing/failed counts. Apollo raises no notification of its own, so this is the only record that an export happened.',
-    permission: 'leads.export',
+    /*
+      Reading the history is not exporting.
+
+      This was gated on `leads.export`, which meant somebody who could see the
+      handover board could not see whether the export they were waiting on had
+      actually run — the immediate next question, refused. Aligned with the other
+      reporting tools; triggering an export is still a script with its own gate.
+    */
+    permission: 'kpi.view.team',
+    annotations: READ_ONLY,
     schema: { limit: z.number().int().min(1).max(50).default(10) },
     async run(a) {
       const { rows, tableMissing } = await getExportRuns((a.limit as number) ?? 10);
@@ -358,11 +556,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_assignees',
+    name: 'gtm_list_assignees',
     title: 'The roster',
     description:
       'Who can receive leads, their daily quota, and the scope that decides which leads reach them. An empty bu/vertical/region list means no restriction on that axis, not "nothing".',
     permission: 'kpi.view.team',
+    annotations: READ_ONLY,
     schema: { includeInactive: z.boolean().default(false) },
     async run(a) {
       const { rows, tableMissing } = await getRoster();
@@ -386,11 +585,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'summarise_pipeline',
+    name: 'gtm_summarise_pipeline',
     title: 'Pipeline totals',
     description:
       'Counts across the whole table, grouped by a dimension. Phase uses the normalised 11-value vocabulary. Paged, so totals are exact rather than a 1000-row sample.',
     permission: 'kpi.view.team',
+    annotations: READ_ONLY,
     schema: { groupBy: z.enum(['phase', 'band', 'vertical', 'bu', 'party']).default('phase') },
     async run(a) {
       const groupBy = (a.groupBy as string) ?? 'phase';
@@ -476,11 +676,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_sources',
+    name: 'gtm_list_sources',
     title: 'Where the data comes from',
     description:
       'Every source the tool can pull from, with how many records it has contributed, how complete they are, when it last delivered, and whether it is switched on. Use this to answer "why do we have no leads in X" before assuming the pipeline is broken.',
     permission: 'sources.run',
+    annotations: READ_ONLY,
     schema: { withRecordsOnly: z.boolean().default(false) },
     async run(a) {
       const [stats, cfg] = await Promise.all([getSourceStats(), getAllSourceConfigs()]);
@@ -514,11 +715,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'list_ingestion_runs',
+    name: 'gtm_list_ingestion_runs',
     title: 'Recent source pulls',
     description:
-      'History of fetches FROM sources — distinct from list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
+      'History of fetches FROM sources — distinct from gtm_list_export_runs, which is sends TO Apollo. Shows what ran, over what window, and how many records arrived, plus the error when one failed.',
     permission: 'sources.run',
+    annotations: READ_ONLY,
     schema: {
       source: z.string().optional().describe('Slug, e.g. find-a-tender, gem, nyc-permits'),
       limit: z.number().int().min(1).max(100).default(15),
@@ -550,11 +752,12 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   {
-    name: 'get_account',
+    name: 'gtm_get_account',
     title: 'One company and every project it touches',
     description:
-      'A company-level view rather than a per-project one: the account record, its enrichment, and every project linked to it. This is the view for "what else is this contractor doing" before a call.',
+      'A company-level view rather than a per-project one: the account record, its enrichment, and its linked projects, highest-scoring first. This is the view for "what else is this contractor doing" before a call. projectCount is the true total; the projects list is capped, so compare it against projectsShown before summarising a portfolio.',
     permission: 'leads.view.all',
+    annotations: READ_ONLY,
     schema: { accountKey: z.string().describe('The normalised account_key, as returned on a project') },
     async run(a) {
       const key = a.accountKey as string;
@@ -569,6 +772,15 @@ export const MCP_TOOLS: McpTool[] = [
         keyAccount: d.view?.key_account ?? null,
         totalValue: d.view?.total_value ?? null,
         projectCount: d.projectCount,
+        /*
+          getAccountDetail caps the linked projects at 50 while counting exactly,
+          so on a large contractor these two disagree — and nothing said so. An
+          agent reading fifty rows next to a count of three hundred, with no
+          marker between them, describes the fifty as the portfolio. Named and
+          flagged, in the same shape the search tool uses.
+        */
+        projectsShown: d.projects.length,
+        truncated: d.projects.length < d.projectCount,
         enrichment: d.enrichment
           ? {
               parentAccount: d.enrichment.parent_account,

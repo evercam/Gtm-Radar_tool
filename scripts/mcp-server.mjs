@@ -54,7 +54,14 @@ const server = new McpServer({ name: 'gtm-radar', version: '1.0.0' });
 for (const tool of MCP_TOOLS) {
   server.registerTool(
     tool.name,
-    { title: tool.title, description: tool.description, inputSchema: tool.schema },
+    {
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.schema,
+      // Carried on both transports, like everything else here — a local agent
+      // reads the same read-only hints a remote one does.
+      annotations: tool.annotations,
+    },
     async (args) => {
       try {
         const result = await tool.run(args ?? {});

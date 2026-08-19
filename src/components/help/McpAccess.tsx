@@ -36,15 +36,15 @@ function Snippet({ children }: { children: string }) {
 
 /** Plain-language questions, in the order somebody would think of them. */
 const ASKS: [string, string][] = [
-  ['search_projects', '“P1 pre-construction jobs in the USA that Anas holds and we haven’t sent yet”'],
-  ['get_project', '“Everything on UK-PROC-GB-FA028C0C, including the call brief”'],
-  ['get_account', '“What else is this contractor doing?”'],
-  ['get_handover_status', '“Who has leads, who is ready to send, and what is stuck”'],
-  ['list_export_runs', '“When did we last send to Apollo, and what happened?”'],
-  ['list_ingestion_runs', '“Did the Find a Tender pull run, and what did it bring back?”'],
-  ['list_sources', '“Why do we have no leads in X?”'],
-  ['list_assignees', '“Who can receive leads, and what covers what?”'],
-  ['summarise_pipeline', '“How much is in each phase, band or vertical?”'],
+  ['gtm_search_projects', '“P1 pre-construction jobs in the USA that Anas holds and we haven’t sent yet”'],
+  ['gtm_get_project', '“Everything on UK-PROC-GB-FA028C0C, including the call brief”'],
+  ['gtm_get_account', '“What else is this contractor doing?”'],
+  ['gtm_get_handover_status', '“Who has leads, who is ready to send, and what is stuck”'],
+  ['gtm_list_export_runs', '“When did we last send to Apollo, and what happened?”'],
+  ['gtm_list_ingestion_runs', '“Did the Find a Tender pull run, and what did it bring back?”'],
+  ['gtm_list_sources', '“Why do we have no leads in X?”'],
+  ['gtm_list_assignees', '“Who can receive leads, and what covers what?”'],
+  ['gtm_summarise_pipeline', '“How much is in each phase, band or vertical?”'],
 ];
 
 export default function McpAccess() {
