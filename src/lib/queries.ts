@@ -757,13 +757,56 @@ export async function getCachedRoutingPreview(
 ): Promise<CachedRoutingPreview> {
   const fingerprint = routingScoringFingerprint(scoringConfig);
 
-  const hit = await readRoutingScoreGroups(fingerprint);
-  if (hit) {
+  const read = await readRoutingScoreGroups(fingerprint);
+  if (read.ok) {
     return {
-      ...previewFromScoreGroups(hit.groups, hit.total, rules),
+      ...previewFromScoreGroups(read.groups, read.total, rules),
       partial: null,
-      computedAt: hit.computedAt,
+      computedAt: read.computedAt,
       source: 'snapshot',
+    };
+  }
+
+  /*
+    A FAILED READ IS NOT A CACHE MISS, and conflating them was a real fault.
+
+    The stored groups are ~1.7 MB in one jsonb cell, and a read of that can time out
+    transiently — it did, twice in a row, immediately after a 44-second refresh had
+    loaded the database. Treating that as "no snapshot exists" cost a 40-second
+    recompute each time and then wrote the result back over a row that was already
+    correct, with nothing anywhere reporting that the cache had been bypassed. A cache
+    that silently degrades to the slow path is the same shape of bug as a count that
+    silently returns a sample.
+
+    So an error gets one retry, and if it persists the fallback is recorded rather
+    than merely happening. The recompute still proceeds — a slow correct page beats a
+    failed one — but it does NOT write, because the row it would overwrite is
+    probably fine and the write is what turns a blip into churn.
+  */
+  if (read.reason === 'error') {
+    const retry = await readRoutingScoreGroups(fingerprint);
+    if (retry.ok) {
+      return {
+        ...previewFromScoreGroups(retry.groups, retry.total, rules),
+        partial: null,
+        computedAt: retry.computedAt,
+        source: 'snapshot',
+      };
+    }
+    // `query`, from the EventKind vocabulary in observability/redact.ts — the field
+    // accepts any string, which is exactly why it is worth staying inside the set.
+    logEventAsync({
+      kind: 'query',
+      name: 'routing.groups.read_failed',
+      ok: false,
+      detail: { fingerprint, message: read.message ?? null },
+    });
+    const live = await buildRoutingScoreGroups(scoringConfig);
+    return {
+      ...previewFromScoreGroups(live.groups, live.total, rules),
+      partial: live.partial,
+      computedAt: null,
+      source: 'computed',
     };
   }
 
@@ -785,21 +828,47 @@ export async function getCachedRoutingPreview(
   return { ...previewFromScoreGroups(groups, total, rules), partial, computedAt: null, source: 'computed' };
 }
 
-/** Reads one stored group set, or null. Never throws — a missing table is just a miss. */
-async function readRoutingScoreGroups(
-  fingerprint: string
-): Promise<{ groups: RoutingScoreGroup[]; total: number; computedAt: string } | null> {
+/**
+ * Reads one stored group set.
+ *
+ * Distinguishes ABSENT from ERROR, which the caller acts on differently: absent means
+ * build and store, error means retry and then fall back without writing. Returning
+ * plain `null` for both is what let a transient timeout masquerade as a cache miss.
+ *
+ * Never throws. A missing table is `absent` — a workspace without the migration
+ * should get a slow page, not a broken one.
+ */
+type GroupsRead =
+  | { ok: true; groups: RoutingScoreGroup[]; total: number; computedAt: string }
+  | { ok: false; reason: 'absent' | 'error'; message?: string };
+
+async function readRoutingScoreGroups(fingerprint: string): Promise<GroupsRead> {
   try {
     const { data, error } = await getServiceSupabase()
       .from('routing_score_groups')
       .select('groups, total, computed_at')
       .eq('scoring_fingerprint', fingerprint)
       .maybeSingle();
-    if (error || !data) return null;
+
+    if (error) {
+      // A missing table is a legitimate absence; anything else is a failure to read.
+      const absent = /does not exist|schema cache/i.test(error.message);
+      return { ok: false, reason: absent ? 'absent' : 'error', message: error.message };
+    }
+    if (!data) return { ok: false, reason: 'absent' };
+
     const row = data as { groups: RoutingScoreGroup[]; total: number; computed_at: string };
-    // A row whose shape predates a change to RoutingScoreGroup is a miss, not a crash.
-    if (!Array.isArray(row.groups) || row.groups.length === 0 || typeof row.total !== 'number') return null;
-    if (!row.groups[0]?.record || typeof row.groups[0]?.n !== 'number') return null;
+    /*
+      A row whose shape predates a change to RoutingScoreGroup is ABSENT, not an
+      error: rebuilding and overwriting it is exactly the right response, whereas
+      retrying would just re-read the same unusable row.
+    */
+    if (!Array.isArray(row.groups) || row.groups.length === 0 || typeof row.total !== 'number') {
+      return { ok: false, reason: 'absent' };
+    }
+    if (!row.groups[0]?.record || typeof row.groups[0]?.n !== 'number') {
+      return { ok: false, reason: 'absent' };
+    }
 
     /*
       Touch last_read_at so pruning can tell a live scoring config from the fossil of
@@ -815,9 +884,10 @@ async function readRoutingScoreGroups(
         () => undefined
       );
 
-    return { groups: row.groups, total: row.total, computedAt: row.computed_at };
-  } catch {
-    return null;
+    return { ok: true, groups: row.groups, total: row.total, computedAt: row.computed_at };
+  } catch (err) {
+    // A thrown read is a failure, not an absence — same reasoning as the error branch.
+    return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
   }
 }
 
