@@ -1,0 +1,184 @@
+/**
+ * The design token layer holds, and nothing renders a colour behind its back.
+ *
+ *   node --no-warnings scripts/test-design-tokens.mjs
+ *
+ * Three separate things are asserted here, each of which has a failure mode that
+ * looks like nothing at all until somebody notices the UI drifting.
+ *
+ * 1. NO RAW HEX IN COMPONENTS. The chrome used to carry five copies of #1c1c1c
+ *    and two of #0c0c0c inline. Nothing was broken by that — it just meant the
+ *    topbar and rail could not be restyled without finding every copy, and a
+ *    sixth copy that was one digit off would have looked deliberate. The colours
+ *    now live in `--sidebar-*` in globals.css. A raw hex creeping back into a
+ *    component is the regression.
+ *
+ * 2. THE CHROME TOKENS ARE THEME-INDEPENDENT. The topbar and rail are dark in
+ *    BOTH themes — that is a decision, not an oversight, and it is why these
+ *    tokens sit in `:root` and are deliberately absent from `.dark`. Someone
+ *    "fixing" that by adding a `.dark` override would silently make the chrome
+ *    light-on-light in one theme. The test states the intent so the next reader
+ *    sees it before changing it.
+ *
+ * 3. THE ProductOS ALIASES EXIST. Components copied from the ProductOS design
+ *    skill (or its starter) reference THEIR token names — `--color-card`,
+ *    `--color-muted-foreground`, `--color-ring` and so on. Without the aliases a
+ *    pasted component renders unstyled in places and mis-styled in others, which
+ *    reads as "the component is broken" rather than "the alias is missing".
+ *
+ *    `--color-muted` is checked NEGATIVELY, and that is the important one. In
+ *    ProductOS `--muted` is a muted SURFACE whose text colour is
+ *    `--muted-foreground`. Here `--muted` has always been the TEXT colour, and
+ *    374 call sites across 62 files say `text-muted`. So the alias adds
+ *    `--color-muted-foreground` and leaves `--color-muted` pointing at the local
+ *    meaning. The cost is that `bg-muted` — perfectly legal in ProductOS —
+ *    paints a text grey here. It appears zero times today, and this test keeps
+ *    it that way rather than letting one appear and be debugged from scratch.
+ */
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+let passed = 0,
+  failed = 0;
+const check = (n, c, d) => {
+  if (c) {
+    passed++;
+    console.log(`  PASS ${n}`);
+  } else {
+    failed++;
+    console.log(`  FAIL ${n}${d ? ' — ' + d : ''}`);
+  }
+};
+
+const css = readFileSync('src/app/globals.css', 'utf8');
+
+/** Every .tsx under src/, so the walk does not have to be maintained by hand. */
+function tsxFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) out.push(...tsxFiles(p));
+    else if (entry.endsWith('.tsx')) out.push(p);
+  }
+  return out;
+}
+
+const files = tsxFiles('src');
+
+console.log('\nColour lives in tokens, not in components');
+
+/*
+  Tailwind's arbitrary-value syntax is the only way a raw colour reaches a
+  component — `bg-[#0c0c0c]`, `text-[#8a8a8a]`. Matching the bracket form rather
+  than any `#rrggbb` keeps the check on class names and off unrelated strings
+  like an SVG fill or a copy deck.
+*/
+const HEX_UTILITY = /(?:bg|text|border|ring|fill|stroke|from|via|to|shadow|outline|decoration|divide|accent|caret)-\[#[0-9a-fA-F]{3,8}\]/g;
+const offenders = [];
+for (const f of files) {
+  const hits = readFileSync(f, 'utf8').match(HEX_UTILITY);
+  if (hits) offenders.push(`${f}: ${[...new Set(hits)].join(', ')}`);
+}
+check(
+  `no raw hex colour utilities in any of the ${files.length} .tsx files`,
+  offenders.length === 0,
+  offenders.join(' | ')
+);
+
+console.log('\nThe application chrome is tokenised and theme-independent');
+
+const CHROME = [
+  'sidebar',
+  'sidebar-border',
+  'sidebar-foreground',
+  'sidebar-heading',
+  'sidebar-subtle',
+  'sidebar-accent',
+  'sidebar-accent-hover',
+  'sidebar-accent-foreground',
+];
+
+/*
+  Split on the `.dark` selector so each half can be searched independently. The
+  chrome tokens must appear in the first half and NOT the second — that is the
+  whole "dark in both themes" decision, expressed as a location.
+*/
+const darkAt = css.indexOf('.dark {');
+check('globals.css still has a .dark block to compare against', darkAt > 0);
+const rootHalf = css.slice(0, darkAt);
+const darkHalf = css.slice(darkAt, css.indexOf('@theme'));
+
+for (const t of CHROME) {
+  check(`--${t} is defined once, in :root`, rootHalf.includes(`--${t}:`));
+}
+const leaked = CHROME.filter((t) => darkHalf.includes(`--${t}:`));
+check(
+  'no chrome token is re-declared in .dark — the chrome is dark in both themes',
+  leaked.length === 0,
+  leaked.length ? `${leaked.join(', ')} re-declared; the rail would change colour with the theme` : ''
+);
+
+for (const t of CHROME) {
+  check(`--color-${t} is exposed to Tailwind`, css.includes(`--color-${t}: var(--${t})`));
+}
+
+console.log('\nProductOS token aliases are present, so copied components land styled');
+
+const ALIASES = [
+  'muted-foreground',
+  'card',
+  'card-foreground',
+  'popover',
+  'secondary',
+  'accent',
+  'accent-foreground',
+  'border',
+  'input',
+  'ring',
+  'primary',
+  'primary-foreground',
+  'destructive',
+];
+for (const a of ALIASES) {
+  check(`--color-${a} is aliased`, new RegExp(`--color-${a}:\\s*var\\(`).test(css));
+}
+
+console.log('\nbg-muted stays out of the codebase');
+
+/*
+  Not a style preference — a correctness check. `--color-muted` is this app's
+  TEXT grey, so `bg-muted` paints a background in a colour chosen to be read
+  against one. Use `bg-surface-raised` (the local name) or `bg-accent` (the
+  ProductOS alias, which points at the same value).
+*/
+const bgMuted = files.filter((f) => /\bbg-muted\b/.test(readFileSync(f, 'utf8')));
+check(
+  'no component uses bg-muted',
+  bgMuted.length === 0,
+  bgMuted.length
+    ? `${bgMuted.join(', ')} — --muted is the TEXT colour here; use bg-surface-raised or bg-accent`
+    : ''
+);
+
+console.log('\nThe className merge is conflict-aware');
+
+/*
+  A plain `parts.filter(Boolean).join(' ')` emits BOTH the component's class and
+  the caller's override, leaving the winner to Tailwind's emission order rather
+  than to the caller. It is not a visible bug today — the orders happen to
+  agree — but it makes every `className` override contingent on the order of
+  unrelated utilities elsewhere in the app. cn() resolves by utility group.
+*/
+const ui = readFileSync('src/components/ui/index.tsx', 'utf8');
+check('components/ui imports cn()', /import \{ cn \} from '@\/lib\/cn'/.test(ui));
+check(
+  'components/ui no longer defines a naive local join',
+  !/function cx\(/.test(ui),
+  'a local cx() is back; className overrides stop being reliable'
+);
+const cn = readFileSync('src/lib/cn.ts', 'utf8');
+check('cn() merges through tailwind-merge', /twMerge\(/.test(cn));
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed > 0 ? 1 : 0);

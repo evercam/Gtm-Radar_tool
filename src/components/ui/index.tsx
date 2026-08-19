@@ -11,10 +11,7 @@
  */
 
 import type { ReactNode, HTMLAttributes, ButtonHTMLAttributes } from 'react';
-
-function cx(...parts: (string | false | null | undefined)[]): string {
-  return parts.filter(Boolean).join(' ');
-}
+import { cn } from '@/lib/cn';
 
 /* -------------------------------------------------------------------------- */
 /* Card                                                                        */
@@ -28,7 +25,7 @@ export function Card({
 }: { children: ReactNode; interactive?: boolean } & HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cx(
+      className={cn(
         'border-border-base bg-surface rounded-2xl border shadow-[var(--shadow-card)]',
         interactive && 'transition-shadow duration-200 hover:shadow-[var(--shadow-card-hover)]',
         className
@@ -61,7 +58,7 @@ export function CardHeader({
 }
 
 export function CardBody({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx('px-5 py-5', className)}>{children}</div>;
+  return <div className={cn('px-5 py-5', className)}>{children}</div>;
 }
 
 /**
@@ -103,7 +100,7 @@ export function Field({
   className?: string;
 }) {
   return (
-    <label className={cx('block', className)}>
+    <label className={cn('block', className)}>
       <Label hint={hint}>{label}</Label>
       {children}
     </label>
@@ -138,7 +135,7 @@ export function Badge({
   return (
     <span
       title={title}
-      className={cx(
+      className={cn(
         'inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide',
         className ?? tones[tone]
       )}
@@ -165,7 +162,7 @@ export function Chip({
   href?: string;
   title?: string;
 }) {
-  const className = cx(
+  const className = cn(
     'inline-block rounded-lg border px-2.5 py-1 text-[10px] font-semibold transition-colors',
     active
       ? 'border-brand/40 bg-brand/10 text-brand'
@@ -193,7 +190,7 @@ export function StatusDot({ tone = 'idle' }: { tone?: 'ok' | 'warn' | 'bad' | 'i
     bad: 'bg-rose-400',
     idle: 'bg-border-strong',
   };
-  return <span className={cx('inline-block h-2 w-2 shrink-0 rounded-full', tones[tone])} />;
+  return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', tones[tone])} />;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -223,7 +220,7 @@ export function Button({
   };
   return (
     <button
-      className={cx(
+      className={cn(
         'rounded-lg font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40',
         'focus-visible:outline-brand focus-visible:outline-2 focus-visible:outline-offset-2',
         variants[variant],
@@ -258,7 +255,7 @@ export function Stat({
   return (
     <Card className="p-4">
       <p className="text-muted text-[10px] font-bold uppercase tracking-widest">{label}</p>
-      <p className={cx('mt-1.5 text-xl font-bold tabular-nums', toneClass)}>{value}</p>
+      <p className={cn('mt-1.5 text-xl font-bold tabular-nums', toneClass)}>{value}</p>
       {note ? <p className="text-subtle mt-0.5 text-[10px]">{note}</p> : null}
     </Card>
   );
@@ -328,14 +325,14 @@ export function ProgressBar({
   };
   return (
     <div
-      className={cx('bg-surface-raised border-border-base h-1.5 overflow-hidden rounded-full border', className)}
+      className={cn('bg-surface-raised border-border-base h-1.5 overflow-hidden rounded-full border', className)}
       role="progressbar"
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
       aria-valuemax={100}
     >
       <div
-        className={cx('h-full rounded-full transition-[width] duration-300', tones[tone])}
+        className={cn('h-full rounded-full transition-[width] duration-300', tones[tone])}
         style={{ width: `${pct}%` }}
       />
     </div>
@@ -368,7 +365,7 @@ export function EmptyState({
 }
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cx('skeleton rounded', className)} aria-hidden="true" />;
+  return <div className={cn('skeleton rounded', className)} aria-hidden="true" />;
 }
 
 export function SkeletonTable({ rows = 6, cols = 5 }: { rows?: number; cols?: number }) {
@@ -381,7 +378,7 @@ export function SkeletonTable({ rows = 6, cols = 5 }: { rows?: number; cols?: nu
         {Array.from({ length: rows }).map((_, r) => (
           <div key={r} className="flex gap-4 px-4 py-3">
             {Array.from({ length: cols }).map((_, c) => (
-              <Skeleton key={c} className={cx('h-2.5', c === 0 ? 'w-1/3' : 'flex-1')} />
+              <Skeleton key={c} className={cn('h-2.5', c === 0 ? 'w-1/3' : 'flex-1')} />
             ))}
           </div>
         ))}
@@ -404,7 +401,7 @@ export function TableShell({ children, footer }: { children: ReactNode; footer?:
 }
 
 export function Table({ children, className }: { children: ReactNode; className?: string }) {
-  return <table className={cx('w-full text-left text-xs', className)}>{children}</table>;
+  return <table className={cn('w-full text-left text-xs', className)}>{children}</table>;
 }
 
 export function Th({
@@ -418,7 +415,7 @@ export function Th({
 }) {
   return (
     <th
-      className={cx(
+      className={cn(
         'text-muted px-3 py-2.5 text-[10px] font-bold uppercase tracking-widest',
         align === 'right' && 'text-right',
         className
@@ -439,7 +436,7 @@ export function Td({
   className?: string;
 }) {
   return (
-    <td className={cx('text-body px-3 py-2', align === 'right' && 'text-right tabular-nums', className)}>{children}</td>
+    <td className={cn('text-body px-3 py-2', align === 'right' && 'text-right tabular-nums', className)}>{children}</td>
   );
 }
 

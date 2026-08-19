@@ -60,7 +60,7 @@ export default function Sidebar({
       ) : null}
 
       <aside
-        className={`fixed left-0 top-14 z-50 flex h-[calc(100vh-3.5rem)] w-56 flex-col border-r border-[#1c1c1c] bg-[#0c0c0c] transition-transform duration-300 ease-in-out ${
+        className={`fixed left-0 top-14 z-50 flex h-[calc(100vh-3.5rem)] w-56 flex-col border-r border-sidebar-border bg-sidebar transition-transform duration-300 ease-in-out ${
           open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
         aria-label="Main navigation"
@@ -75,7 +75,7 @@ export default function Sidebar({
                 name a set ("Administration" over "Settings") keep theirs.
               */}
               {section.items.length === 1 && section.items[0].label === section.title ? null : (
-                <p className="mb-1.5 px-2.5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#3a3a3a]">
+                <p className="mb-1.5 px-2.5 text-[8px] font-bold uppercase tracking-[0.2em] text-sidebar-heading">
                   {section.title}
                 </p>
               )}
@@ -89,7 +89,7 @@ export default function Sidebar({
                       onClick={onClose}
                       aria-current={active ? 'page' : undefined}
                       className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 ${
-                        active ? 'bg-white/[0.08] text-white' : 'text-[#8a8a8a] hover:bg-white/5 hover:text-white'
+                        active ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground hover:bg-sidebar-accent-hover hover:text-sidebar-accent-foreground'
                       }`}
                     >
                       {active ? (
@@ -112,7 +112,7 @@ export default function Sidebar({
           lost is no use if you have to scroll to find it. Green because it is the
           only entry that explains rather than operates.
         */}
-        <div className="border-t border-[#1c1c1c] px-2.5 py-2">
+        <div className="border-t border-sidebar-border px-2.5 py-2">
           {NAV_FOOTER.map((item) => {
             const active = isActive(item.href);
             return (
@@ -139,9 +139,9 @@ export default function Sidebar({
           })}
         </div>
 
-        <div className="flex items-center gap-2 border-t border-[#1c1c1c] px-4 py-3">
+        <div className="flex items-center gap-2 border-t border-sidebar-border px-4 py-3">
           <Logo variant="mark" width={16} className="shrink-0 opacity-60" />
-          <p className="text-[10px] text-[#5a5a5a]">GTM Radar</p>
+          <p className="text-[10px] text-sidebar-subtle">GTM Radar</p>
         </div>
       </aside>
     </>
