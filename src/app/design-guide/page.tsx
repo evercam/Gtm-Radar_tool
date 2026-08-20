@@ -8,6 +8,9 @@ import {
   CardBody,
   CardHeader,
   Chip,
+  MetricTile,
+  SectionHeading,
+  SkeletonTiles,
   EmptyState,
   Field,
   Label,
@@ -35,6 +38,7 @@ import {
   statusText,
 } from '@/lib/status-colors';
 import { cn } from '@/lib/cn';
+import LaneChart, { type LaneRow } from '@/components/LaneChart';
 
 /**
  * The living showcase. ProductOS keeps one of these per app, and it is the
@@ -110,6 +114,15 @@ const TYPE_SCALE: { name: string; className: string }[] = [
   { name: 'Meta (11px)', className: 'text-muted text-[11px]' },
   { name: 'Label (10px caps)', className: 'text-muted text-[10px] font-bold uppercase tracking-[0.14em]' },
   { name: 'Mono identifier', className: 'text-muted font-mono text-xs' },
+];
+
+const LANES: LaneRow[] = [
+  { route: 'sales', stage: 'act_now', count: 243 },
+  { route: 'sales', stage: 'qualify', count: 1180 },
+  { route: 'marketing', stage: 'nurture', count: 7880 },
+  { route: 'partner', stage: 'hold', count: 1353 },
+  { route: 'none', stage: 'hold', count: 620 },
+  { route: 'none', stage: 'disqualify', count: 1998 },
 ];
 
 const ROWS: [string, string, number][] = [
@@ -280,6 +293,61 @@ export default function DesignGuidePage() {
         <Row label="dangerHoverText">
           <button className={cn('text-muted text-xs', dangerHoverText)}>remove (hover me)</button>
         </Row>
+      </Section>
+
+      <Section
+        title="Metric strip"
+        note="The five-second row. Tile size is the hierarchy; tone colours the figure, never the card."
+      >
+        <div className="grid grid-cols-12 gap-4">
+          <MetricTile
+            className="col-span-6 lg:col-span-3"
+            href="#"
+            label="Act now"
+            value="243"
+            note="sales, contact first"
+            tone="success"
+          />
+          <MetricTile className="col-span-6 lg:col-span-3" href="#" label="Workable" value="31,417" note="64% callable" />
+          <MetricTile className="col-span-6 lg:col-span-3" label="Scored" value="98,229" note="of 111,353 records" />
+          <MetricTile
+            className="col-span-6 lg:col-span-3"
+            href="#"
+            label="Routed"
+            value="97,412"
+            note="817 still unrouted"
+            tone="warning"
+          />
+        </div>
+        <Row label="streaming">
+          <div className="grid w-full grid-cols-2 gap-3 lg:grid-cols-4">
+            <SkeletonTiles count={4} />
+          </div>
+        </Row>
+      </Section>
+
+      <Section
+        title="LaneChart"
+        note="Route is the hue, stage is a step within it. The old flat map put the two sales lanes at ΔE 7.7 — indistinguishable."
+      >
+        <LaneChart rows={LANES} total={LANES.reduce((s, l) => s + l.count, 0)} />
+      </Section>
+
+      <Section title="SectionHeading" note="A band title with the links that belong to that band. Was written four times by hand.">
+        <SectionHeading
+          title="Top priority leads"
+          actions={
+            <>
+              <a href="#" className="text-brand underline underline-offset-2">
+                All records
+              </a>
+              <a href="#" className="text-brand underline underline-offset-2">
+                Enrichment queue
+              </a>
+            </>
+          }
+        />
+        <SectionHeading title="No actions" />
       </Section>
 
       <Section title="Data display">

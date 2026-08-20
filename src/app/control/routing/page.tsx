@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { laneBar, laneText } from '@/lib/status-colors';
+import LaneChart from '@/components/LaneChart';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getRoutingPolicy, getCachedRoutingPreview } from '@/lib/queries';
 import { getScoringPolicies, getScoringPolicy } from '@/lib/policies';
@@ -39,7 +39,6 @@ export default async function RoutingPage() {
   */
   const preview = await getCachedRoutingPreview(rules, scoringSet);
 
-  const maxLane = Math.max(1, ...preview.byLane.map((l) => l.count));
   const countsByRule = Object.fromEntries(preview.byRule.map((r) => [r.rule, r.count]));
 
   const salesCount = preview.byLane.filter((l) => l.route === 'sales').reduce((s, l) => s + l.count, 0);
@@ -137,31 +136,7 @@ export default async function RoutingPage() {
 
         <Card>
           <CardHeader title="Where they land" subtitle="Route / stage after the rules fire" />
-          <div className="space-y-2.5 px-5 py-4">
-            {preview.byLane.map((l) => {
-              const lane = `${l.route}/${l.stage}`;
-              return (
-                <div key={lane} className="flex items-center gap-3">
-                  <div className="w-36 shrink-0 text-[11px]">
-                    <span className={`font-bold ${laneText[l.route] ?? ''}`}>{l.route}</span>
-                    <span className="text-subtle"> / {l.stage}</span>
-                  </div>
-                  <div className="bg-surface-raised h-4 flex-1 overflow-hidden rounded">
-                    <div
-                      className={`h-full ${laneBar[lane] ?? 'bg-zinc-400'}`}
-                      style={{ width: `${Math.max(2, (l.count / maxLane) * 100)}%` }}
-                    />
-                  </div>
-                  <div className="text-foreground w-24 shrink-0 text-right text-[11px] font-bold tabular-nums">
-                    {l.count.toLocaleString()}
-                    <span className="text-subtle ml-1 font-normal">
-                      {Math.round((l.count / (preview.total || 1)) * 100)}%
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <LaneChart rows={preview.byLane} total={preview.total} className="px-5 py-4" />
         </Card>
       </div>
 
