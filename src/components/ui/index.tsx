@@ -137,7 +137,25 @@ export function Badge({
       title={title}
       className={cn(
         'inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide',
-        className ?? tones[tone]
+        /*
+          Tone first, then the caller's classes — NOT `className ?? tones[tone]`.
+
+          The `??` made any className replace the whole tone, so the only two
+          badges that needed a margin lost their colour with it. `<Badge
+          tone="warning" className="ml-2">inactive</Badge>` in HandoverByPerson
+          rendered as plain grey text, and that badge is, by its own comment, the
+          only place a rep sees that an inactive person is holding leads the
+          export will skip. A warning that cannot be told apart from a label is
+          not a warning.
+
+          cn() is what makes tone-plus-override safe: `ml-2` does not collide with
+          a colour group, so both survive, and a caller who really does pass
+          `bg-*` still wins by utility group. That is the same reasoning the
+          chrome-token commit applied everywhere else in this file; this line was
+          the one it missed.
+        */
+        tones[tone],
+        className
       )}
     >
       {children}

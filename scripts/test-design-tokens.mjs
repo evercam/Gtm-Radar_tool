@@ -180,5 +180,64 @@ check(
 const cn = readFileSync('src/lib/cn.ts', 'utf8');
 check('cn() merges through tailwind-merge', /twMerge\(/.test(cn));
 
+/*
+  A tone and a className have to survive each other.
+
+  Adopting cn() in this file left one `className ?? tones[tone]` behind, which is
+  the opposite contract: it made ANY caller class replace the whole tone. Five
+  call sites pass `className="ml-2"` and nothing else, so five badges lost their
+  colour to a margin — including the inactive/quota-0 pair in HandoverByPerson
+  that is, by its own comment, the only surface telling a rep those leads are
+  going nowhere.
+
+  Asserted structurally rather than by rendering: `??` between a className and a
+  tone map is the defect, and it is cheap to keep out.
+*/
+/*
+  Comments stripped, like test-silent-zero.mjs does for the same reason: the
+  comment explaining the fix quotes the banned expression verbatim, so a naive
+  search finds the prohibition and reports it as the violation. The first run of
+  this assertion failed on the documentation of the thing it was guarding.
+*/
+const uiCode = ui.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+check(
+  'no primitive lets a className replace its tone',
+  !/className \?\? tones?\[/.test(uiCode),
+  'className ?? tones[...] is back — a caller passing a margin would drop the colour'
+);
+check('Badge applies its tone unconditionally', /tones\[tone\],[\s]*className/.test(ui));
+const badgeSites = files.filter((f) => /<Badge[^>]*className=/.test(readFileSync(f, 'utf8')));
+check(
+  'every Badge that takes a className still resolves a tone',
+  badgeSites.length > 0,
+  'expected the override call sites to still exist'
+);
+
+console.log('\nNo class name that Tailwind cannot emit');
+/*
+  Three of these shipped and never rendered.
+
+  `py-4-raised/60` in EnrichPanel, `sm:w-40-raised` and `sm:w-56-raised` in
+  CredentialForm — all three born in the first commit, all three dead. Tailwind
+  emits nothing for them, so the enrichment panel had horizontal padding and no
+  vertical padding, and two credential inputs never took their narrow width at
+  `sm`. Nothing failed: a class that does not exist is silently no styling at all,
+  which is the whole reason this needs a test rather than review.
+
+  The shape is a spacing/size utility whose numeric scale is followed by another
+  word — the fingerprint of a token rename that ran through class names it should
+  not have touched (`surface-raised` leaving `-raised` behind). Colour prefixes are
+  deliberately excluded: `bg-emerald-900` and `text-2xl` are the same shape and
+  perfectly valid.
+*/
+const SIZE_PREFIX = 'p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|w|h|size|top|left|right|bottom|inset|basis|space-x|space-y';
+const DEAD_UTILITY = new RegExp(String.raw`\b(?:${SIZE_PREFIX})-\d+(?:\.\d+)?-[a-z]`, 'g');
+const dead = [];
+for (const f of files) {
+  const hits = readFileSync(f, 'utf8').match(DEAD_UTILITY);
+  if (hits) dead.push(`${f}: ${[...new Set(hits)].join(', ')}`);
+}
+check('no spacing or size utility carries a trailing word', dead.length === 0, dead.join(' | '));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
