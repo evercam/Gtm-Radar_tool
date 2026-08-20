@@ -10,6 +10,7 @@
  * primitives (Modal, Drawer, Toast, Toggle) live in their own client modules.
  */
 
+import Link from 'next/link';
 import type { ReactNode, HTMLAttributes, ButtonHTMLAttributes } from 'react';
 import { cn } from '@/lib/cn';
 import {
@@ -18,6 +19,8 @@ import {
   calloutTitleTone,
   calloutCodeTone,
   successAction,
+  statusText,
+  type StatusTextTone,
   type CalloutTone as CalloutToneName,
   statusDot,
   progressTone,
@@ -518,4 +521,114 @@ export function CalloutCode({
   children: ReactNode;
 }) {
   return <code className={cn('rounded px-1.5 py-0.5 font-mono', calloutCodeTone[tone])}>{children}</code>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* SectionHeading                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A band's title, with the links that belong to that band on the right.
+ *
+ * The dashboard wrote this three times and the two Operations pages write it
+ * again — an h2, a flex row, a gap-4, and a cluster of underlined brand links.
+ * Same markup four times means four chances for one of them to drift a weight or
+ * a gap, which is the whole argument for the primitive.
+ *
+ * `actions` rather than children-on-the-right, because every copy put links there
+ * and a named slot stops the next one putting them anywhere else.
+ */
+export function SectionHeading({
+  title,
+  actions,
+  className,
+}: {
+  title: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex items-center justify-between gap-4', className)}>
+      <h2 className="text-foreground text-lg font-semibold">{title}</h2>
+      {actions ? <div className="flex shrink-0 items-center gap-3 text-sm">{actions}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * Tile-shaped placeholders for a metric strip that streams.
+ *
+ * SkeletonTable is the wrong shape for this: the hero strip is a row of small
+ * cards, and a fallback that is table-shaped makes the strip jump when the real
+ * numbers arrive. Renders the SAME grid cells the resolved tiles will, so the
+ * layout is decided before the data lands rather than after.
+ */
+export function SkeletonTiles({ count = 4 }: { count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <Card key={i} className="p-4">
+          <Skeleton className="h-2.5 w-16" />
+          <Skeleton className="mt-2.5 h-6 w-20" />
+          <Skeleton className="mt-2 h-2 w-24" />
+        </Card>
+      ))}
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* MetricTile                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One number in a metric strip, and a place to go to see it.
+ *
+ * The dashboard hand-rolled this twice — "Act now" and "Owned by sales" were each
+ * a Link wrapping a Card wrapping three <p>s, with the label at 10px caps, the
+ * value at text-xl bold tabular-nums, and the note at 10px subtle. Two copies of
+ * a tile is how a strip ends up with one tile a pixel taller than its neighbours.
+ *
+ * It is not `Stat`. Stat is a figure inside a panel; this is a tile that IS the
+ * panel — it carries the card, the border, the hover affordance and the link. A
+ * strip of Stats would have no target to click and no edge to align to.
+ *
+ * `tone` colours the VALUE and nothing else. The tile does not tint its own
+ * background: a row of four tinted cards is a traffic light where three of the
+ * lights are decoration, and the figure is what the eye is going to anyway.
+ */
+export function MetricTile({
+  label,
+  value,
+  note,
+  tone,
+  href,
+  className,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  note?: ReactNode;
+  tone?: StatusTextTone;
+  /** Omit for a tile that is a readout rather than a way in. */
+  href?: string;
+  className?: string;
+}) {
+  const body = (
+    <Card interactive={Boolean(href)} className="h-full p-4">
+      <p className="text-muted text-[10px] font-bold uppercase tracking-widest">{label}</p>
+      <p className={cn('mt-1.5 text-xl font-bold tabular-nums', tone ? statusText[tone] : 'text-foreground')}>
+        {value}
+      </p>
+      {note ? <p className="text-subtle mt-0.5 text-[10px]">{note}</p> : null}
+    </Card>
+  );
+  // `h-full` above plus the block wrapper is what keeps four tiles the same height
+  // when one note wraps to two lines and the others do not.
+  return href ? (
+    <Link href={href} prefetch={false} className={cn('block', className)}>
+      {body}
+    </Link>
+  ) : (
+    <div className={className}>{body}</div>
+  );
 }

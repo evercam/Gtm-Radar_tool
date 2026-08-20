@@ -331,5 +331,49 @@ const strays = scanned
 */
 check('no component hardcodes a status hue', strays.length === 0, strays.join(', '));
 
+console.log('\nThe lane palette is the one the validator passed');
+/*
+  Pinned values, because this palette was chosen by measurement and a plausible
+  edit undoes that silently.
+
+  The pair it replaced — sales/act_now bg-emerald-500 against sales/qualify
+  bg-emerald-400 — measured normal-vision ΔE 7.7 against a floor of 15. Below the
+  floor a reader with FULL colour vision cannot separate the two, so the dashboard
+  drew its two most important lanes as the same bar twice and nothing in the code
+  or the UI said so. It read as a tidy pair of greens.
+
+  Route now carries the hue and stage carries a step within it: ΔE 17.1 light,
+  17.2 dark, and the four route hues separate at 23.2. Re-derive with
+  dataviz/scripts/validate_palette.js before changing any value here.
+
+  Also asserted: the classes are literal strings. Tailwind resolves classes by
+  scanning source text, so a composed `bg-${hue}-600` emits no CSS at all — the
+  dead-utility failure mode this file already guards elsewhere.
+*/
+const LANE_EXPECTED = {
+  "'sales/act_now'": "'bg-emerald-600'",
+  "'sales/qualify'": "'bg-emerald-600/55'",
+  "'marketing/nurture'": "'bg-amber-500 dark:bg-amber-600'",
+  "'partner/hold'": "'bg-violet-500'",
+  "'none/hold'": "'bg-zinc-400 dark:bg-zinc-500'",
+  "'none/disqualify'": "'bg-zinc-400/50 dark:bg-zinc-500/50'",
+};
+const colors = readFileSync('src/lib/status-colors.ts', 'utf8');
+const laneBlock = colors.slice(colors.indexOf('export const laneBar'));
+const laneBody = laneBlock.slice(0, laneBlock.indexOf('};'));
+for (const [lane, cls] of Object.entries(LANE_EXPECTED)) {
+  check(`${lane} is ${cls}`, laneBody.includes(`${lane}: ${cls},`), 'validated value changed — re-run the validator');
+}
+check(
+  'the two sales stages are no longer the same hue at adjacent steps',
+  !laneBody.includes("'bg-emerald-500'") && !laneBody.includes("'bg-emerald-400'"),
+  'emerald-500/emerald-400 is the ΔE 7.7 pair this replaced'
+);
+check(
+  'no lane class is composed at runtime',
+  !laneBody.includes('${'),
+  'a template literal here emits no CSS — Tailwind scans source text'
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

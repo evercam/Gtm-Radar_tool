@@ -193,13 +193,46 @@ export const rowTone = {
  * categorical scale wants hues chosen for distinguishability, which is a
  * deliberate design pass, not a refactor.
  */
+/*
+  ROUTE picks the hue; STAGE picks a step within it.
+
+  The old map flattened two dimensions into six flat categorical slots, and the
+  two that mattered most collided. Measured with the dataviz validator:
+
+    sales/act_now #10b981 vs sales/qualify #34d399 -> normal-vision ΔE 7.7
+
+  The floor is 15. Below it a reader with FULL colour vision cannot tell the pair
+  apart — so the dashboard's two most important lanes were the same bar twice,
+  and no amount of squinting was going to fix it.
+
+  Route is categorical (which desk owns this) and stage is ordinal within a route
+  (how urgent), so they are encoded as hue and step rather than as six peers.
+  Revalidated, both modes:
+
+    route hues, light   lightness PASS · CVD ΔE 13.0 PASS · normal-vision ΔE 23.2 PASS
+    stage step, light   normal-vision ΔE 17.1 PASS   (was 7.7)
+    stage step, dark    normal-vision ΔE 17.2 PASS
+
+  Two checks still report and are accepted on purpose. Chroma FAILs on zinc alone,
+  because "no lane" is meant to read as grey rather than as a fifth colour. And
+  contrast WARNs on amber and zinc, which the validator says obligates visible
+  labels — every lane row already carries its route, count and percent, which is
+  exactly that relief.
+
+  Written as literal strings, never composed. Tailwind resolves classes by
+  scanning source text, so `bg-${hue}-600` emits no CSS at all — the same failure
+  as the dead `-raised` utilities test-design-tokens now bans.
+
+  Dark steps were SELECTED against the dark surface, not flipped: amber needs a
+  darker step there to stay inside the lightness band, emerald and violet do not.
+*/
 export const laneBar: Record<string, string> = {
-  'sales/act_now': 'bg-emerald-500',
-  'sales/qualify': 'bg-emerald-400',
-  'marketing/nurture': 'bg-amber-400',
-  'partner/hold': 'bg-violet-400',
-  'none/hold': 'bg-zinc-400',
-  'none/disqualify': 'bg-zinc-300',
+  'sales/act_now': 'bg-emerald-600',
+  'sales/qualify': 'bg-emerald-600/55',
+  'marketing/nurture': 'bg-amber-500 dark:bg-amber-600',
+  'partner/hold': 'bg-violet-500',
+  'none/hold': 'bg-zinc-400 dark:bg-zinc-500',
+  'none/disqualify': 'bg-zinc-400/50 dark:bg-zinc-500/50',
 };
 
 export const laneText: Record<string, string> = {
