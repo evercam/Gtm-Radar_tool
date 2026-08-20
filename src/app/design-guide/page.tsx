@@ -24,7 +24,16 @@ import {
   THead,
   TableShell,
 } from '@/components/ui';
-import { badgeTone, dangerHoverText, provenanceChip, rowTone, statusText } from '@/lib/status-colors';
+import {
+  badgeTone,
+  dangerHoverText,
+  laneBar,
+  laneText,
+  logLevelTone,
+  provenanceChip,
+  rowTone,
+  statusText,
+} from '@/lib/status-colors';
 import { cn } from '@/lib/cn';
 
 /**
@@ -318,6 +327,39 @@ export default function DesignGuidePage() {
             </Table>
           </TableShell>
         </div>
+      </Section>
+
+      <Section
+        title="Colour that is not status"
+        note="Which one is this, rather than how is it doing. Kept apart — confusing the two is how apollo wore the success green."
+      >
+        <Row label="laneBar">
+          {Object.entries(laneBar).map(([lane, cls]) => (
+            <span key={lane} className="inline-flex items-center gap-1.5">
+              <span className={cn('h-2 w-6 rounded-full', cls)} />
+              <span className="text-subtle text-[10px]">{lane}</span>
+            </span>
+          ))}
+        </Row>
+        <Row label="laneText">
+          {Object.entries(laneText).map(([lane, cls]) => (
+            <span key={lane} className={cn('text-xs font-bold', cls)}>
+              {lane}
+            </span>
+          ))}
+        </Row>
+        <Row label="logLevelTone">
+          <div className="w-full rounded-lg bg-neutral-950 p-3 font-mono text-xs">
+            <p className="text-neutral-300">ingest ok — 1,204 records</p>
+            <p className={logLevelTone.warn}>WARN two sources returned nothing</p>
+            <p className={logLevelTone.error}>ERROR apollo reveal refused</p>
+          </div>
+        </Row>
+        <Row label="text-link">
+          <a href="#" className="text-link text-sm underline underline-offset-2">
+            an address you act on
+          </a>
+        </Row>
       </Section>
 
       <Section

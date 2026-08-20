@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { cn } from '@/lib/cn';
+import { badgeTone, statusText } from '@/lib/status-colors';
+import { Badge } from '@/components/ui';
 import { notFound } from 'next/navigation';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getAccountDetail } from '@/lib/queries';
@@ -82,7 +85,10 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
     <div className="rounded-lg border border-border-base bg-surface p-4">
       <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
       <p
-        className={`mt-1 text-2xl font-semibold tabular-nums ${tone === 'key' ? 'text-amber-600 dark:text-amber-400' : tone === 'gap' ? 'text-emerald-600 dark:text-emerald-400' : 'text-foreground'}`}
+        className={cn(
+          'mt-1 text-2xl font-semibold tabular-nums',
+          tone === 'key' ? 'text-brand' : tone === 'gap' ? statusText.success : 'text-foreground'
+        )}
       >
         {value}
       </p>
@@ -101,14 +107,10 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-bold text-foreground">{name}</h1>
             {isKey ? (
-              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-                ★ KEY ACCOUNT{score != null ? ` · ${score}` : ''}
-              </span>
+              <Badge tone="brand">★ KEY ACCOUNT{score != null ? ` · ${score}` : ''}</Badge>
             ) : null}
             {enrichment?.expansion_signal ? (
-              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-                expanding
-              </span>
+              <Badge tone="success">expanding</Badge>
             ) : null}
           </div>
           <p className="mt-1 text-sm text-muted">
@@ -129,7 +131,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
             href={account.company_website}
             target="_blank"
             rel="noreferrer"
-            className="text-sm text-sky-600 underline underline-offset-2 dark:text-sky-400"
+            className="text-link text-sm underline underline-offset-2"
           >
             {account.company_website}
           </a>
@@ -162,7 +164,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
             {reasons.map((r, i) => (
               <li
                 key={i}
-                className="rounded-full bg-amber-50 px-3 py-1 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                className={cn('rounded-full border px-3 py-1 text-xs', badgeTone.brand)}
               >
                 {r}
               </li>
@@ -267,7 +269,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
                   {c.title ? <span className="text-muted ml-1">· {c.title}</span> : null}
                 </p>
                 {c.email ? (
-                  <a href={`mailto:${c.email}`} className="block text-sky-600 dark:text-sky-400">
+                  <a href={`mailto:${c.email}`} className="text-link block">
                     {c.email}
                   </a>
                 ) : null}
@@ -277,7 +279,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
             ))}
             {account?.opening_hook ? (
               <li className="p-4">
-                <p className="text-muted border-l-2 border-indigo-300 pl-2 italic dark:border-indigo-700">
+                <p className="text-muted border-brand/40 border-l-2 pl-2 italic">
                   &ldquo;{account.opening_hook}&rdquo;
                 </p>
               </li>

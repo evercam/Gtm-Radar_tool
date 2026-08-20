@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { laneBar, laneText, statusText } from '@/lib/status-colors';
+import { cn } from '@/lib/cn';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getHandoverByPerson, getPipelineRollup, getBuRollup, getTopPriorityLeads, getDispositionRollup, hasPriorityColumns, getProductionState } from '@/lib/queries';
 import { getDemandPlan } from '@/lib/enrich/demand';
@@ -22,20 +24,7 @@ export const dynamic = 'force-dynamic';
 
 const KPI_WINDOWS = [7, 30, 90];
 
-const LANE_BAR: Record<string, string> = {
-  'sales/act_now': 'bg-emerald-500',
-  'sales/qualify': 'bg-emerald-400',
-  'marketing/nurture': 'bg-amber-400',
-  'partner/hold': 'bg-violet-400',
-  'none/hold': 'bg-zinc-400',
-  'none/disqualify': 'bg-zinc-300',
-};
-const LANE_TEXT: Record<string, string> = {
-  sales: 'text-emerald-700 dark:text-emerald-300',
-  marketing: 'text-amber-700 dark:text-amber-300',
-  partner: 'text-violet-700 dark:text-violet-300',
-  none: 'text-muted',
-};
+// The lane legend lives in lib/status-colors.ts; it is shared with /control/routing.
 
 
 /**
@@ -425,14 +414,14 @@ export default async function DashboardPage({
                     className="group flex items-center gap-3"
                   >
                     <div className="w-36 shrink-0 text-[11px]">
-                      <span className={`font-bold ${LANE_TEXT[l.route] ?? 'text-muted'} group-hover:underline`}>
+                      <span className={`font-bold ${laneText[l.route] ?? 'text-muted'} group-hover:underline`}>
                         {l.route}
                       </span>
                       <span className="text-subtle"> / {l.stage}</span>
                     </div>
                     <div className="bg-surface-raised h-4 flex-1 overflow-hidden rounded">
                       <div
-                        className={`h-full ${LANE_BAR[`${l.route}/${l.stage}`] ?? 'bg-zinc-400'}`}
+                        className={`h-full ${laneBar[`${l.route}/${l.stage}`] ?? 'bg-zinc-400'}`}
                         style={{ width: `${Math.max(2, (l.count / maxLane) * 100)}%` }}
                       />
                     </div>
@@ -535,7 +524,7 @@ export default async function DashboardPage({
             showing a number that was never measured.
           */}
           {countsPartial ? (
-            <p className="mt-4 text-[11px] text-amber-400">
+            <p className={cn('mt-4 text-[11px]', statusText.warning)}>
               {failedCounts} of these counts timed out, so the figures above are incomplete — reload to retry.
             </p>
           ) : untiered > 0 ? (

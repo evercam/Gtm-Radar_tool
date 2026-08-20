@@ -37,7 +37,6 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { sep } from 'node:path';
 import { join } from 'node:path';
 
 let passed = 0,
@@ -54,18 +53,18 @@ const check = (n, c, d) => {
 
 const css = readFileSync('src/app/globals.css', 'utf8');
 
-/** Every .tsx under src/, so the walk does not have to be maintained by hand. */
-function tsxFiles(dir) {
+/** Every file with `ext` under src/, so the walk does not have to be maintained by hand. */
+function srcFiles(dir, ext = '.tsx') {
   const out = [];
   for (const entry of readdirSync(dir)) {
     const p = join(dir, entry);
-    if (statSync(p).isDirectory()) out.push(...tsxFiles(p));
-    else if (entry.endsWith('.tsx')) out.push(p);
+    if (statSync(p).isDirectory()) out.push(...srcFiles(p, ext));
+    else if (entry.endsWith(ext)) out.push(p);
   }
   return out;
 }
 
-const files = tsxFiles('src');
+const files = srcFiles('src');
 
 console.log('\nColour lives in tokens, not in components');
 
@@ -274,8 +273,35 @@ console.log('\nStatus colour has exactly one home');
   So the status ramp is banned everywhere except lib/status-colors.ts. Chart hues
   and one-off illustration colours are not status and are not covered by this.
 */
-const STATUS_RAMP = /\b(?:bg|text|border)-(?:emerald|amber|rose|sky|green|red|yellow|orange)-\d{2,3}\b/;
-const CANON = 'status-colors.ts';
+/*
+  Two holes this check had, both found by sweeping by hand after the list emptied.
+
+  It named eight hues and missed violet, indigo, teal and blue — so an indigo ICP
+  pill and a blue link sat in SourceSearch and SourceFilterForm the whole time,
+  reported clean.
+
+  And it only ever read .tsx. The two largest colour maps in the codebase are .ts:
+  lifecycle.ts's STATUS_COLORS and semantics.ts's BAND_COLORS/ARRIVAL_COLORS. A
+  guard that cannot see the files most likely to hold a colour map reads well and
+  does nothing.
+*/
+const STATUS_RAMP =
+  /\b(?:bg|text|border)-(?:emerald|amber|rose|sky|green|red|yellow|orange|violet|indigo|teal|blue)-\d{2,3}\b/;
+
+/*
+  Three homes, not one, and deliberately.
+
+  status-colors.ts owns tone — how a thing is doing. lifecycle.ts and semantics.ts
+  own domain vocabularies: a lead's STATUS, its band, its arrival verdict. Those
+  are categorical scales, they were single-source before any of this, and folding
+  them into status-colors.ts would make one file that is really three plus a
+  circular import between a vocabulary and the tones.
+
+  The property the rule enforces is that a colour is defined once where its meaning
+  lives — not that there is exactly one file. A fourth name here should feel
+  expensive, and needs the same argument these three have.
+*/
+const VOCABULARIES = ['status-colors.ts', 'lifecycle.ts', 'semantics.ts'];
 /*
   Comments stripped, for the third time in this file and the same reason each
   time: the comment that explains a banned pattern has to quote it. The Callout
@@ -286,41 +312,24 @@ const stripped = (f) =>
   readFileSync(f, 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n]*/g, '');
-const strays = files.filter((f) => !f.endsWith(CANON)).filter((f) => STATUS_RAMP.test(stripped(f)));
+const scanned = [...files, ...srcFiles('src', '.ts')];
+const strays = scanned
+  .filter((f) => !VOCABULARIES.some((v) => f.endsWith(v)))
+  .filter((f) => STATUS_RAMP.test(stripped(f)));
 /*
-  A ratchet, not a clean pass. Twenty-one files still name a status hue directly,
-  and converting them is a judgement per call site — which shade pair, whether the
-  colour is text or a surface, whether the thing being coloured is even a status.
-  Doing that blind is how you ship a contrast regression.
+  The list is empty, so the rule is just the rule.
 
-  So the rule binds NEW code: nothing outside this list may name a status hue, and
-  the list may only shrink. Deleting a name from it is the definition of done for
-  that file. The count is asserted too, so converting a file without crossing it
-  off fails just as loudly as adding one — the list cannot rot into a permanent
-  exemption nobody reads.
+  It started as a ratchet over 21 files, because converting them is a judgement
+  per call site — which shade pair, text or surface, and whether the thing being
+  coloured is a status at all. Three turned out not to be: the rail's footer green
+  is chrome, a contact email is a link, and an ICP score is a measure. Those got
+  their own names rather than a status tone.
+
+  STATUS_HUE_DEBT is gone rather than left empty. An empty exemption list is an
+  invitation to add one back; no list at all makes the next person put their
+  colour where the others live.
 */
-const STATUS_HUE_DEBT = [
-  'src/app/accounts/[key]/page.tsx',
-  'src/app/accounts/page.tsx',
-  'src/app/admin/settings/page.tsx',
-  'src/app/control/enrichment/page.tsx',
-  'src/app/control/logs/page.tsx',
-  'src/app/control/routing/page.tsx',
-  'src/app/page.tsx',
-  'src/components/EnrichPanel.tsx',
-  'src/components/SourceSearch.tsx',
-  'src/components/gem/GemResult.tsx',
-  'src/components/settings/CredentialForm.tsx',
-];
-const norm = (f) => f.split(sep).join('/');
-const unlisted = strays.map(norm).filter((f) => !STATUS_HUE_DEBT.includes(f));
-const cleaned = STATUS_HUE_DEBT.filter((f) => !strays.map(norm).includes(f));
-check('no NEW component hardcodes a status hue', unlisted.length === 0, unlisted.join(', '));
-check(
-  'the debt list has no stale entries',
-  cleaned.length === 0,
-  `${cleaned.join(', ')} no longer needs an exemption — delete it from STATUS_HUE_DEBT`
-);
+check('no component hardcodes a status hue', strays.length === 0, strays.join(', '));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { provenanceChip } from '@/lib/status-colors';
+import { provenanceChip, statusText } from '@/lib/status-colors';
 
 interface EnrichRecord {
   id?: string | null; // when set + Supabase configured, enrichment persists to this row
@@ -168,7 +168,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
 
   if (!data || !data.ok) {
     return (
-      <div className="px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
+      <div className={cn('px-4 py-3 text-sm', statusText.danger)}>
         {data?.errorKind ? `[${data.errorKind}] ` : ''}
         {data?.message ?? 'Enrichment failed.'}
       </div>
@@ -189,25 +189,17 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
           Claude {engines.claude ? '✓' : '—'} · Apollo {engines.apollo ? '✓' : '—'}
         </span>
         {profile ? (
-          <span
-            className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
-            title="Enrichment tuned for this source's account type"
-          >
+          <Badge tone="info" title="Enrichment tuned for this source's account type">
             tuned for: {profile}
-          </span>
+          </Badge>
         ) : null}
         {persisted ? (
-          <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-            saved to record
-          </span>
+          <Badge tone="success">saved to record</Badge>
         ) : null}
         {keyAccount?.key_account ? (
-          <span
-            className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-            title={keyAccount.key_account_reasons.join(' · ')}
-          >
+          <Badge tone="brand" title={keyAccount.key_account_reasons.join(' · ')}>
             ★ KEY ACCOUNT · {keyAccount.key_account_score}
-          </span>
+          </Badge>
         ) : keyAccount ? (
           <span
             className="rounded-full bg-surface-raised px-2 py-0.5 text-muted"
@@ -224,9 +216,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">SDR playbook</h4>
             {sdr.icp_fit_score != null ? (
-              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
-                ICP fit {sdr.icp_fit_score}
-              </span>
+              <Badge tone="neutral">ICP fit {sdr.icp_fit_score}</Badge>
             ) : null}
             {sdr.evercam_timing ? (
               <Badge tone={TIMING_TONE[sdr.evercam_timing] ?? 'neutral'}>
@@ -234,13 +224,11 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
               </Badge>
             ) : null}
             {sdr.value_angle ? (
-              <span className="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-800 dark:bg-teal-900/40 dark:text-teal-300">
-                {sdr.value_angle}
-              </span>
+              <Badge tone="neutral">{sdr.value_angle}</Badge>
             ) : null}
           </div>
           {sdr.opening_hook ? (
-            <p className="mt-2 border-l-2 border-indigo-300 pl-2 text-sm italic text-foreground dark:border-indigo-700">
+            <p className="border-brand/40 text-foreground mt-2 border-l-2 pl-2 text-sm italic">
               &ldquo;{sdr.opening_hook}&rdquo;
             </p>
           ) : null}
@@ -309,7 +297,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                   href={account.website}
                   target="_blank"
                   rel="noreferrer"
-                  className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                  className="block text-link text-xs hover:underline"
                 >
                   {account.website}
                 </a>
@@ -319,7 +307,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                   href={account.linkedin_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                  className="block text-link text-xs hover:underline"
                 >
                   LinkedIn
                 </a>
@@ -341,7 +329,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                   <div className="flex items-center gap-1.5">
                     <span className="font-medium text-foreground">{c.name ?? '—'}</span>
                     <span
-                      className={`rounded px-1 text-[10px] ${c.source === 'apollo' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' : 'bg-surface-raised text-muted'}`}
+                      className={cn('rounded border px-1 text-[10px]', provenanceChip)}
                     >
                       {c.source}
                     </span>
@@ -350,7 +338,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                   {c.email ? (
                     <a
                       href={`mailto:${c.email}`}
-                      className="block text-xs text-sky-600 hover:underline dark:text-sky-400"
+                      className="block text-link text-xs hover:underline"
                     >
                       {c.email}
                     </a>
@@ -361,7 +349,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                       href={c.linkedin_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-xs text-sky-600 hover:underline dark:text-sky-400"
+                      className="text-link text-xs hover:underline"
                     >
                       LinkedIn
                     </a>
@@ -388,7 +376,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
                       href={n.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="font-medium text-sky-600 hover:underline dark:text-sky-400"
+                      className="text-link font-medium hover:underline"
                     >
                       {n.title ?? n.url}
                     </a>

@@ -41,6 +41,11 @@
   --warning: #f59e0b;
   --danger: #ef4444;
   --info: #3b82f6;
+  /* An address or reference rendered as reachable. Not a status: a contact email
+     is blue because it is a thing you act on, not because anything succeeded, and
+     lib/status-colors.ts deliberately does not own it. sky-600 / sky-400, the
+     literals it replaced. */
+  --link: #0284c7;
 
   /* elevation — the reference leans on borders, not shadow */
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04);
@@ -110,6 +115,7 @@
   --subtle: #63666c;
 
   /* lifted so the red keeps contrast on a dark surface */
+  --link: #38bdf8;
   --brand: #e8394f;
   --brand-hover: #f2596c;
 
@@ -137,6 +143,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
+  --color-link: var(--link);
   --color-info: var(--info);
 
   --radius-card: 16px;

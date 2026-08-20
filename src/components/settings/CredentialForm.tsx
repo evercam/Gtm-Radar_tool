@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState } from 'react';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import { saveSourceCredential, type SaveCredentialResult } from '@/lib/actions/credentials';
 
 export default function CredentialForm({
@@ -77,7 +79,7 @@ export default function CredentialForm({
       </div>
       {state ? (
         <span
-          className={`text-xs ${state.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}
+          className={cn('text-xs', statusText[state.ok ? 'success' : 'danger'])}
         >
           {state.message}
         </span>

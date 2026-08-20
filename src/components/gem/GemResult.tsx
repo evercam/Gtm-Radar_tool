@@ -1,5 +1,8 @@
 'use client';
 
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
+
 export interface GemFileResult {
   file: string;
   tracker: string;
@@ -51,11 +54,11 @@ export default function GemResult({ response }: { response: GemUploadResponse })
                   <td className="px-3 py-1.5 text-muted">{r.normalized}</td>
                   <td className="px-3 py-1.5 text-muted">{r.failed}</td>
                   {response.persisted ? (
-                    <td className="px-3 py-1.5 text-emerald-600 dark:text-emerald-400">{r.inserted ?? '—'}</td>
+                    <td className={cn('px-3 py-1.5', statusText.success)}>{r.inserted ?? '—'}</td>
                   ) : null}
                   {response.persisted ? <td className="px-3 py-1.5 text-muted">{r.updated ?? '—'}</td> : null}
                   {r.error ? (
-                    <td className="px-3 py-1.5 text-rose-600 dark:text-rose-400" colSpan={2}>
+                    <td className={cn('px-3 py-1.5', statusText.danger)} colSpan={2}>
                       {r.error}
                     </td>
                   ) : null}

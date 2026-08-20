@@ -167,3 +167,56 @@ export const successAction = 'bg-emerald-600 text-white hover:bg-emerald-500 fon
 export const rowTone = {
   danger: 'bg-rose-50/50 dark:bg-rose-950/20',
 } as const;
+
+/* ==========================================================================
+   Colour that is NOT status
+   ==========================================================================
+
+   Everything above answers "how is this doing". What follows answers "which one
+   is this" — a lane, a severity, a category. They live in this file because it is
+   the one place a meaning becomes a colour, and because a raw hue in a component
+   is unreadable either way. They are kept visibly apart because confusing the two
+   is how apollo ended up wearing the success green.
+   ========================================================================== */
+
+/**
+ * Routing lanes. Categorical: which desk a lead goes to, not whether that is good.
+ *
+ * This map existed twice, byte-identical, as LANE_BAR/LANE_TEXT in app/page.tsx
+ * and LANE_BAR/ROUTE_TEXT in control/routing — the dashboard and the page that
+ * configures the thing the dashboard reports on. Two copies of a legend is how
+ * the same lane ends up two colours on two screens, and the reader has no way to
+ * know which one is lying.
+ *
+ * The hues are unchanged. That emerald overlaps the success emerald is a real
+ * tension and not one to resolve by quietly recolouring the dashboard: a
+ * categorical scale wants hues chosen for distinguishability, which is a
+ * deliberate design pass, not a refactor.
+ */
+export const laneBar: Record<string, string> = {
+  'sales/act_now': 'bg-emerald-500',
+  'sales/qualify': 'bg-emerald-400',
+  'marketing/nurture': 'bg-amber-400',
+  'partner/hold': 'bg-violet-400',
+  'none/hold': 'bg-zinc-400',
+  'none/disqualify': 'bg-zinc-300',
+};
+
+export const laneText: Record<string, string> = {
+  sales: 'text-emerald-700 dark:text-emerald-300',
+  marketing: 'text-amber-700 dark:text-amber-300',
+  partner: 'text-violet-700 dark:text-violet-300',
+  none: 'text-muted',
+};
+
+/**
+ * Log severity, on the dark log surface.
+ *
+ * The -400 shades are the design skill's own log-viewer spec: WARN yellow-400,
+ * ERROR red-400, against a near-black panel. Rose is used for error rather than
+ * red so it matches the danger tone the rest of the app now shares.
+ */
+export const logLevelTone = {
+  warn: 'text-amber-400',
+  error: 'text-rose-400',
+} as const;

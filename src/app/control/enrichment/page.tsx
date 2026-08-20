@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { cn } from '@/lib/cn';
+import { badgeTone, statusText } from '@/lib/status-colors';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getEnrichmentQueue, getEnrichmentRuns, getEnrichedSinceCount, hasPriorityColumns } from '@/lib/queries';
 import { getEnrichmentPolicy } from '@/lib/policies';
@@ -16,7 +18,7 @@ import { can } from '@/lib/auth/roles';
 import PolicyEditor from '@/components/settings/PolicyEditor';
 import { ENRICHMENT_FIELDS } from '@/lib/enrichmentFields';
 import { DEFAULT_ENRICHMENT_POLICY } from '@/lib/enrich/policy';
-import { Card, CardHeader } from '@/components/ui';
+import { Badge, Card, CardHeader } from '@/components/ui';
 import RecordLink from '@/components/RecordLink';
 
 export const dynamic = 'force-dynamic';
@@ -96,11 +98,7 @@ export default async function EnrichmentPage() {
         <p className="text-[11px] text-muted">{note}</p>
       </div>
       <span
-        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
-          on
-            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-            : 'bg-surface-raised text-muted'
-        }`}
+        className={cn('shrink-0 rounded-full px-2.5 py-1 text-xs font-medium', badgeTone[on ? 'success' : 'neutral'])}
       >
         {on ? '● Ready' : '○ Off'}
       </span>
@@ -374,22 +372,14 @@ export default async function EnrichmentPage() {
                   <tr key={r.id}>
                     <td className="px-3 py-1.5 text-xs text-muted">{ago(r.started_at)}</td>
                     <td className="px-3 py-1.5">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          r.status === 'completed'
-                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                            : r.status === 'running'
-                              ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
-                              : 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
-                        }`}
-                      >
+                      <Badge tone={r.status === 'completed' ? 'success' : r.status === 'running' ? 'info' : 'danger'}>
                         {r.status}
-                      </span>
+                      </Badge>
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-muted">{r.requested}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-muted">
                       {r.succeeded}
-                      {r.failed ? <span className="text-rose-500"> / {r.failed} failed</span> : null}
+                      {r.failed ? <span className={statusText.danger}> / {r.failed} failed</span> : null}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-muted">{r.contacts_found}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums text-muted">{r.fields_added}</td>
