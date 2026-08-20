@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import { useRouter } from 'next/navigation';
 
 interface TestResponse {
@@ -72,7 +74,7 @@ export default function TestConnectionButton({ slug }: { slug: string }) {
       {result ? (
         <div className="max-w-xs">
           <span
-            className={`text-xs ${result.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}
+            className={cn('text-xs', statusText[result.ok ? 'success' : 'danger'])}
           >
             {result.message}
           </span>

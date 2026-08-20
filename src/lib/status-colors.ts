@@ -146,3 +146,24 @@ export type CalloutTone = keyof typeof calloutTone;
  * one at the call site is how the red/rose split happened in the first place.
  */
 export const dangerHoverText = 'hover:text-rose-600 dark:hover:text-rose-400';
+
+/**
+ * A "go" button that is green rather than brand.
+ *
+ * Two bulk actions — Apply routing, Run enrichment — were hand-rolled <button>s
+ * in emerald-600, bypassing the Button primitive and therefore its focus ring and
+ * its disabled handling. Routing them through Button needed a variant, and this
+ * preserves exactly the green they already had.
+ *
+ * Worth a decision later, and deliberately not made here: the app's primary
+ * action colour is --brand, and ProductOS reads emerald as "succeeded", not "go".
+ * These two may well belong in brand like every other primary button. That is a
+ * visible change to the two loudest controls in the tool, so it is the owner's
+ * call, not a side effect of a refactor.
+ */
+export const successAction = 'bg-emerald-600 text-white hover:bg-emerald-500 font-bold';
+
+/** A table row whose record failed. A tint, not a text colour — the whole row is the subject. */
+export const rowTone = {
+  danger: 'bg-rose-50/50 dark:bg-rose-950/20',
+} as const;

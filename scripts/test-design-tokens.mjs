@@ -307,16 +307,10 @@ const STATUS_HUE_DEBT = [
   'src/app/control/logs/page.tsx',
   'src/app/control/routing/page.tsx',
   'src/app/page.tsx',
-  'src/components/ApplyRoutingButton.tsx',
   'src/components/EnrichPanel.tsx',
-  'src/components/EnrichmentRunner.tsx',
-  'src/components/PipelineRollup.tsx',
   'src/components/SourceSearch.tsx',
   'src/components/gem/GemResult.tsx',
   'src/components/settings/CredentialForm.tsx',
-  'src/components/settings/PolicyEditor.tsx',
-  'src/components/settings/TestConnectionButton.tsx',
-  'src/components/shell/Sidebar.tsx',
 ];
 const norm = (f) => f.split(sep).join('/');
 const unlisted = strays.map(norm).filter((f) => !STATUS_HUE_DEBT.includes(f));

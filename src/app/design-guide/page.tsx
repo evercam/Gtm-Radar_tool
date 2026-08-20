@@ -24,7 +24,7 @@ import {
   THead,
   TableShell,
 } from '@/components/ui';
-import { badgeTone, provenanceChip } from '@/lib/status-colors';
+import { badgeTone, dangerHoverText, provenanceChip, rowTone, statusText } from '@/lib/status-colors';
 import { cn } from '@/lib/cn';
 
 /**
@@ -212,6 +212,14 @@ export default function DesignGuidePage() {
             </Button>
           ))}
         </Row>
+        <Row label="success">
+          {/*
+            Green rather than brand, and worth a decision: ProductOS reads emerald
+            as "succeeded", not "go". Two bulk actions wear it today because they
+            always have — see successAction in status-colors.ts.
+          */}
+          <Button variant="success">Score &amp; route all records →</Button>
+        </Row>
         <Row label="size=sm">
           <Button size="sm" variant="primary">
             small
@@ -236,6 +244,33 @@ export default function DesignGuidePage() {
             <Label hint="(optional)">Standalone label</Label>
           </div>
         </div>
+      </Section>
+
+      <Section title="Status as text" note="A figure that is itself the signal. One red, not two.">
+        <Row label="statusText">
+          {(['success', 'warning', 'danger', 'info'] as const).map((t) => (
+            <span key={t} className={cn('text-sm font-semibold tabular-nums', statusText[t])}>
+              {t} 1,247
+            </span>
+          ))}
+        </Row>
+        <Row label="rowTone.danger">
+          <div className="w-full">
+            <table className="w-full text-left text-sm">
+              <tbody>
+                <tr>
+                  <Td>a row that succeeded</Td>
+                </tr>
+                <tr className={rowTone.danger}>
+                  <Td>a row whose record failed</Td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Row>
+        <Row label="dangerHoverText">
+          <button className={cn('text-muted text-xs', dangerHoverText)}>remove (hover me)</button>
+        </Row>
       </Section>
 
       <Section title="Data display">

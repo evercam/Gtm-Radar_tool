@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import { useRouter } from 'next/navigation';
 
 /**
@@ -308,7 +310,7 @@ export default function PolicyEditor({
         </button>
         {msg ? (
           <span
-            className={`text-xs ${msg.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}
+            className={cn('text-xs', statusText[msg.ok ? 'success' : 'danger'])}
           >
             {msg.text}
           </span>

@@ -109,8 +109,9 @@ export default function Sidebar({
 
         {/*
           Outside the scrolling nav so it stays put — a link you reach for when
-          lost is no use if you have to scroll to find it. Green because it is the
-          only entry that explains rather than operates.
+          lost is no use if you have to scroll to find it. Green because these are
+          the entries that explain rather than operate — the tint separates
+          reference from the operating rail above, and says nothing about state.
         */}
         <div className="border-t border-sidebar-border px-2.5 py-2">
           {NAV_FOOTER.map((item) => {
@@ -123,12 +124,12 @@ export default function Sidebar({
                 aria-current={active ? 'page' : undefined}
                 className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 ${
                   active
-                    ? 'bg-emerald-500/15 text-emerald-300'
-                    : 'text-emerald-400/80 hover:bg-emerald-500/10 hover:text-emerald-300'
+                    ? 'bg-sidebar-guide-surface text-sidebar-guide-strong'
+                    : 'text-sidebar-guide hover:bg-sidebar-guide-surface-hover hover:text-sidebar-guide-strong'
                 }`}
               >
                 {active ? (
-                  <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-emerald-400" />
+                  <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-sidebar-guide-mark" />
                 ) : null}
                 <span className="flex w-5 shrink-0 items-center justify-center">
                   <item.icon size={15} strokeWidth={2} />

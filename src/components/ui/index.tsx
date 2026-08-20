@@ -17,6 +17,7 @@ import {
   calloutTone,
   calloutTitleTone,
   calloutCodeTone,
+  successAction,
   type CalloutTone as CalloutToneName,
   statusDot,
   progressTone,
@@ -219,7 +220,7 @@ export function Button({
   ...rest
 }: {
   children: ReactNode;
-  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'success';
   size?: 'sm' | 'md';
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   const variants: Record<string, string> = {
@@ -227,6 +228,7 @@ export function Button({
     secondary: 'border border-border-base text-body hover:bg-surface-raised hover:text-foreground',
     ghost: 'text-muted hover:bg-surface-raised hover:text-foreground',
     danger: 'bg-danger text-white hover:opacity-90 font-bold',
+    success: successAction,
   };
   const sizes: Record<string, string> = {
     sm: 'px-3 py-1.5 text-[11px]',

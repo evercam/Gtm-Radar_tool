@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import type { PipelineRollupRow } from '@/lib/queries';
 import { BU_LABELS } from '@/lib/semantics';
 
@@ -64,13 +66,10 @@ export default function PipelineRollup({ rows }: { rows: PipelineRollupRow[] }) 
           <div key={s.label} className="rounded-[12px] border border-border-base bg-surface p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-muted">{s.label}</p>
             <p
-              className={`mt-1 text-2xl font-semibold tabular-nums ${
-                s.tone === 'ok'
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : s.tone === 'gap'
-                    ? 'text-amber-600 dark:text-amber-400'
-                    : 'text-foreground'
-              }`}
+              className={cn(
+                'mt-1 text-2xl font-semibold tabular-nums',
+                s.tone === 'ok' ? statusText.success : s.tone === 'gap' ? statusText.warning : 'text-foreground'
+              )}
             >
               {s.value}
             </p>
@@ -94,10 +93,10 @@ export default function PipelineRollup({ rows }: { rows: PipelineRollupRow[] }) 
               <tr key={`${r.bu}-${r.vertical}`}>
                 <td className="px-4 py-2 font-medium text-foreground">{BU_LABELS[r.bu] ?? r.bu}</td>
                 <td className="px-4 py-2 text-muted">{titleize(r.vertical)}</td>
-                <td className="px-4 py-2 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                <td className={cn('px-4 py-2 text-right tabular-nums', statusText.success)}>
                   {r.has || '—'}
                 </td>
-                <td className="px-4 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400">
+                <td className={cn('px-4 py-2 text-right tabular-nums', statusText.warning)}>
                   {r.needs || '—'}
                 </td>
                 <td className="px-4 py-2 text-right font-medium tabular-nums text-foreground">{r.has + r.needs}</td>

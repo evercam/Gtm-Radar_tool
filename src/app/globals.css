@@ -70,6 +70,29 @@
   --sidebar-accent: rgb(255 255 255 / 0.08);
   --sidebar-accent-hover: rgb(255 255 255 / 0.05);
   --sidebar-accent-foreground: #ffffff;
+
+  /* --------------------------------------------------------------------------
+     The reference entries at the foot of the rail.
+
+     Green, and deliberately NOT the status green. These links explain the
+     pipeline rather than operate it, so they are tinted apart from the white
+     operating entries above them — that is chrome, the same kind of decision as
+     --sidebar-accent, and it has nothing to say about whether anything succeeded.
+
+     Named here rather than written as emerald-* at the call site for two
+     reasons. The obvious one is the five-copies-of-#1c1c1c argument that put the
+     rest of this block here. The other is that a raw emerald in a component is
+     indistinguishable, to a reader or to a grep, from the emerald that means
+     success — and lib/status-colors.ts now owns that meaning.
+
+     Every value resolves byte-identically to the Tailwind utility it replaced:
+     emerald-500/15, emerald-400/80, emerald-500/10, emerald-300, emerald-400.
+     -------------------------------------------------------------------------- */
+  --sidebar-guide: rgb(52 211 153 / 0.8);
+  --sidebar-guide-strong: #6ee7b7;
+  --sidebar-guide-mark: #34d399;
+  --sidebar-guide-surface: rgb(16 185 129 / 0.15);
+  --sidebar-guide-surface-hover: rgb(16 185 129 / 0.1);
 }
 
 .dark {
@@ -167,6 +190,11 @@
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --color-sidebar-guide: var(--sidebar-guide);
+  --color-sidebar-guide-strong: var(--sidebar-guide-strong);
+  --color-sidebar-guide-mark: var(--sidebar-guide-mark);
+  --color-sidebar-guide-surface: var(--sidebar-guide-surface);
+  --color-sidebar-guide-surface-hover: var(--sidebar-guide-surface-hover);
 }
 
 body {
