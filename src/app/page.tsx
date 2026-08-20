@@ -33,7 +33,7 @@ import {
   Skeleton,
   SkeletonTiles,
 } from '@/components/ui';
-import LaneChart from '@/components/LaneChart';
+import LaneCards from '@/components/LaneCards';
 
 export const dynamic = 'force-dynamic';
 
@@ -424,7 +424,8 @@ export default async function DashboardPage({
         ) : null}
 
         {/* ROW 3 — the queue, and where the routed work went. */}
-        <div className="col-span-12 lg:col-span-8">
+        {/* Full width: the lanes that used to sit beside this are their own row now. */}
+        <div className="col-span-12">
           <SectionHeading
             className="mb-3"
             title="Top priority leads"
@@ -502,50 +503,55 @@ export default async function DashboardPage({
         </div>
 
         {/*
-          No SectionHeading on this column, deliberately.
+          The lanes as cards, full width.
 
-          It had one, and beside the eight-column heading to its left the two ran
-          together into a single line reading "Top priority leads · All records ·
-          Enrichment queue · Where the work landed · 7d ago · Rules". Two headings
-          in adjacent grid cells are one heading to the eye.
+          A four-of-twelve column was the wrong home for this. It gave the bars
+          about 180px to work in, and the panel was competing with the queue beside
+          it for a reader who wants both. Across the page the four lanes read as
+          four figures, which is what they are once routing has materialised — the
+          chart form belongs to /control/routing, where a rule set can produce any
+          number of lanes and comparing a long list is the job.
 
-          It was also duplicate titling: the Card underneath already says what this
-          is. So the card's own header carries the title, and the links that were in
-          the section heading move into its action slot, where they sit against the
-          panel they act on.
+          Each card keeps a share bar. Four equal cards say four equal things, and
+          the real spread is 42,560 against 459 — a factor of 93 that a card grid
+          would otherwise flatten.
         */}
-        <div className="col-span-12 lg:col-span-4">
-          {!routingMissing && routed > 0 ? (
-            <Card>
-              <CardHeader
+        {!routingMissing && routed > 0 ? (
+          <>
+            <div className="col-span-12">
+              <SectionHeading
                 title="Where the work landed"
-                subtitle={
-                  unrouted > 0
-                    ? `${unrouted.toLocaleString()} record${unrouted === 1 ? '' : 's'} not yet routed`
-                    : 'every record has a lane'
-                }
-                action={
-                  <div className="flex items-center gap-2">
-                    {routedHoursAgo !== null ? (
-                      <span className="text-subtle text-[10px]">
-                        {routedHoursAgo < 1
-                          ? 'just now'
-                          : routedHoursAgo < 24
-                            ? `${routedHoursAgo}h ago`
-                            : `${Math.round(routedHoursAgo / 24)}d ago`}
-                      </span>
-                    ) : null}
+                actions={
+                  <>
+                    <span className="text-subtle text-xs">
+                      {unrouted > 0
+                        ? `${unrouted.toLocaleString()} not yet routed`
+                        : 'every record has a lane'}
+                      {routedHoursAgo !== null
+                        ? ` · routed ${
+                            routedHoursAgo < 1
+                              ? 'just now'
+                              : routedHoursAgo < 24
+                                ? `${routedHoursAgo}h ago`
+                                : `${Math.round(routedHoursAgo / 24)}d ago`
+                          }`
+                        : ''}
+                    </span>
                     {canRoute ? (
-                      <Link href="/control/routing" className="text-brand text-[11px] underline underline-offset-2">
+                      <Link href="/control/routing" className="text-brand underline underline-offset-2">
                         Rules
                       </Link>
                     ) : null}
-                  </div>
+                  </>
                 }
               />
-              <LaneChart rows={byLane} total={routed} className="px-5 py-4" />
-            </Card>
-          ) : !routingMissing && scored > 0 && canRoute ? (
+            </div>
+            <div className="col-span-12">
+              <LaneCards rows={byLane} total={routed} />
+            </div>
+          </>
+        ) : !routingMissing && scored > 0 && canRoute ? (
+          <div className="col-span-12">
             <EmptyState
               title="Scored, but not routed"
               description="Records have priority bands but no lane yet, so nobody owns them."
@@ -555,8 +561,8 @@ export default async function DashboardPage({
                 </Link>
               }
             />
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
         {/*
           ROW 4 — manager only, in full.

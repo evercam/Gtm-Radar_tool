@@ -39,6 +39,7 @@ import {
 } from '@/lib/status-colors';
 import { cn } from '@/lib/cn';
 import LaneChart, { type LaneRow } from '@/components/LaneChart';
+import LaneCards from '@/components/LaneCards';
 
 /**
  * The living showcase. ProductOS keeps one of these per app, and it is the
@@ -324,6 +325,13 @@ export default function DesignGuidePage() {
             <SkeletonTiles count={4} />
           </div>
         </Row>
+      </Section>
+
+      <Section
+        title="LaneCards"
+        note="The same lanes as figures. Four equal cards flatten a 93x spread, so each keeps a share bar."
+      >
+        <LaneCards rows={LANES} total={LANES.reduce((s, l) => s + l.count, 0)} />
       </Section>
 
       <Section
