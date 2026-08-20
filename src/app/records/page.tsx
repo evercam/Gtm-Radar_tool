@@ -1,29 +1,17 @@
 import Link from 'next/link';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getRecords, getRecordDetail, type RecordRow, type RecordSort } from '@/lib/queries';
-import { arrivalFor } from '@/lib/arrival';
 import { requireUser } from '@/lib/auth/session';
 import { can } from '@/lib/auth/roles';
 import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
-import {
-  BAND_COLORS,
-  ARRIVAL_COLORS,
-  ARRIVAL_LABELS,
-  BAND_LABELS,
-  BU_SHORT,
-  BUSINESS_UNITS,
-  CONTACT_STATUS_COLORS,
-  RECORD_TYPES,
-  ROUTES,
-  ROUTE_TEXT,
-  STAGES,
-  titleize,
-} from '@/lib/semantics';
+import { BAND_LABELS, BU_SHORT, BUSINESS_UNITS, RECORD_TYPES, ROUTES, STAGES } from '@/lib/semantics';
 import { PRIORITY_BANDS } from '@/lib/priority';
-import { LEAD_STATUSES, STATUS_COLORS, STATUS_LABELS, type LeadStatus } from '@/lib/lifecycle';
+import { LEAD_STATUSES, STATUS_LABELS } from '@/lib/lifecycle';
 import { Badge, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import RecordDrawer from '@/components/RecordDrawer';
+import { resolveColumns, type RecordCellContext } from '@/components/records/columns';
+import { ColumnPicker, DateWindowPicker, ActiveFilters, DATE_WINDOWS } from '@/components/records/TableControls';
 import RecordDetail from '@/components/RecordDetail';
 import { logEventAsync } from '@/lib/observability/events';
 
@@ -31,46 +19,9 @@ export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 100;
 
-function money(n: number | null): string {
-  if (n == null) return '—';
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(0)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
-  return `$${n}`;
-}
 
-/**
- * Compact enough for a table cell: "3 Aug" this year, "3 Aug 25" otherwise.
- *
- * The year is dropped only when it is the current one, so a handover from last
- * season can never be misread as a recent one.
- */
-function exportDate(v: string): string {
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    ...(sameYear ? {} : { year: '2-digit' }),
-  });
-}
 
-/** How urgent the deadline is — breached, due soon, or comfortable. */
-function slaTone(dueAt: string, breached: boolean | null): 'danger' | 'warning' | 'success' {
-  if (breached) return 'danger';
-  const hoursLeft = (new Date(dueAt).getTime() - Date.now()) / 3_600_000;
-  if (hoursLeft < 0) return 'danger';
-  return hoursLeft < 4 ? 'warning' : 'success';
-}
 
-function slaLabel(dueAt: string, breached: boolean | null): string {
-  const hoursLeft = (new Date(dueAt).getTime() - Date.now()) / 3_600_000;
-  if (breached || hoursLeft < 0) return 'breached';
-  if (hoursLeft < 1) return `${Math.round(hoursLeft * 60)}m left`;
-  if (hoursLeft < 48) return `${Math.round(hoursLeft)}h left`;
-  return `${Math.round(hoursLeft / 24)}d left`;
-}
 
 type SP = Record<string, string | undefined>;
 
@@ -81,22 +32,6 @@ function qs(base: SP, patch: SP): string {
   return s ? `/records?${s}` : '/records';
 }
 
-/**
- * How early we are arriving, as a chip.
- *
- * The tooltip carries the basis. A trailing "?" marks a verdict with no dates
- * behind it — inferred from the phase alone — so the two are distinguishable at
- * a glance rather than only on hover.
- */
-function ArrivalBadge({ record }: { record: RecordRow }) {
-  const a = arrivalFor(record);
-  return (
-    <Badge className={ARRIVAL_COLORS[a.verdict]} title={a.summary}>
-      {ARRIVAL_LABELS[a.verdict]}
-      {a.dated ? '' : ' ?'}
-    </Badge>
-  );
-}
 
 export default async function RecordsPage({ searchParams }: { searchParams: Promise<SP> }) {
   const user = await requireUser('/records');
@@ -141,6 +76,16 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   // return the working list in an order nobody asked for.
   const includeExported = sp.archived === '1' || sort === 'exported';
 
+  /*
+    The arrival window. Only the day count is resolved here; getRecords turns it
+    into an instant, because reading a clock during render is impure and the lint
+    rule is right to say so.
+
+    An unknown value is dropped rather than rejected — a stale bookmark showing the
+    whole book is a small surprise, an error page is not.
+  */
+  const sinceDays = DATE_WINDOWS.find((w) => w.key === sp.since)?.days;
+
   let rows: RecordRow[] = [];
   let total = 0;
   /*
@@ -182,6 +127,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       includeExported,
       sort,
       search,
+      sinceDays,
     });
     rows = res.rows;
     total = res.total;
@@ -267,7 +213,47 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     // Carried, so clicking any filter while auditing archived leads does not
     // silently drop them back out of the list.
     archived: sp.archived,
+    // The column choice and the arrival window travel with every other filter,
+    // so a link built anywhere on this page keeps the table the reader configured.
+    cols: sp.cols,
+    since: sp.since,
   };
+
+  /*
+    Columns, and the two Ads-Manager controls that act on them.
+
+    `cols` is resolved server-side, so the table is rendered once with the chosen
+    set rather than shipped whole and hidden with CSS. A hidden column still costs
+    the row's markup and still shows up in a copy-paste; not rendering it is the
+    difference between a picker and a visibility toggle.
+  */
+  const columns = resolveColumns(sp.cols);
+  const cellContext: RecordCellContext = { hrefFor: (id) => qs(base, { record: id }) };
+  const hrefForCols = (keys: string[]) => qs(base, { cols: keys.length ? keys.join(',') : undefined, page: undefined });
+  const hrefForWindow = (key: string | undefined) => qs(base, { since: key, page: undefined });
+  const hrefWithout = (key: string) => qs(base, { [key]: undefined, page: undefined });
+
+  /*
+    What is narrowing the list, as removable chips. With thirteen possible filters
+    the state that matters is which ones are ON, and reading that off a row of
+    dropdowns means opening all thirteen.
+  */
+  const activeFilters = (
+    [
+      { key: 'source', label: 'source', value: source },
+      { key: 'bu', label: 'BU', value: bu },
+      { key: 'vertical', label: 'vertical', value: vertical },
+      { key: 'type', label: 'type', value: recordType },
+      { key: 'contact', label: 'contact', value: contactStatus },
+      { key: 'route', label: 'lane', value: route },
+      { key: 'stage', label: 'stage', value: stage },
+      { key: 'band', label: 'band', value: band },
+      { key: 'status', label: 'status', value: status },
+      { key: 'tier', label: 'tier', value: completenessTier },
+      { key: 'owner_group', label: 'owner', value: ownerGroup },
+      { key: 'q', label: 'search', value: search },
+    ] as const
+  ).flatMap((f) => (f.value ? [{ key: f.key, label: f.label, value: f.value }] : []));
 
   // `record` is deliberately absent from `base`, so the drawer's close link is
   // this same list with every filter intact and only the record dropped.
@@ -275,9 +261,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-foreground text-2xl font-bold">My Leads</h1>
+          <h1 className="text-foreground text-xl font-bold">My Leads</h1>
           <p className="text-muted mt-1 text-sm">
             {total.toLocaleString()} records{source ? ` from ${source}` : ''}
             {total > 0 ? ` · showing ${first.toLocaleString()}–${last.toLocaleString()}` : ''}
@@ -312,6 +298,20 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
 
       {/* filters */}
       <div className="mb-5 space-y-2">
+      {/*
+        The control row: what the table is showing, and the two dials that change
+        it. Right-aligned and together, the way Ads Manager groups them — a date
+        window on one side of the page and a column chooser on the other reads as
+        two unrelated features.
+      */}
+      <div className="border-border-base mb-3 flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+        <ActiveFilters filters={activeFilters} hrefWithout={hrefWithout} />
+        <div className="ml-auto flex items-center gap-2">
+          <DateWindowPicker current={sp.since} hrefForWindow={hrefForWindow} />
+          <ColumnPicker chosen={columns} hrefForCols={hrefForCols} />
+        </div>
+      </div>
+
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-subtle text-xs font-medium">Source</span>
           <Chip href={qs(base, { source: undefined, page: undefined })} active={!source}>
@@ -460,141 +460,21 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
           <Table>
             <THead>
               <tr>
-                <Th>Pri</Th>
-                <Th>How early</Th>
-                <Th>Name</Th>
-                <Th>Ref</Th>
-                <Th>Source</Th>
-                <Th>Type</Th>
-                <Th>BU</Th>
-                <Th>Vertical</Th>
-                <Th>Country</Th>
-                <Th align="right">Value / MW</Th>
-                <Th align="right">Compl.</Th>
-                <Th>Status</Th>
-                <Th>Lane</Th>
-                <Th>Contact</Th>
-                <Th>SLA</Th>
+                {columns.map((c) => (
+                  <Th key={c.key} align={c.align}>
+                    {c.label}
+                  </Th>
+                ))}
               </tr>
             </THead>
             <TBody>
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <Td>
-                    {r.priority_band ? (
-                      <Badge
-                        className={BAND_COLORS[r.priority_band]}
-                        title={r.priority_reasons?.join(' · ') || BAND_LABELS[r.priority_band]}
-                      >
-                        {r.priority_band} · {r.priority_score}
-                      </Badge>
-                    ) : (
-                      <span className="text-subtle text-[10px]">unscored</span>
-                    )}
-                  </Td>
-                  {/*
-                    How early we are arriving, next to the priority that decides
-                    whether anyone looks. A high score on a project that is
-                    already built is not a lead, and that was previously only
-                    discoverable by opening the drawer and reading the phase.
-                    The tooltip carries the basis, because a verdict inferred
-                    from the phase alone must not read like one measured against
-                    a real construction start date.
-                  */}
-                  <Td>
-                    <ArrivalBadge record={r} />
-                  </Td>
-                  {/*
-                    Every record opens its own detail drawer. This used to link
-                    only when `account_key` was set — populated by Claude
-                    enrichment alone — so 16,332 of 16,515 project records were
-                    plain text with nothing to click. The account page is still
-                    reachable, from inside the drawer, where it belongs: it
-                    describes the company, not this record.
-                  */}
-                  <Td className="text-foreground font-medium">
-                    <Link
-                      href={qs(base, { record: r.id })}
-                      prefetch={false}
-                      scroll={false}
-                      className="hover:underline"
-                    >
-                      {r.canonical_name}
-                    </Link>
-                  </Td>
-                  <Td className="text-subtle font-mono text-[10px]">{r.ref_code ?? '—'}</Td>
-                  <Td className="text-muted text-xs">{r.source_key}</Td>
-                  <Td className="text-muted text-xs">{r.record_type ?? '—'}</Td>
-                  <Td className="text-muted text-xs">{r.bu ? (BU_SHORT[r.bu] ?? r.bu) : '—'}</Td>
-                  <Td className="text-muted text-xs">{r.vertical ? titleize(r.vertical) : '—'}</Td>
-                  <Td className="text-muted text-xs">{r.country ?? '—'}</Td>
-                  <Td align="right" className="text-foreground">
-                    {r.estimated_value != null
-                      ? money(r.estimated_value)
-                      : r.capacity_mw != null
-                        ? `${Math.round(r.capacity_mw).toLocaleString()} MW`
-                        : '—'}
-                  </Td>
-                  <Td align="right" className="text-muted">
-                    {r.population_percentage != null ? `${Math.round(r.population_percentage)}%` : '—'}
-                  </Td>
-                  {/*
-                    Export outranks status. An archived lead still reads ASSIGNED
-                    in the status column, so showing the status here would put a
-                    lead that has left the building in the same cell state as one
-                    a seller is expected to work. The date comes with the badge
-                    because "when was this handed over" is the question anyone
-                    looking at an archived row is actually asking — and `sort=exported`
-                    orders by the same value they are reading.
-                  */}
-                  <Td>
-                    {r.apollo_exported_at ? (
-                      <Badge
-                        tone="success"
-                        title={`Archived — sent to Apollo on ${new Date(r.apollo_exported_at).toLocaleString('en-GB')}${
-                          r.apollo_export_status ? ` · ${r.apollo_export_status}` : ''
-                        }${r.status ? ` · lifecycle ${STATUS_LABELS[r.status as LeadStatus] ?? r.status}` : ''}`}
-                      >
-                        exported {exportDate(r.apollo_exported_at)}
-                      </Badge>
-                    ) : r.apollo_export_status === 'failed' ? (
-                      // Not archived: a failed send stays in the queue, and the
-                      // row must not look handed over.
-                      <Badge tone="danger" title="The send to Apollo failed — still queued for the next run">
-                        export failed
-                      </Badge>
-                    ) : r.status ? (
-                      <Badge className={STATUS_COLORS[r.status as LeadStatus] ?? ''}>
-                        {STATUS_LABELS[r.status as LeadStatus] ?? r.status}
-                      </Badge>
-                    ) : (
-                      <span className="text-subtle text-[10px]">—</span>
-                    )}
-                  </Td>
-                  <Td className="text-xs">
-                    {r.route ? (
-                      <span className={ROUTE_TEXT[r.route] ?? 'text-muted'}>
-                        {r.route}
-                        <span className="text-subtle">/{r.stage}</span>
-                      </span>
-                    ) : (
-                      <span className="text-subtle">—</span>
-                    )}
-                  </Td>
-                  <Td>
-                    <Badge className={CONTACT_STATUS_COLORS[r.contact_status ?? 'needs_enrichment']}>
-                      {r.contact_status === 'has_contact' ? 'contact' : 'enrich'}
-                    </Badge>
-                  </Td>
-                  <Td>
-                    {r.sla_due_at ? (
-                      <Badge tone={slaTone(r.sla_due_at, r.sla_breached)}>
-                        {slaLabel(r.sla_due_at, r.sla_breached)}
-                      </Badge>
-                    ) : (
-                      <span className="text-subtle text-[10px]">—</span>
-                    )}
-                  </Td>
+                  {columns.map((c) => (
+                    <Td key={c.key} align={c.align} className={c.key === 'name' ? 'text-foreground font-medium' : undefined}>
+                      {c.render(r, cellContext)}
+                    </Td>
+                  ))}
                 </tr>
               ))}
             </TBody>
