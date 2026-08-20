@@ -41,6 +41,11 @@
   --warning: #f59e0b;
   --danger: #ef4444;
   --info: #3b82f6;
+  /* An address or reference rendered as reachable. Not a status: a contact email
+     is blue because it is a thing you act on, not because anything succeeded, and
+     lib/status-colors.ts deliberately does not own it. sky-600 / sky-400, the
+     literals it replaced. */
+  --link: #0284c7;
 
   /* elevation — the reference leans on borders, not shadow */
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04);
@@ -50,6 +55,49 @@
   /* shape */
   --radius-card: 16px;
   --radius-control: 8px;
+
+  /* ------------------------------------------------------------------------
+     Application chrome — topbar and left rail.
+
+     Deliberately absent from the `.dark` block below: the chrome is dark in
+     both themes, which is why these were inline hex values in Sidebar.tsx and
+     Topbar.tsx before they lived here. Stating them once is what makes the
+     decision changeable; five hardcoded copies of #1c1c1c were not.
+
+     The namespace matches the ProductOS design skill (`--sidebar-*`) so that
+     components copied from it land on the right variables.
+     ------------------------------------------------------------------------ */
+  --sidebar: #0c0c0c;
+  --sidebar-border: #1c1c1c;
+  --sidebar-foreground: #8a8a8a;
+  --sidebar-heading: #3a3a3a;
+  --sidebar-subtle: #5a5a5a;
+  --sidebar-accent: rgb(255 255 255 / 0.08);
+  --sidebar-accent-hover: rgb(255 255 255 / 0.05);
+  --sidebar-accent-foreground: #ffffff;
+
+  /* --------------------------------------------------------------------------
+     The reference entries at the foot of the rail.
+
+     Green, and deliberately NOT the status green. These links explain the
+     pipeline rather than operate it, so they are tinted apart from the white
+     operating entries above them — that is chrome, the same kind of decision as
+     --sidebar-accent, and it has nothing to say about whether anything succeeded.
+
+     Named here rather than written as emerald-* at the call site for two
+     reasons. The obvious one is the five-copies-of-#1c1c1c argument that put the
+     rest of this block here. The other is that a raw emerald in a component is
+     indistinguishable, to a reader or to a grep, from the emerald that means
+     success — and lib/status-colors.ts now owns that meaning.
+
+     Every value resolves byte-identically to the Tailwind utility it replaced:
+     emerald-500/15, emerald-400/80, emerald-500/10, emerald-300, emerald-400.
+     -------------------------------------------------------------------------- */
+  --sidebar-guide: rgb(52 211 153 / 0.8);
+  --sidebar-guide-strong: #6ee7b7;
+  --sidebar-guide-mark: #34d399;
+  --sidebar-guide-surface: rgb(16 185 129 / 0.15);
+  --sidebar-guide-surface-hover: rgb(16 185 129 / 0.1);
 }
 
 .dark {
@@ -67,6 +115,7 @@
   --subtle: #63666c;
 
   /* lifted so the red keeps contrast on a dark surface */
+  --link: #38bdf8;
   --brand: #e8394f;
   --brand-hover: #f2596c;
 
@@ -94,6 +143,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
+  --color-link: var(--link);
   --color-info: var(--info);
 
   --radius-card: 16px;
@@ -101,8 +151,57 @@
   --shadow-card: var(--shadow-card);
   --shadow-card-hover: var(--shadow-card-hover);
 
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-heading: var(--sidebar-heading);
+  --color-sidebar-subtle: var(--sidebar-subtle);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-hover: var(--sidebar-accent-hover);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+
+  /* ------------------------------------------------------------------------
+     Aliases for the ProductOS design skill's token names.
+
+     The skill and its starter repo name the same concepts differently, and a
+     component copied from either one references THEIR names. Without these it
+     renders unstyled in places and, worse, mis-styled in others. Aliasing is
+     cheaper and safer than renaming 374 call sites, and it means a pasted
+     component is correct on arrival.
+
+     One name is deliberately NOT aliased: ProductOS's `--muted` is a muted
+     SURFACE and its text colour is `--muted-foreground`, whereas this app's
+     `--muted` has always been the text colour (374 uses of `text-muted`).
+     `--color-muted` therefore keeps its local meaning and only the
+     `-foreground` alias is added. The consequence is that `bg-muted` — legal
+     in ProductOS — would paint a text grey here. It appears zero times in this
+     codebase today; use `bg-surface-raised` or `bg-accent` instead. Reversing
+     the meaning is a 62-file rename and wants its own change.
+     ------------------------------------------------------------------------ */
+  --color-muted-foreground: var(--muted);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--foreground);
+  --color-secondary: var(--surface-raised);
+  --color-secondary-foreground: var(--foreground);
+  --color-accent: var(--surface-raised);
+  --color-accent-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--brand);
+  --color-primary: var(--brand);
+  --color-primary-foreground: var(--brand-contrast);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--brand-contrast);
+
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --color-sidebar-guide: var(--sidebar-guide);
+  --color-sidebar-guide-strong: var(--sidebar-guide-strong);
+  --color-sidebar-guide-mark: var(--sidebar-guide-mark);
+  --color-sidebar-guide-surface: var(--sidebar-guide-surface);
+  --color-sidebar-guide-surface-hover: var(--sidebar-guide-surface-hover);
 }
 
 body {

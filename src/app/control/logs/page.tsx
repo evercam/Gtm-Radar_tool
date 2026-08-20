@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { cn } from '@/lib/cn';
+import { logLevelTone } from '@/lib/status-colors';
 import { requirePermission } from '@/lib/auth/session';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getEvents, getEventSummary } from '@/lib/observability/readEvents';
@@ -138,7 +140,7 @@ export default async function LogsPage({ searchParams }: { searchParams: Promise
         />
         <CardBody>
           {summary.unavailable ? (
-            <p className="text-sm text-amber-400">The summary could not be read, so these totals are missing rather than zero.</p>
+            <p className={cn('text-sm', logLevelTone.warn)}>The summary could not be read, so these totals are missing rather than zero.</p>
           ) : summary.kinds.length === 0 ? (
             <p className="text-subtle text-sm">Nothing recorded in the last 24 hours.</p>
           ) : (
@@ -151,7 +153,7 @@ export default async function LogsPage({ searchParams }: { searchParams: Promise
                 >
                   <span className="font-medium">{k.kind}</span>
                   <span className="text-subtle ml-2">{k.total}</span>
-                  {k.failed > 0 ? <span className="ml-2 text-red-400">{k.failed} failed</span> : null}
+                  {k.failed > 0 ? <span className={cn('ml-2', logLevelTone.error)}>{k.failed} failed</span> : null}
                 </Link>
               ))}
             </div>
@@ -179,7 +181,7 @@ export default async function LogsPage({ searchParams }: { searchParams: Promise
         />
         <CardBody>
           {unavailable ? (
-            <p className="text-sm text-amber-400">
+            <p className={cn('text-sm', logLevelTone.warn)}>
               The event list could not be read. This is a failed query, not an empty log — reload to retry.
             </p>
           ) : rows.length === 0 ? (

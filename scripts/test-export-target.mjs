@@ -63,7 +63,21 @@ const byFull = resolve('Ronniel Manalo');
 check('a full name resolves', byFull.ok && /Ronniel/.test(byFull.name), byFull.reason);
 check('a first name resolves', resolve('ronniel').ok);
 check('case does not matter', resolve('RONNIEL MANALO').ok);
-check('an email resolves', resolve('ronniel.manalo@evercam.io').ok);
+/*
+  The email comes from the roster this test just read, not from a literal.
+
+  It was hardcoded to ronniel.manalo@evercam.io and the live row is
+  @evercam.com, so the assertion failed on a stale fixture while the resolver it
+  was meant to cover worked perfectly. Nobody noticed because the file was never
+  run — and a test that asserts who is in the database, rather than what the code
+  does with them, fails again the next time somebody changes jobs.
+*/
+const sampleEmail = activeRoster.find((a) => a.email)?.email;
+check(
+  'an email resolves',
+  sampleEmail ? resolve(sampleEmail).ok : false,
+  sampleEmail ? `${sampleEmail} did not resolve` : 'no rostered person has an email'
+);
 check('a roster id resolves', byFull.ok && resolve(byFull.id).ok);
 
 console.log('\nRefusing rather than exporting everybody');

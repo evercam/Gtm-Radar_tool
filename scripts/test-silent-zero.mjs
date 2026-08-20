@@ -70,6 +70,7 @@ const page = readFileSync('src/app/control/enrichment/page.tsx', 'utf8');
 const control = readFileSync('src/app/control/page.tsx', 'utf8');
 const routing = readFileSync('src/app/api/routing/apply/route.ts', 'utf8');
 const demand = readFileSync('src/lib/enrich/demand.ts', 'utf8');
+const apolloExport = readFileSync('src/app/api/export/apollo/route.ts', 'utf8');
 
 group('The enrichment queue can say "I failed" instead of "there is nothing"');
 {
@@ -158,6 +159,33 @@ group('The scoring pass cannot abandon its tail and call itself complete');
   check(
     'a zero-scored run no longer always reads as "everything already scored"',
     /res\.total === 0 && res\.truncated/.test(routing)
+  );
+}
+
+group('The Apollo export names every gate it applied, including the cold one');
+{
+  /*
+    The same bug class, one surface further on: an export that sends nothing and
+    cannot say why.
+
+    The zero-rows branch counts five reasons out of SQL — assigned, already sent,
+    no email, unverified, do-not-contact — and names quota out of memory. The cold
+    ARRIVAL gate is the sixth, and it is the only one that cannot be counted in
+    SQL: the verdict comes from `arrivalFor` reading the admin-editable phase
+    table. It was being counted into `coldSkipped` and then dropped on the floor,
+    so a rep whose whole book is mid-build got "Nothing eligible." with an empty
+    diagnosis — indistinguishable from a broken export.
+  */
+  const zeroBranch = apolloExport.match(/if \(rows\.length === 0\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
+  check('the zero-rows branch was found', zeroBranch.length > 0);
+  check('the cold count reaches the prose', /because\.push\(`\$\{coldSkipped\}/.test(zeroBranch));
+  check('and reaches the machine-readable breakdown', /cold: coldSkipped/.test(zeroBranch));
+  // The point of the count is that it is spent. A counter nothing reads is the
+  // filter hiding what it removed all over again.
+  check(
+    'coldSkipped is read, not just incremented',
+    (code(apolloExport).match(/coldSkipped/g) ?? []).length >= 4,
+    'declared, incremented, and used at least twice'
   );
 }
 

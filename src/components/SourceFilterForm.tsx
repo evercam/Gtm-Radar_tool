@@ -71,7 +71,7 @@ export default function SourceFilterForm({ searchParams: sp }: { searchParams: S
     >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-foreground">Filters</h2>
-        <Link href="/control/sources" className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400">
+        <Link href="/control/sources" className="text-link text-xs font-medium hover:underline">
           Reset filters
         </Link>
       </div>

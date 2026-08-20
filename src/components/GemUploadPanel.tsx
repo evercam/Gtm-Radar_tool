@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { Badge, Callout } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { dangerHoverText, statusText } from '@/lib/status-colors';
 import GemResult, { type GemUploadResponse } from '@/components/gem/GemResult';
 
 const KNOWN_TRACKERS = [
@@ -81,12 +84,12 @@ export default function GemUploadPanel({ dbReady }: { dbReady: boolean }) {
   return (
     <div className="rounded-lg border border-border-base bg-surface p-5">
       {!dbReady ? (
-        <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300">
+        <Callout className="mb-4">
           Supabase is not configured yet — uploads are parsed, normalized, and{' '}
           <strong>saved to the server folder</strong>, so they&rsquo;re immediately searchable under{' '}
           <strong>GEM Trackers</strong>. Once the database is set up, the same upload also persists to{' '}
           <code>canonical_projects</code>.
-        </div>
+        </Callout>
       ) : null}
 
       <div
@@ -123,7 +126,7 @@ export default function GemUploadPanel({ dbReady }: { dbReady: boolean }) {
         </p>
       </div>
 
-      {error ? <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+      {error ? <p className={cn('mt-3 text-xs', statusText.danger)}>{error}</p> : null}
 
       {files.length > 0 ? (
         <div className="mt-4">
@@ -140,14 +143,14 @@ export default function GemUploadPanel({ dbReady }: { dbReady: boolean }) {
                     {f.name}
                     <span className="ml-2 text-xs text-muted">{(f.size / 1024).toFixed(0)} KB</span>
                     {!known ? (
-                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                      <Badge tone="warning" className="ml-2">
                         unrecognized tracker
-                      </span>
+                      </Badge>
                     ) : null}
                   </span>
                   <button
                     onClick={() => removeFile(f.name)}
-                    className="text-xs text-muted hover:text-red-600 dark:hover:text-red-400"
+                    className={cn('text-muted text-xs', dangerHoverText)}
                   >
                     remove
                   </button>

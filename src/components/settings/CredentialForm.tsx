@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState } from 'react';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import { saveSourceCredential, type SaveCredentialResult } from '@/lib/actions/credentials';
 
 export default function CredentialForm({
@@ -36,14 +38,14 @@ export default function CredentialForm({
               defaultValue={username ?? ''}
               placeholder="Username"
               autoComplete="off"
-              className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-40-raised"
+              className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-40"
             />
             <input
               type="password"
               name="password"
               placeholder={hasPassword ? '••••••• (leave blank to keep)' : 'Password'}
               autoComplete="off"
-              className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-40-raised"
+              className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-40"
             />
           </>
         ) : null}
@@ -58,14 +60,14 @@ export default function CredentialForm({
                 : 'API key'
           }
           autoComplete="off"
-          className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-56-raised"
+          className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-56"
         />
         <input
           type="text"
           name="baseUrl"
           defaultValue={baseUrl ?? ''}
           placeholder="Base URL"
-          className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-56-raised"
+          className="w-full min-w-0 rounded border border-border-base bg-surface px-2 py-1.5 text-sm sm:w-56"
         />
         <button
           type="submit"
@@ -77,7 +79,7 @@ export default function CredentialForm({
       </div>
       {state ? (
         <span
-          className={`text-xs ${state.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}
+          className={cn('text-xs', statusText[state.ok ? 'success' : 'danger'])}
         >
           {state.message}
         </span>

@@ -1,6 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { rowTone, statusText } from '@/lib/status-colors';
 import { useRouter } from 'next/navigation';
 import { PRIORITY_BANDS } from '@/lib/priority';
 
@@ -137,20 +140,14 @@ export default function EnrichmentRunner({
         >
           {busy === 'dry' ? 'Checking…' : 'Dry run'}
         </button>
-        <button
-          onClick={() => submit(false)}
-          disabled={busy !== null}
-          className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-        >
+        <Button variant="success" onClick={() => submit(false)} disabled={busy !== null}>
           {busy === 'run' ? `Enriching ${limit}…` : `Enrich ${limit} records →`}
-        </button>
+        </Button>
       </div>
 
       {res ? (
         <div className="mt-4">
-          <p
-            className={`text-sm ${res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}
-          >
+          <p className={cn('text-sm', statusText[res.ok ? 'success' : 'danger'])}>
             {res.dryRun ? 'Dry run — nothing spent. ' : ''}
             {res.message}
             {res.durationMs ? <span className="text-subtle"> ({Math.round(res.durationMs / 1000)}s)</span> : null}
@@ -168,13 +165,13 @@ export default function EnrichmentRunner({
                 </thead>
                 <tbody className="divide-y divide-border-base">
                   {res.results.map((r) => (
-                    <tr key={r.id} className={r.ok ? '' : 'bg-rose-50/50 dark:bg-rose-950/20'}>
+                    <tr key={r.id} className={r.ok ? undefined : rowTone.danger}>
                       <td className="px-3 py-1.5 text-foreground">{r.name}</td>
                       <td className="px-3 py-1.5 text-muted">
                         {r.ok ? (
                           (r.account ?? <span className="text-subtle">not resolved</span>)
                         ) : (
-                          <span className="text-rose-600 dark:text-rose-400">{r.message}</span>
+                          <span className={statusText.danger}>{r.message}</span>
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-muted">{r.contacts}</td>

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { laneBar, laneText } from '@/lib/status-colors';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getRoutingPolicy, getCachedRoutingPreview } from '@/lib/queries';
 import { getScoringPolicies, getScoringPolicy } from '@/lib/policies';
@@ -15,20 +16,7 @@ import { requirePermission } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
-const LANE_BAR: Record<string, string> = {
-  'sales/act_now': 'bg-emerald-500',
-  'sales/qualify': 'bg-emerald-400',
-  'marketing/nurture': 'bg-amber-400',
-  'partner/hold': 'bg-violet-400',
-  'none/hold': 'bg-zinc-400',
-  'none/disqualify': 'bg-zinc-300',
-};
-const ROUTE_TEXT: Record<string, string> = {
-  sales: 'text-emerald-700 dark:text-emerald-300',
-  marketing: 'text-amber-700 dark:text-amber-300',
-  partner: 'text-violet-700 dark:text-violet-300',
-  none: 'text-muted',
-};
+// The lane legend lives in lib/status-colors.ts; it is shared with the dashboard.
 
 export default async function RoutingPage() {
   const user = await requirePermission('routing.edit', '/control/routing');
@@ -155,12 +143,12 @@ export default async function RoutingPage() {
               return (
                 <div key={lane} className="flex items-center gap-3">
                   <div className="w-36 shrink-0 text-[11px]">
-                    <span className={`font-bold ${ROUTE_TEXT[l.route] ?? ''}`}>{l.route}</span>
+                    <span className={`font-bold ${laneText[l.route] ?? ''}`}>{l.route}</span>
                     <span className="text-subtle"> / {l.stage}</span>
                   </div>
                   <div className="bg-surface-raised h-4 flex-1 overflow-hidden rounded">
                     <div
-                      className={`h-full ${LANE_BAR[lane] ?? 'bg-zinc-400'}`}
+                      className={`h-full ${laneBar[lane] ?? 'bg-zinc-400'}`}
                       style={{ width: `${Math.max(2, (l.count / maxLane) * 100)}%` }}
                     />
                   </div>

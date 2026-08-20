@@ -15,7 +15,7 @@ const MAP={ingested:'RAW',normalized:'RAW',scored:'RAW',routed:'RAW',enriching:'
 const req=s=>s==='act_now'?'phone':s==='nurture'?'email':s==='qualify'?'both':'none';
 
 let pass=0,fail=0;
-const t=(n,c)=>{c?(pass++,console.log('  PASS',n)):(fail++,console.log('  FAIL',n));};
+const t=(n,c)=>{if(c){pass++;console.log('  PASS',n);}else{fail++;console.log('  FAIL',n);}};
 
 console.log('Lifecycle state machine');
 t('every status is reachable from RAW', (()=>{

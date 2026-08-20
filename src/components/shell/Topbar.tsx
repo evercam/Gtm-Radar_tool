@@ -28,12 +28,12 @@ export default function Topbar({
 
   return (
     <>
-      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-between border-b border-[#1c1c1c] bg-[#0c0c0c] px-4">
+      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-between border-b border-sidebar-border bg-sidebar px-4">
         <div className="flex min-w-0 items-center gap-3">
           {user ? (
             <button
               onClick={() => setNavOpen((v) => !v)}
-              className="rounded-lg p-1.5 text-[#8a8a8a] transition-colors hover:bg-white/5 hover:text-white lg:hidden"
+              className="rounded-lg p-1.5 text-sidebar-foreground transition-colors hover:bg-sidebar-accent-hover hover:text-sidebar-accent-foreground lg:hidden"
               aria-label="Toggle navigation"
               aria-expanded={navOpen}
             >
@@ -46,7 +46,7 @@ export default function Topbar({
                 rather than derived. */}
             <Logo on="dark" width={104} priority />
             <span className="hidden h-4 w-px shrink-0 bg-white/15 sm:block" />
-            <span className="hidden truncate text-[12px] font-medium tracking-tight text-[#8a8a8a] sm:block">
+            <span className="hidden truncate text-[12px] font-medium tracking-tight text-sidebar-foreground sm:block">
               GTM Radar
             </span>
           </Link>

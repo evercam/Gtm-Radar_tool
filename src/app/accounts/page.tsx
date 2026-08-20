@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { Badge } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 import { getAccounts, type AccountViewRow } from '@/lib/queries';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
@@ -165,20 +168,14 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
                           {a.account_name ?? a.account_key}
                         </Link>
                         {a.key_account ? (
-                          <span
-                            className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-                            title={(a.key_account_reasons ?? []).join(' · ')}
-                          >
+                          <Badge tone="brand" title={(a.key_account_reasons ?? []).join(' · ')}>
                             ★ KEY
-                          </span>
+                          </Badge>
                         ) : null}
                         {a.expansion_signal ? (
-                          <span
-                            className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                            title={a.expansion_signal}
-                          >
+                          <Badge tone="success" title={a.expansion_signal}>
                             expanding
-                          </span>
+                          </Badge>
                         ) : null}
                       </div>
                       <div className="mt-0.5 text-xs text-muted">
@@ -189,7 +186,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
                     <td className="px-4 py-2 text-right">
                       {a.key_account_score != null ? (
                         <span
-                          className={`tabular-nums font-semibold ${a.key_account ? 'text-amber-600 dark:text-amber-400' : 'text-muted'}`}
+                          className={cn('font-semibold tabular-nums', a.key_account ? 'text-brand' : 'text-muted')}
                         >
                           {a.key_account_score}
                         </span>
@@ -200,7 +197,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
                     <td className="px-4 py-2 text-right tabular-nums text-foreground">
                       {a.portfolio_project_count ?? a.project_count}
                     </td>
-                    <td className="px-4 py-2 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                    <td className={cn('px-4 py-2 text-right tabular-nums', statusText.success)}>
                       {a.with_contact || '—'}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums text-foreground">

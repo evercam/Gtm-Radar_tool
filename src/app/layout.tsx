@@ -4,6 +4,7 @@ import './globals.css';
 import AppShell from '@/components/shell/AppShell';
 import AuthNotInstalled from '@/components/AuthNotInstalled';
 import { ToastProvider } from '@/components/ui/Toast';
+import { THEME_BOOTSTRAP } from '@/lib/theme';
 
 const inter = Inter({
   variable: '--font-inter',
@@ -23,13 +24,16 @@ export const metadata: Metadata = {
   description: 'Sales intelligence and lead enrichment across construction, procurement, permits and energy sources.',
 };
 
-/**
- * Applies the stored theme before first paint. Without this the page renders
- * in the system theme and then snaps to the stored one — a visible flash on
- * every navigation. Kept inline and dependency-free so it runs synchronously,
- * ahead of any Next.js module.
- */
-const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(!t&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light';}catch(e){}})();`;
+/*
+  Applies the stored theme before first paint. Without this the page renders in
+  the system theme and then snaps to the stored one — a visible flash on every
+  navigation. Kept inline and dependency-free so it runs synchronously, ahead of
+  any Next.js module.
+
+  The string itself now lives in lib/theme.ts next to the function that has to
+  agree with it, because two copies of "is it dark" in two files is how a
+  one-frame flicker gets introduced by an edit that looks correct.
+*/
 
 export default function RootLayout({
   children,
@@ -52,7 +56,7 @@ export default function RootLayout({
           bundle loads. That is before hydration but after first paint, which
           reintroduces exactly the theme flash this exists to prevent.
         */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
       </head>
       <body className="bg-background flex min-h-full flex-col">
         <ToastProvider>

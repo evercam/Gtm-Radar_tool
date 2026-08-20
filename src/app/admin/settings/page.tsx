@@ -1,4 +1,7 @@
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
+import { cn } from '@/lib/cn';
+import { badgeTone } from '@/lib/status-colors';
+import { Badge } from '@/components/ui';
 import { getMaskedCredentials } from '@/lib/settingsData';
 import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
@@ -224,18 +227,12 @@ export default async function SettingsPage() {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-foreground">{source.name}</span>
                             {slug ? (
-                              <span className="rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
-                                Live
-                              </span>
+                              <Badge tone="success">Live</Badge>
                             ) : null}
                           </div>
                           <span className="mt-0.5 block text-[11px] text-muted">{source.coverage}</span>
                           <span
-                            className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                              isConfigured
-                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                                : 'bg-surface-raised text-muted'
-                            }`}
+                            className={cn('mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium', badgeTone[isConfigured ? 'success' : 'neutral'])}
                           >
                             {isConfigured ? 'Configured' : 'Not configured'}
                           </span>

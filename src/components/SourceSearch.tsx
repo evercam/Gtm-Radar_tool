@@ -1,6 +1,9 @@
 'use client';
 
 import { Fragment, useEffect, useState } from 'react';
+import { Badge, Button } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 import EnrichPanel from './EnrichPanel';
 import { type PriorityBand } from '@/lib/priority';
 import {
@@ -850,9 +853,7 @@ export default function SourceSearch({
           )}
 
           <div className="flex items-center gap-2 pb-1.5">
-            <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
-              ICP: {cat.icp}
-            </span>
+            <Badge tone="neutral">ICP: {cat.icp}</Badge>
             <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${BU_COLORS[cat.bu] ?? ''}`}>
               BU: {BU_LABELS[cat.bu] ?? cat.bu}
             </span>
@@ -860,23 +861,23 @@ export default function SourceSearch({
 
           {cat.keyless ? (
             <div className="pb-1.5">
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+              <Badge tone="success">
                 No API key required
-              </span>
+              </Badge>
             </div>
           ) : hasSavedCredentials ? (
             <div className="flex items-center gap-2 pb-1.5">
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+              <Badge tone="success">
                 ● Using saved credentials
-              </span>
+              </Badge>
             </div>
           ) : null}
 
           {!cat.keyless && !hasSavedCredentials ? (
             <div className="flex items-center gap-2 pb-1.5">
-              <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              <Badge tone="warning">
                 No key saved
-              </span>
+              </Badge>
               <a
                 href="/admin/settings"
                 className="text-muted hover:text-foreground text-xs underline underline-offset-2"
@@ -1070,7 +1071,7 @@ export default function SourceSearch({
       {response ? (
         <div className="rounded-lg border border-border-base bg-surface">
           {!response.ok ? (
-            <p className="px-5 py-4 text-sm text-rose-600 dark:text-rose-400">
+            <p className={cn('px-5 py-4 text-sm', statusText.danger)}>
               {response.errorKind ? `[${response.errorKind}] ` : ''}
               {response.message}
             </p>
@@ -1168,9 +1169,7 @@ export default function SourceSearch({
                               )}
                             </td>
                             <td className="px-4 py-2">
-                              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
-                                {r.icp_code ? (ICP_LABELS[r.icp_code] ?? r.icp_code) : '—'}
-                              </span>
+                              <Badge tone="neutral">{r.icp_code ? (ICP_LABELS[r.icp_code] ?? r.icp_code) : '—'}</Badge>
                             </td>
                             <td className="px-4 py-2 text-muted">{r.building_type ?? '—'}</td>
                             <td className="px-4 py-2 text-muted">
@@ -1184,14 +1183,14 @@ export default function SourceSearch({
                             <td className="px-4 py-2 text-muted">{r.company_name_raw ?? '—'}</td>
                             <td className="px-4 py-2 text-muted">
                               {r.contact_status === 'needs_enrichment' ? (
-                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                                <Badge tone="warning">
                                   needs enrichment
-                                </span>
+                                </Badge>
                               ) : (
                                 <>
                                   {r.contact_name ? <span className="block">{r.contact_name}</span> : null}
                                   {r.contact_email ? (
-                                    <span className="block text-[11px] text-sky-600 dark:text-sky-400">
+                                    <span className="text-link block text-[11px]">
                                       {r.contact_email}
                                     </span>
                                   ) : null}
@@ -1209,13 +1208,9 @@ export default function SourceSearch({
                               </span>
                             </td>
                             <td className="px-4 py-2">
-                              <button
-                                type="button"
-                                onClick={() => setEnrichOpen(enrichOpen === i ? null : i)}
-                                className="rounded border border-indigo-300 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
-                              >
+                              <Button size="sm" onClick={() => setEnrichOpen(enrichOpen === i ? null : i)}>
                                 {enrichOpen === i ? 'Hide' : 'Enrich'}
-                              </button>
+                              </Button>
                             </td>
                           </tr>
                           {enrichOpen === i ? (

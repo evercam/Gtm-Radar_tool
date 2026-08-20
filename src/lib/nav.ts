@@ -4,6 +4,7 @@ import {
   Building2,
   BookOpen,
   LayoutGrid,
+  Palette,
   Sparkles,
   Wallet,
   Route,
@@ -94,7 +95,15 @@ export const NAV_SECTIONS: NavSection[] = [
  * fourth in "Work" it read as another daily destination and was skipped; at the
  * bottom in its own colour it is findable exactly when someone is lost.
  */
-export const NAV_FOOTER: NavItem[] = [{ label: 'How it works', href: '/help', icon: BookOpen }];
+export const NAV_FOOTER: NavItem[] = [
+  { label: 'How it works', href: '/help', icon: BookOpen },
+  /*
+    The design guide sits beside it for the same reason: neither is a place you
+    work. It is reference, reachable rather than prominent, and it needs no
+    permission — it renders no data, so there is nothing to gate.
+  */
+  { label: 'Design guide', href: '/design-guide', icon: Palette },
+];
 
 /** Tabs across the top of every Operations page. */
 export const CONTROL_TABS: NavItem[] = [
