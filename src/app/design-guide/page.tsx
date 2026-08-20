@@ -40,6 +40,7 @@ import {
 import { cn } from '@/lib/cn';
 import LaneChart, { type LaneRow } from '@/components/LaneChart';
 import LaneCards from '@/components/LaneCards';
+import JourneyCards, { type JourneyStep } from '@/components/JourneyCards';
 
 /**
  * The living showcase. ProductOS keeps one of these per app, and it is the
@@ -115,6 +116,16 @@ const TYPE_SCALE: { name: string; className: string }[] = [
   { name: 'Meta (11px)', className: 'text-muted text-[11px]' },
   { name: 'Label (10px caps)', className: 'text-muted text-[10px] font-bold uppercase tracking-[0.14em]' },
   { name: 'Mono identifier', className: 'text-muted font-mono text-xs' },
+];
+
+const JOURNEY: JourneyStep[] = [
+  { status: 'RAW', label: 'Raw', badgeClass: 'bg-surface-raised text-muted', reached: 111642, here: 107742 },
+  { status: 'QUEUED', label: 'Queued', badgeClass: 'bg-surface-raised text-muted', reached: 3901, here: 1910 },
+  { status: 'ENRICHING', label: 'Enriching', badgeClass: 'bg-surface-raised text-muted', reached: 2058, here: 0 },
+  { status: 'ENRICHED', label: 'Enriched', badgeClass: 'bg-surface-raised text-muted', reached: 2058, here: 321 },
+  { status: 'PREPARED', label: 'Prepared', badgeClass: 'bg-surface-raised text-muted', reached: 1961, here: 1046 },
+  { status: 'ASSIGNED', label: 'Assigned', badgeClass: 'bg-surface-raised text-muted', reached: 624, here: 223 },
+  { status: 'EXPORTED', label: 'Exported', badgeClass: 'bg-surface-raised text-muted', reached: 400, here: 400 },
 ];
 
 const LANES: LaneRow[] = [
@@ -325,6 +336,13 @@ export default function DesignGuidePage() {
             <SkeletonTiles count={4} />
           </div>
         </Row>
+      </Section>
+
+      <Section
+        title="JourneyCards"
+        note="A funnel is a sequence, so the cards stay in one row — wrapped onto two lines it reads as a grid, not a path."
+      >
+        <JourneyCards entered={111642} steps={JOURNEY} />
       </Section>
 
       <Section

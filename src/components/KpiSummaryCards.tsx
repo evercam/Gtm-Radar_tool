@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { statusText } from '@/lib/status-colors';
+import JourneyCards from '@/components/JourneyCards';
 import type { KpiSummary } from '@/lib/kpi';
 import {
   JOURNEY_STAGE_COLORS,
@@ -7,7 +7,7 @@ import {
   type JourneyStage,
 } from '@/lib/lifecycle';
 import { STATUS_COLORS_SAFE } from '@/lib/semantics';
-import { Card, CardHeader, CardBody, Badge, Stat, ProgressBar } from '@/components/ui';
+import { Card, CardHeader, CardBody, Stat } from '@/components/ui';
 
 /**
  * Performance, on the Dashboard.
@@ -41,7 +41,6 @@ export default function KpiSummaryCards({
   days,
   scope,
   canExport,
-  canSeeExportHistory,
 }: {
   kpi: KpiSummary;
   days: number;
@@ -52,7 +51,6 @@ export default function KpiSummaryCards({
    * `canExport`, which is widened by team visibility — /control/exports gates on
    * leads.export alone.
    */
-  canSeeExportHistory: boolean;
 }) {
   // Every stage is measured against the top of the funnel, so the bars shrink
   // down the path instead of each being scaled to whichever stage is busiest.
@@ -60,15 +58,19 @@ export default function KpiSummaryCards({
   const entered = Math.max(1, funnel[0]?.reached ?? 0);
   const lost = kpi.funnel.find((f) => f.status === 'LOST');
 
-  const handoverRate =
-    kpi.conversion.assigned > 0
-      ? Math.round((kpi.export.exported / kpi.conversion.assigned) * 1000) / 10
-      : 0;
-
   return (
     <Card>
       <CardHeader
-        title={scope === 'you' ? 'Your performance' : 'Team performance'}
+        /*
+          Named for what it shows.
+
+          It was "Team performance", which described a card of four rate metrics.
+          Three of those are gone and the body is now the journey — where leads are
+          and where they stop. A title that no longer matches its contents is worse
+          than a dull one: it tells the reader to expect something the card cannot
+          give them.
+        */
+        title={scope === 'you' ? 'Your lead journey' : 'Lead journey'}
         /*
           The age of the figures is part of the subtitle, not a footnote.
 
@@ -91,133 +93,50 @@ export default function KpiSummaryCards({
         }
       />
       <CardBody className="space-y-5">
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {/*
+          One rate, not four.
+
+          Handover rate, Past SLA and Time to contact left this card. Nothing was
+          lost with the first: the journey below shows Assigned 624 -> Exported 400
+          at a 36% fall, which IS the handover rate — it was the same fact stated
+          twice, once as a ratio and once as a step. The other two had no data to
+          report and said so honestly, which is correct behaviour and still a whole
+          tile spent saying "not measured yet".
+
+          Enrichment stays because it is the one rate the journey cannot show: the
+          funnel counts leads that reached a stage, and this counts how often the
+          attempt succeeded. A stage can be small because few entered it or because
+          most attempts failed, and only this tells those apart.
+        */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat
             label="Enrichment"
             value={`${kpi.enrichment.successRate}%`}
-            note={`${kpi.enrichment.succeeded.toLocaleString()} of ${kpi.enrichment.attempted.toLocaleString()}`}
-          />
-          {/*
-            Handover, not contact. The call happens in Apollo, so a contact rate
-            measured from this database reads 0% no matter how much outreach the
-            team does. What this tool can honestly claim is how much of the
-            assigned work it actually got shipped.
-          */}
-          <Stat
-            label="Handover rate"
-            value={`${handoverRate}%`}
-            note={
-              <>
-                {kpi.export.exported.toLocaleString()} of {kpi.conversion.assigned.toLocaleString()} assigned sent
-                {/*
-                  The number is one click from the runs that produced it. Apollo
-                  raises no notification when contacts are created, so "did the
-                  handover actually happen, and when" has exactly one answer in
-                  this app and it was reachable only from a tab inside
-                  Operations.
-
-                  Gated on its own permission rather than `canExport`, which is
-                  widened by `seesTeam` — a manager without leads.export would
-                  have been offered a link that redirects them to sign-in.
-                */}
-                {canSeeExportHistory ? (
-                  <>
-                    {' · '}
-                    <Link href="/control/exports" className="text-brand underline">
-                      history
-                    </Link>
-                  </>
-                ) : null}
-              </>
-            }
-          />
-          {/*
-            Nothing tracked is not zero breaches.
-
-            With no lead carrying an SLA this read "0" over "0% of 0 tracked" — a
-            confident, reassuring zero for a thing that was never measured. It is
-            the same mistake as a failed count rendering as a real one, and the
-            same rule applies: say you cannot answer rather than answering well.
-          */}
-          {kpi.sla.tracked === 0 ? (
-            <Stat label="Past SLA" value="—" note="no lead is on an SLA clock yet" />
-          ) : (
-            <Stat
-              label="Past SLA"
-              value={kpi.sla.breached.toLocaleString()}
-              note={`${kpi.sla.breachRate}% of ${kpi.sla.tracked.toLocaleString()} tracked`}
-              tone={kpi.sla.breachRate > 20 ? 'danger' : kpi.sla.breachRate > 5 ? 'warning' : undefined}
-            />
-          )}
-          <Stat
-            label="Time to contact"
-            value={kpi.sla.medianHoursToContact !== null ? `${kpi.sla.medianHoursToContact}h` : '—'}
-            note={kpi.sla.medianHoursToContact !== null ? 'median, from assignment' : 'not measured yet'}
+            note={`${kpi.enrichment.succeeded.toLocaleString()} of ${kpi.enrichment.attempted.toLocaleString()} attempts`}
           />
         </div>
 
-        <div className="space-y-1.5">
-          <div className="text-subtle flex items-baseline justify-between text-[10px] uppercase tracking-wide">
-            <span>Lead journey</span>
-            <span className="normal-case">fall · reached · here now</span>
-          </div>
+        <JourneyCards
+          entered={entered}
+          steps={funnel.map((f) => ({
+            status: f.status,
+            label: JOURNEY_STAGE_LABELS[f.status as JourneyStage] ?? f.status,
+            badgeClass: JOURNEY_STAGE_COLORS[f.status as JourneyStage] ?? STATUS_COLORS_SAFE,
+            reached: f.reached,
+            here: f.count,
+          }))}
+        />
 
-          {/*
-            The drop is the point, so the drop is a number.
-
-            Every stage already showed how many reached it, which means the bar
-            lengths encoded the losses and the reader had to subtract to find them.
-            A funnel exists to answer "where does it stop", and that answer was
-            arithmetic homework.
-
-            Each row now carries the fall from the PREVIOUS stage — not from the
-            top — because a stage that keeps 3% of the stage above it is the
-            bottleneck even when everything downstream also looks small against
-            111,642. Measured here, that is QUEUED: 111,642 reach RAW and 3,901
-            reach QUEUED, a 96.5% fall, and every later stage is small because of
-            it rather than on its own account.
-
-            Only falls worth acting on are shown. Labelling a 100% pass-through
-            "0% lost" is noise on a row that is working.
-          */}
-          {funnel.map((f, i) => {
-            const prev = i > 0 ? funnel[i - 1].reached : null;
-            const dropPct = prev && prev > 0 ? Math.round(((prev - f.reached) / prev) * 100) : 0;
-            return (
-              <div key={f.status} className="flex items-center gap-3">
-                <span className="w-32 shrink-0">
-                  <Badge className={JOURNEY_STAGE_COLORS[f.status as JourneyStage] ?? STATUS_COLORS_SAFE}>
-                    {JOURNEY_STAGE_LABELS[f.status as JourneyStage] ?? f.status}
-                  </Badge>
-                </span>
-                <ProgressBar value={f.reached} max={entered} tone="neutral" className="flex-1" />
-                <span className="w-16 shrink-0 text-right text-[10px] tabular-nums">
-                  {dropPct >= 5 ? (
-                    <span className={dropPct >= 50 ? statusText.danger : statusText.warning}>−{dropPct}%</span>
-                  ) : null}
-                </span>
-                <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
-                  <span className="text-foreground">{f.reached.toLocaleString()}</span>
-                  {/* Occupancy is the actionable half: what is sitting here now. */}
-                  <span className="text-subtle"> · {f.count.toLocaleString()}</span>
-                </span>
-              </div>
-            );
-          })}
-
-          {lost && lost.count > 0 ? (
-            <div className="flex items-center gap-3 pt-1">
-              <span className="w-32 shrink-0">
-                <Badge className={JOURNEY_STAGE_COLORS.LOST}>{JOURNEY_STAGE_LABELS.LOST}</Badge>
-              </span>
-              {/* Off the path, so it gets no bar to compare against the stages. */}
-              <span className="text-subtle flex-1 text-[10px]">left the funnel</span>
-              <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
-                <span className="text-muted">{lost.count.toLocaleString()}</span>
-              </span>
-            </div>
-          ) : null}
-        </div>
+        {/*
+          Off the path, so it is a line rather than a card. Giving LOST a tile in
+          the row would put it in the sequence, and it is not a stage anything
+          passes through — it is where records go when they stop.
+        */}
+        {lost && lost.count > 0 ? (
+          <p className="text-subtle text-[10px]">
+            {lost.count.toLocaleString()} left the funnel ({JOURNEY_STAGE_LABELS.LOST.toLowerCase()}).
+          </p>
+        ) : null}
 
         {scope === 'team' && kpi.byOwner.length > 0 ? (
           <p className="text-subtle text-[10px]">

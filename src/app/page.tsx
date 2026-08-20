@@ -10,14 +10,12 @@ import { can } from '@/lib/auth/roles';
 import { Suspense } from 'react';
 import { getKpiSummary } from '@/lib/kpi';
 import KpiSummaryCards from '@/components/KpiSummaryCards';
-import HandoverByPerson from '@/components/HandoverByPerson';
-import SupplyStatus from '@/components/SupplyStatus';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
 import BuStats from '@/components/BuStats';
 import CoverageAlert from '@/components/CoverageAlert';
-import TeamCoverage from '@/components/TeamCoverage';
+import TeamSupply from '@/components/TeamSupply';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
 import {
   Badge,
@@ -94,7 +92,6 @@ async function KpiSection({
       days={days}
       scope={seesTeam ? 'team' : 'you'}
       canExport={can({ permissions }, 'leads.export') || seesTeam}
-      canSeeExportHistory={can({ permissions }, 'leads.export')}
     />
   );
 }
@@ -106,8 +103,26 @@ async function KpiSection({
  * `tableMissing` rather than throwing, so catching here caught nothing and
  * tripped react-hooks/error-boundaries for the privilege.
  */
-async function HandoverSection() {
-  return <HandoverByPerson breakdown={await getHandoverByPerson()} />;
+/**
+ * Supply, cover and handover in one panel, behind one boundary.
+ *
+ * Handover used to stream alone because it pages the whole assigned book.
+ * Measured after the rollup migration: handover 2.0s, production 1.1s, plan
+ * 0.25s. One boundary costs about two seconds on a panel below the fold and buys
+ * a table that is never half-populated, which is what two boundaries would give.
+ *
+ * `production` and `plan` are passed in rather than re-read: the page already has
+ * them, and fetching them twice to save a prop would double the cost of the two
+ * cheap reads to avoid threading one argument.
+ */
+async function TeamSupplySection({
+  production,
+  plan,
+}: {
+  production: Awaited<ReturnType<typeof getProductionState>>;
+  plan: Awaited<ReturnType<typeof getDemandPlan>>;
+}) {
+  return <TeamSupply production={production} plan={plan} handover={await getHandoverByPerson()} />;
 }
 
 /**
@@ -572,30 +587,16 @@ export default async function DashboardPage({
           conclusion. A thin queue with supply on track is a distribution problem;
           the same queue with supply behind is a sourcing one.
         */}
-        {supply ? (
-          <div className="col-span-12 lg:col-span-6">
-            <SupplyStatus production={supply.production} plan={supply.plan} />
-          </div>
-        ) : null}
-
         {/*
-          Who runs out of work first, beside how much work there is.
-
-          The supply panel named one thin person in a sentence and left the other
-          two unnamed. Side by side these answer the two halves of the same
-          question: is there enough, and is it reaching the right people.
+          Supply, cover and handover were three panels across two rows, keyed on the
+          same five people, answering one question between them: is there enough
+          work, is it reaching people, and is anybody about to run out. The reader
+          was doing the join on names.
         */}
         {supply ? (
-          <div className="col-span-12 lg:col-span-6">
-            <TeamCoverage plan={supply.plan} />
-          </div>
-        ) : null}
-
-        {/* Handover is what LEFT; coverage above is what remains to work. */}
-        {seesTeam ? (
           <div className="col-span-12">
-            <Suspense fallback={<PanelSkeleton rows={5} />}>
-              <HandoverSection />
+            <Suspense fallback={<PanelSkeleton rows={6} />}>
+              <TeamSupplySection production={supply.production} plan={supply.plan} />
             </Suspense>
           </div>
         ) : null}
