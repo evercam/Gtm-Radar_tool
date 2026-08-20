@@ -320,18 +320,34 @@ export default async function DashboardPage({
         />
         <MetricTile
           className="col-span-6 lg:col-span-3"
-          href="/records?sort=priority"
-          label="Scored"
+          href={canRoute ? '/control/routing' : '/records?sort=priority'}
+          label="Scored & routed"
           value={scored.toLocaleString()}
-          note={`of ${totalRecords.toLocaleString()} records`}
+          note={
+            unrouted > 0
+              ? `${unrouted.toLocaleString()} of ${totalRecords.toLocaleString()} still waiting`
+              : `all ${totalRecords.toLocaleString()} records`
+          }
+          tone={unrouted > 0 ? 'warning' : undefined}
         />
+        {/*
+          P1, not "Routed".
+
+          Routed read 101,284 and Scored read 101,284 — the same number in adjacent
+          tiles, because everything scored also got routed. Its only distinct fact
+          was the 10,358 unrouted, and that is the complement of Scored, so the row
+          was spending three of four tiles on one number.
+
+          P1 is a different fact and a smaller one, which is the point: it is the
+          band a seller is expected to clear this week, and 2,189 of it against 459
+          marked act-now is the gap the dashboard should provoke a question about.
+        */}
         <MetricTile
           className="col-span-6 lg:col-span-3"
-          href={canRoute ? '/control/routing' : '/records'}
-          label="Routed"
-          value={routed.toLocaleString()}
-          note={unrouted > 0 ? `${unrouted.toLocaleString()} still unrouted` : 'every record has a lane'}
-          tone={unrouted > 0 ? 'warning' : undefined}
+          href="/records?band=P1"
+          label="P1 leads"
+          value={(byBand.find((b) => b.band === 'P1')?.count ?? 0).toLocaleString()}
+          note={BAND_LABELS.P1 ?? 'highest priority'}
         />
 
         {/*

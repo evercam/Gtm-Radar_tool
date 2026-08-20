@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { statusText } from '@/lib/status-colors';
 import type { KpiSummary } from '@/lib/kpi';
 import {
   JOURNEY_STAGE_COLORS,
@@ -130,40 +131,79 @@ export default function KpiSummaryCards({
               </>
             }
           />
-          <Stat
-            label="Past SLA"
-            value={kpi.sla.breached.toLocaleString()}
-            note={`${kpi.sla.breachRate}% of ${kpi.sla.tracked.toLocaleString()} tracked`}
-            tone={kpi.sla.breachRate > 20 ? 'danger' : kpi.sla.breachRate > 5 ? 'warning' : undefined}
-          />
+          {/*
+            Nothing tracked is not zero breaches.
+
+            With no lead carrying an SLA this read "0" over "0% of 0 tracked" — a
+            confident, reassuring zero for a thing that was never measured. It is
+            the same mistake as a failed count rendering as a real one, and the
+            same rule applies: say you cannot answer rather than answering well.
+          */}
+          {kpi.sla.tracked === 0 ? (
+            <Stat label="Past SLA" value="—" note="no lead is on an SLA clock yet" />
+          ) : (
+            <Stat
+              label="Past SLA"
+              value={kpi.sla.breached.toLocaleString()}
+              note={`${kpi.sla.breachRate}% of ${kpi.sla.tracked.toLocaleString()} tracked`}
+              tone={kpi.sla.breachRate > 20 ? 'danger' : kpi.sla.breachRate > 5 ? 'warning' : undefined}
+            />
+          )}
           <Stat
             label="Time to contact"
             value={kpi.sla.medianHoursToContact !== null ? `${kpi.sla.medianHoursToContact}h` : '—'}
-            note="median, from assignment"
+            note={kpi.sla.medianHoursToContact !== null ? 'median, from assignment' : 'not measured yet'}
           />
         </div>
 
         <div className="space-y-1.5">
           <div className="text-subtle flex items-baseline justify-between text-[10px] uppercase tracking-wide">
             <span>Lead journey</span>
-            <span className="normal-case">reached · here now</span>
+            <span className="normal-case">fall · reached · here now</span>
           </div>
 
-          {funnel.map((f) => (
-            <div key={f.status} className="flex items-center gap-3">
-              <span className="w-32 shrink-0">
-                <Badge className={JOURNEY_STAGE_COLORS[f.status as JourneyStage] ?? STATUS_COLORS_SAFE}>
-                  {JOURNEY_STAGE_LABELS[f.status as JourneyStage] ?? f.status}
-                </Badge>
-              </span>
-              <ProgressBar value={f.reached} max={entered} tone="neutral" className="flex-1" />
-              <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
-                <span className="text-foreground">{f.reached.toLocaleString()}</span>
-                {/* Occupancy is the actionable half: what is sitting here now. */}
-                <span className="text-subtle"> · {f.count.toLocaleString()}</span>
-              </span>
-            </div>
-          ))}
+          {/*
+            The drop is the point, so the drop is a number.
+
+            Every stage already showed how many reached it, which means the bar
+            lengths encoded the losses and the reader had to subtract to find them.
+            A funnel exists to answer "where does it stop", and that answer was
+            arithmetic homework.
+
+            Each row now carries the fall from the PREVIOUS stage — not from the
+            top — because a stage that keeps 3% of the stage above it is the
+            bottleneck even when everything downstream also looks small against
+            111,642. Measured here, that is QUEUED: 111,642 reach RAW and 3,901
+            reach QUEUED, a 96.5% fall, and every later stage is small because of
+            it rather than on its own account.
+
+            Only falls worth acting on are shown. Labelling a 100% pass-through
+            "0% lost" is noise on a row that is working.
+          */}
+          {funnel.map((f, i) => {
+            const prev = i > 0 ? funnel[i - 1].reached : null;
+            const dropPct = prev && prev > 0 ? Math.round(((prev - f.reached) / prev) * 100) : 0;
+            return (
+              <div key={f.status} className="flex items-center gap-3">
+                <span className="w-32 shrink-0">
+                  <Badge className={JOURNEY_STAGE_COLORS[f.status as JourneyStage] ?? STATUS_COLORS_SAFE}>
+                    {JOURNEY_STAGE_LABELS[f.status as JourneyStage] ?? f.status}
+                  </Badge>
+                </span>
+                <ProgressBar value={f.reached} max={entered} tone="neutral" className="flex-1" />
+                <span className="w-16 shrink-0 text-right text-[10px] tabular-nums">
+                  {dropPct >= 5 ? (
+                    <span className={dropPct >= 50 ? statusText.danger : statusText.warning}>−{dropPct}%</span>
+                  ) : null}
+                </span>
+                <span className="w-24 shrink-0 text-right text-[11px] tabular-nums">
+                  <span className="text-foreground">{f.reached.toLocaleString()}</span>
+                  {/* Occupancy is the actionable half: what is sitting here now. */}
+                  <span className="text-subtle"> · {f.count.toLocaleString()}</span>
+                </span>
+              </div>
+            );
+          })}
 
           {lost && lost.count > 0 ? (
             <div className="flex items-center gap-3 pt-1">
