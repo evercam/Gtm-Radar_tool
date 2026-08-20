@@ -67,10 +67,25 @@ console.log('\nStock is reported beside flow, never instead of it');
   check('ready is reported', typeof st.ready === 'number', String(st.ready));
   check('exportable is reported', typeof st.exportable === 'number', String(st.exportable));
   check('neither is negative', st.ready >= 0 && st.exportable >= 0);
+  /*
+    Cover is drawn from ASSIGNABLE stock, not from ready.
+
+    This asserted ready/dailyDemand and failed on live data at 317/110 vs 2.3.
+    The code is the correct one: `assignable` is unassigned stock that some
+    person's scope actually covers, plus what is already assigned, and it
+    excludes `unassignableReady` — leads sitting in the table that no roster
+    scope can be given. Counting those as cover is the same class of mistake the
+    comment above describes, a full shelf read as a met target, one step further
+    on: runway that no one can draw from is not runway.
+
+    The assertion was never run, so it kept a stale model of the metric while the
+    metric moved on.
+  */
+  check('unassignable ready stock is reported separately', typeof st.unassignableReady === 'number', String(st.unassignableReady));
   check(
-    'cover is consistent with ready and the roster draw rate',
-    st.dailyDemand === 0 ? st.daysOfCover === 0 : Math.abs(st.daysOfCover - st.ready / st.dailyDemand) < 0.2,
-    `${st.ready} / ${st.dailyDemand} vs ${st.daysOfCover}`
+    'cover is consistent with assignable stock and the roster draw rate',
+    st.dailyDemand === 0 ? st.daysOfCover === 0 : Math.abs(st.daysOfCover - st.assignable / st.dailyDemand) < 0.2,
+    `${st.assignable} assignable / ${st.dailyDemand} vs ${st.daysOfCover} (ready ${st.ready}, unassignable ${st.unassignableReady})`
   );
 }
 
