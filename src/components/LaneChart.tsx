@@ -11,27 +11,31 @@ export interface LaneRow {
 /**
  * Where the routed work landed, as a bar per lane.
  *
- * A component because the dashboard and /control/routing both drew this, each
- * with its own copy of the markup and its own copy of the legend. Two copies of
- * a chart is how the same lane ends up two widths on two screens.
+ * A component because the dashboard and /control/routing both drew this, each with
+ * its own copy of the markup and its own copy of the legend.
  *
- * The bars follow the dataviz mark specs the hand-rolled version missed:
+ * THE LABEL SITS ABOVE THE BAR, NOT BESIDE IT
  *
- *   rounded data-ends, anchored to the baseline. The fill was a plain rectangle,
- *     so a lane holding four records and a lane holding four thousand differed
- *     only in length — nothing said which end was the measured one.
- *   a 2px surface gap around the fill, so a bar that nearly fills its track is
- *     still visibly a bar inside a track rather than a solid block.
- *   a minimum width for a non-zero count. A lane with records must never render
- *     as an empty track: zero and nearly-zero are different answers and the
- *     chart has to say so.
- *   a hover layer, which the skill asks for by default. Here it is the native
- *     title, deliberately: this renders on the server inside a page that streams,
- *     and a JS tooltip would mean making the whole panel a client component to
- *     add a number the row already shows.
+ * The first version put them on one line with a w-36 label and a w-24 value and
+ * `flex-1` between. That is 264px of fixed width before the bar gets anything, and
+ * on the dashboard this panel lives in a 4-of-12 column about 180px wide. flex-1
+ * resolved to zero and every bar rendered as its 3% minimum — four identical 8px
+ * squares where the lengths were supposed to be the whole point. It looked
+ * deliberate, which is why it survived review and only fell over when someone
+ * actually opened the page.
  *
- * Identity is never colour alone — every row carries its route and stage as text
- * beside the bar, which is also the relief the validator's contrast WARN requires.
+ * Stacking removes the constraint instead of tuning it: the track is always the
+ * full width of whatever column it is given, so the same component works in a
+ * quarter-width tile and in a full-width card without a breakpoint.
+ *
+ * The rest follows the dataviz mark specs: rounded data-ends anchored to the
+ * baseline, a 2px surface gap so a nearly-full bar still reads as a bar inside a
+ * track, and a minimum width for any non-zero count — a lane holding records must
+ * never render as an empty track, because zero and nearly-zero are different
+ * answers.
+ *
+ * Identity is never colour alone; every row names its route and stage, which is
+ * also the relief the validator's contrast WARN requires.
  */
 export default function LaneChart({
   rows,
@@ -46,7 +50,7 @@ export default function LaneChart({
   const max = Math.max(1, ...rows.map((r) => r.count));
 
   return (
-    <div className={cn('space-y-2.5', className)}>
+    <div className={cn('space-y-3', className)}>
       {rows.map((l) => {
         const lane = `${l.route}/${l.stage}`;
         const pct = total > 0 ? Math.round((l.count / total) * 100) : 0;
@@ -63,27 +67,28 @@ export default function LaneChart({
             key={lane}
             href={`/records?route=${l.route}&stage=${l.stage}`}
             prefetch={false}
-            className="group focus-visible:outline-brand flex items-center gap-3 rounded focus-visible:outline-2 focus-visible:outline-offset-2"
+            className="group focus-visible:outline-brand block rounded focus-visible:outline-2 focus-visible:outline-offset-2"
             title={`${lane} — ${l.count.toLocaleString()} record${l.count === 1 ? '' : 's'}, ${pct}% of routed`}
           >
-            <div className="w-36 shrink-0 text-[11px]">
-              <span className={cn('font-bold group-hover:underline', laneText[l.route] ?? 'text-muted')}>
-                {l.route}
+            <div className="flex items-baseline justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate">
+                <span className={cn('font-bold group-hover:underline', laneText[l.route] ?? 'text-muted')}>
+                  {l.route}
+                </span>
+                <span className="text-subtle"> / {l.stage}</span>
               </span>
-              <span className="text-subtle"> / {l.stage}</span>
+              <span className="text-foreground shrink-0 font-bold tabular-nums">
+                {l.count.toLocaleString()}
+                <span className="text-subtle ml-1 font-normal">{pct}%</span>
+              </span>
             </div>
 
             {/* The 2px inset is the surface gap; the track is the full domain. */}
-            <div className="bg-surface-raised border-border-base h-4 flex-1 overflow-hidden rounded border p-[2px]">
+            <div className="bg-surface-raised border-border-base mt-1 h-2.5 overflow-hidden rounded border p-[2px]">
               <div
-                className={cn('h-full rounded-[3px] transition-[width] duration-300', laneBar[lane] ?? 'bg-zinc-400')}
+                className={cn('h-full rounded-[2px] transition-[width] duration-300', laneBar[lane] ?? 'bg-zinc-400')}
                 style={{ width: `${width}%` }}
               />
-            </div>
-
-            <div className="text-foreground w-24 shrink-0 text-right text-[11px] font-bold tabular-nums">
-              {l.count.toLocaleString()}
-              <span className="text-subtle ml-1 font-normal">{pct}%</span>
             </div>
           </Link>
         );

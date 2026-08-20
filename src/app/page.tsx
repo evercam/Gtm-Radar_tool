@@ -419,38 +419,46 @@ export default async function DashboardPage({
           )}
         </div>
 
-        <div className="col-span-12 lg:col-span-4">
-          <SectionHeading
-            className="mb-3"
-            title="Where the work landed"
-            actions={
-              <>
-                {routedHoursAgo !== null ? (
-                  <span className="text-subtle text-xs">
-                    {routedHoursAgo < 1
-                      ? 'just now'
-                      : routedHoursAgo < 24
-                        ? `${routedHoursAgo}h ago`
-                        : `${Math.round(routedHoursAgo / 24)}d ago`}
-                  </span>
-                ) : null}
-                {canRoute ? (
-                  <Link href="/control/routing" className="text-brand underline underline-offset-2">
-                    Rules
-                  </Link>
-                ) : null}
-              </>
-            }
-          />
+        {/*
+          No SectionHeading on this column, deliberately.
 
+          It had one, and beside the eight-column heading to its left the two ran
+          together into a single line reading "Top priority leads · All records ·
+          Enrichment queue · Where the work landed · 7d ago · Rules". Two headings
+          in adjacent grid cells are one heading to the eye.
+
+          It was also duplicate titling: the Card underneath already says what this
+          is. So the card's own header carries the title, and the links that were in
+          the section heading move into its action slot, where they sit against the
+          panel they act on.
+        */}
+        <div className="col-span-12 lg:col-span-4">
           {!routingMissing && routed > 0 ? (
             <Card>
               <CardHeader
-                title="Lanes"
+                title="Where the work landed"
                 subtitle={
                   unrouted > 0
                     ? `${unrouted.toLocaleString()} record${unrouted === 1 ? '' : 's'} not yet routed`
                     : 'every record has a lane'
+                }
+                action={
+                  <div className="flex items-center gap-2">
+                    {routedHoursAgo !== null ? (
+                      <span className="text-subtle text-[10px]">
+                        {routedHoursAgo < 1
+                          ? 'just now'
+                          : routedHoursAgo < 24
+                            ? `${routedHoursAgo}h ago`
+                            : `${Math.round(routedHoursAgo / 24)}d ago`}
+                      </span>
+                    ) : null}
+                    {canRoute ? (
+                      <Link href="/control/routing" className="text-brand text-[11px] underline underline-offset-2">
+                        Rules
+                      </Link>
+                    ) : null}
+                  </div>
                 }
               />
               <LaneChart rows={byLane} total={routed} className="px-5 py-4" />
