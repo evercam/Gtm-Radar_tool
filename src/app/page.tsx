@@ -16,6 +16,8 @@ import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import MigrationRequired from '@/components/MigrationRequired';
 import PipelineRollup from '@/components/PipelineRollup';
 import BuStats from '@/components/BuStats';
+import CoverageAlert from '@/components/CoverageAlert';
+import TeamCoverage from '@/components/TeamCoverage';
 import RecordLink from '@/components/RecordLink';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
 import {
@@ -132,6 +134,19 @@ async function HandoverSection() {
  * failure and getPipelineRollup returns an empty array. Neither throws, so a catch
  * here would catch nothing.
  */
+/**
+ * Reachable leads nobody can be given, at the top of the page.
+ *
+ * Its own boundary rather than an await in the shell: getBuRollup is the read that
+ * used to blank this whole dashboard, and the reason it sits behind Suspense has
+ * not changed just because the thing it feeds became more important. It arrives a
+ * moment after the page and renders nothing at all when every unit is covered.
+ */
+async function CoverageSection() {
+  const { rows } = await getBuRollup();
+  return <CoverageAlert rows={rows} />;
+}
+
 async function BuSection() {
   const buRollup = await getBuRollup();
   return <BuStats rows={buRollup.rows} truncated={buRollup.truncated} />;
@@ -320,6 +335,23 @@ export default async function DashboardPage({
         />
 
         {/*
+          The blocker, above everything that describes the pipeline.
+
+          3,227 reachable leads sat in units with no active assignee, and the only
+          place that said so was a column of a table below the fold. A number
+          meaning "these cannot be assigned to anybody until an admin widens a
+          scope" is not a column.
+
+          No fallback: an alert that renders a skeleton is claiming there might be
+          a problem before it knows. Nothing, then either the alert or silence.
+        */}
+        <div className="col-span-12 empty:hidden">
+          <Suspense fallback={null}>
+            <CoverageSection />
+          </Suspense>
+        </div>
+
+        {/*
           ROW 2 — performance, still behind its own boundary.
 
           getKpiSummary pages the whole window (18.8 s measured) and this page used
@@ -490,8 +522,22 @@ export default async function DashboardPage({
           </div>
         ) : null}
 
-        {seesTeam ? (
+        {/*
+          Who runs out of work first, beside how much work there is.
+
+          The supply panel named one thin person in a sentence and left the other
+          two unnamed. Side by side these answer the two halves of the same
+          question: is there enough, and is it reaching the right people.
+        */}
+        {supply ? (
           <div className="col-span-12 lg:col-span-6">
+            <TeamCoverage plan={supply.plan} />
+          </div>
+        ) : null}
+
+        {/* Handover is what LEFT; coverage above is what remains to work. */}
+        {seesTeam ? (
+          <div className="col-span-12">
             <Suspense fallback={<PanelSkeleton rows={5} />}>
               <HandoverSection />
             </Suspense>
