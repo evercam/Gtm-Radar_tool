@@ -1020,21 +1020,6 @@ export interface RecordsQuery {
   /** Every lead owned by one company — an `owner_group_key` value. */
   ownerGroup?: string;
   /**
-   * Only leads that arrived within this many days.
-   *
-   * The one windowing filter, and it windows by ARRIVAL — created_at — not by any
-   * of the project's own dates. Those are the source's claims about the world and
-   * several are null; created_at is a fact about this table and is always present,
-   * which is what a date control needs to be trustworthy.
-   *
-   * A count of days rather than an instant, so "now" is read here, where a clock
-   * read is already expected. Resolving it in the caller meant a Date.now() in a
-   * component body, which react-hooks/purity correctly rejects — and it would
-   * have let the header control and the query disagree about when the window
-   * started if either was ever memoised.
-   */
-  sinceDays?: number;
-  /**
    * Include leads already sent to Apollo.
    *
    * Off by default: once a lead has been handed over it is archived, and leaving
@@ -1116,9 +1101,6 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     // the owner_group_key migration ignores the filter rather than erroring on
     // an unknown column — a stale bookmarked URL must not break the list.
     if (hasPriority && q.ownerGroup) query = query.eq('owner_group_key', q.ownerGroup);
-    if (q.sinceDays && q.sinceDays > 0) {
-      query = query.gte('created_at', new Date(Date.now() - q.sinceDays * 86_400_000).toISOString());
-    }
     if (q.search?.trim()) query = query.ilike('canonical_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
 
     // Priority-first by default — the whole point of scoring is that the top of

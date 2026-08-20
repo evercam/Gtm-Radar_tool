@@ -11,7 +11,7 @@ import { Badge, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import RecordDrawer from '@/components/RecordDrawer';
 import { resolveColumns, type RecordCellContext } from '@/components/records/columns';
-import { ColumnPicker, DateWindowPicker, ActiveFilters, DATE_WINDOWS } from '@/components/records/TableControls';
+import { ColumnPicker, ActiveFilters } from '@/components/records/TableControls';
 import RecordDetail from '@/components/RecordDetail';
 import { logEventAsync } from '@/lib/observability/events';
 
@@ -76,15 +76,6 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   // return the working list in an order nobody asked for.
   const includeExported = sp.archived === '1' || sort === 'exported';
 
-  /*
-    The arrival window. Only the day count is resolved here; getRecords turns it
-    into an instant, because reading a clock during render is impure and the lint
-    rule is right to say so.
-
-    An unknown value is dropped rather than rejected — a stale bookmark showing the
-    whole book is a small surprise, an error page is not.
-  */
-  const sinceDays = DATE_WINDOWS.find((w) => w.key === sp.since)?.days;
 
   let rows: RecordRow[] = [];
   let total = 0;
@@ -127,7 +118,6 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       includeExported,
       sort,
       search,
-      sinceDays,
     });
     rows = res.rows;
     total = res.total;
@@ -213,10 +203,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     // Carried, so clicking any filter while auditing archived leads does not
     // silently drop them back out of the list.
     archived: sp.archived,
-    // The column choice and the arrival window travel with every other filter,
-    // so a link built anywhere on this page keeps the table the reader configured.
+    // The column choice travels with every other filter, so a link built
+    // anywhere on this page keeps the table the reader configured.
     cols: sp.cols,
-    since: sp.since,
   };
 
   /*
@@ -230,7 +219,6 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   const columns = resolveColumns(sp.cols);
   const cellContext: RecordCellContext = { hrefFor: (id) => qs(base, { record: id }) };
   const hrefForCols = (keys: string[]) => qs(base, { cols: keys.length ? keys.join(',') : undefined, page: undefined });
-  const hrefForWindow = (key: string | undefined) => qs(base, { since: key, page: undefined });
   const hrefWithout = (key: string) => qs(base, { [key]: undefined, page: undefined });
 
   /*
@@ -307,7 +295,6 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       <div className="border-border-base mb-3 flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <ActiveFilters filters={activeFilters} hrefWithout={hrefWithout} />
         <div className="ml-auto flex items-center gap-2">
-          <DateWindowPicker current={sp.since} hrefForWindow={hrefForWindow} />
           <ColumnPicker chosen={columns} hrefForCols={hrefForCols} />
         </div>
       </div>

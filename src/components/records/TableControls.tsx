@@ -4,8 +4,15 @@ import { cn } from '@/lib/cn';
 import { RECORD_COLUMNS, type RecordColumn } from './columns';
 
 /**
- * The two controls Ads Manager is actually built around: a column chooser and a
- * date window.
+ * The column chooser, and the chips showing what is narrowing the list.
+ *
+ * A date window belongs here too and is deliberately absent. It was built, and it
+ * returned "No records match these filters" against a table holding 111,242 of
+ * them: `is(apollo_exported_at, null)` + `gte(created_at, …)` + an exact count
+ * takes over eight seconds and Postgres cancels it. The rows come back in 754ms —
+ * it is only the COUNT that cannot be had. Shipping the control would have meant
+ * shipping a filter that reports an empty book, so it comes back when the count
+ * can be made optional, not before.
  *
  * WHY THESE ARE LINKS AND NOT A CLIENT COMPONENT
  *
@@ -149,42 +156,6 @@ export function ColumnPicker({
           None
         </Link>
       </div>
-    </Dropdown>
-  );
-}
-
-/**
- * The arrival window.
- *
- * Windows by `created_at` — when the lead reached this table — not by any date
- * the source claims about the project. Several of those are null, and a control
- * that silently drops every undated record is a control that lies about the size
- * of the book.
- */
-export const DATE_WINDOWS = [
-  { key: '7', label: 'Last 7 days', days: 7 },
-  { key: '30', label: 'Last 30 days', days: 30 },
-  { key: '90', label: 'Last 90 days', days: 90 },
-] as const;
-
-export function DateWindowPicker({
-  current,
-  hrefForWindow,
-}: {
-  current: string | undefined;
-  hrefForWindow: (key: string | undefined) => string;
-}) {
-  const active = DATE_WINDOWS.find((w) => w.key === current);
-  return (
-    <Dropdown label="Arrived" summary={active ? active.label : 'All time'} align="right">
-      <Item href={hrefForWindow(undefined)} active={!active}>
-        All time
-      </Item>
-      {DATE_WINDOWS.map((w) => (
-        <Item key={w.key} href={hrefForWindow(w.key)} active={active?.key === w.key}>
-          {w.label}
-        </Item>
-      ))}
     </Dropdown>
   );
 }
