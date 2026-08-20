@@ -123,7 +123,7 @@ export default function GemUploadPanel({ dbReady }: { dbReady: boolean }) {
         </p>
       </div>
 
-      {error ? <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-xs text-rose-600 dark:text-rose-400">{error}</p> : null}
 
       {files.length > 0 ? (
         <div className="mt-4">

@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { toastTone } from '@/lib/status-colors';
 
 /**
  * Toasts replace the inline "saved / failed" text that every panel used to
@@ -60,15 +61,9 @@ function ToastItem({ toast, onDone }: { toast: Toast; onDone: () => void }) {
     return () => clearTimeout(timer);
   }, [onDone]);
 
-  const tones: Record<ToastTone, string> = {
-    success: 'border-l-success',
-    error: 'border-l-danger',
-    info: 'border-l-info',
-  };
-
   return (
     <div
-      className={`animate-rise-in border-border-base bg-surface pointer-events-auto rounded-[12px] border border-l-4 px-4 py-3 shadow-[var(--shadow-overlay)] ${tones[toast.tone]}`}
+      className={`animate-rise-in border-border-base bg-surface pointer-events-auto rounded-[12px] border border-l-4 px-4 py-3 shadow-[var(--shadow-overlay)] ${toastTone[toast.tone]}`}
     >
       <div className="flex items-start justify-between gap-3">
         <p className="text-foreground text-sm">{toast.message}</p>

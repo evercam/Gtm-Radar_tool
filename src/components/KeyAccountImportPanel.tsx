@@ -103,7 +103,7 @@ export default function KeyAccountImportPanel({ dbReady }: { dbReady: boolean })
         </p>
       </div>
 
-      {error ? <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-xs text-rose-600 dark:text-rose-400">{error}</p> : null}
 
       {files.length > 0 ? (
         <div className="mt-4">
@@ -147,7 +147,7 @@ export default function KeyAccountImportPanel({ dbReady }: { dbReady: boolean })
                   <span className="font-medium text-foreground">{f.file}</span>: parsed {f.parsed}, imported{' '}
                   {f.normalized}
                   {f.failed ? `, skipped ${f.failed}` : ''}
-                  {f.error ? <span className="text-red-600 dark:text-red-400"> — {f.error}</span> : null}
+                  {f.error ? <span className="text-rose-600 dark:text-rose-400"> — {f.error}</span> : null}
                 </li>
               ))}
             </ul>

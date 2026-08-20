@@ -55,7 +55,7 @@ export default function GemResult({ response }: { response: GemUploadResponse })
                   ) : null}
                   {response.persisted ? <td className="px-3 py-1.5 text-muted">{r.updated ?? '—'}</td> : null}
                   {r.error ? (
-                    <td className="px-3 py-1.5 text-red-600 dark:text-red-400" colSpan={2}>
+                    <td className="px-3 py-1.5 text-rose-600 dark:text-rose-400" colSpan={2}>
                       {r.error}
                     </td>
                   ) : null}

@@ -37,6 +37,7 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { sep } from 'node:path';
 import { join } from 'node:path';
 
 let passed = 0,
@@ -205,7 +206,7 @@ check(
   !/className \?\? tones?\[/.test(uiCode),
   'className ?? tones[...] is back — a caller passing a margin would drop the colour'
 );
-check('Badge applies its tone unconditionally', /tones\[tone\],[\s]*className/.test(ui));
+check('Badge applies its tone unconditionally', /badgeTone\[tone\],[\s]*className/.test(ui));
 const badgeSites = files.filter((f) => /<Badge[^>]*className=/.test(readFileSync(f, 'utf8')));
 check(
   'every Badge that takes a className still resolves a tone',
@@ -238,6 +239,90 @@ for (const f of files) {
   if (hits) dead.push(`${f}: ${[...new Set(hits)].join(', ')}`);
 }
 check('no spacing or size utility carries a trailing word', dead.length === 0, dead.join(' | '));
+
+/*
+  The same damage, other shape: an opacity modifier glued to a spacing utility.
+
+  SupabaseNotConfigured carried `px-1 py-0.5/10` four times — the /10 from a
+  neighbouring `bg-black/10` landed on the padding, and padding has no opacity, so
+  the class died and those code spans lost their vertical padding. The trailing-word
+  guard above did not see it because there is no trailing word.
+
+  Only SPACING prefixes are checked: w-1/2, w-2/3 and basis fractions are real and
+  in use, so size prefixes stay out of this one.
+*/
+const SPACING_ONLY = 'p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y';
+const DEAD_OPACITY = new RegExp(String.raw`\b(?:${SPACING_ONLY})-\d+(?:\.\d+)?\/\d+`, 'g');
+const deadOpacity = [];
+for (const f of files) {
+  const hits = readFileSync(f, 'utf8').match(DEAD_OPACITY);
+  if (hits) deadOpacity.push(`${f}: ${[...new Set(hits)].join(', ')}`);
+}
+check('no spacing utility carries an opacity modifier', deadOpacity.length === 0, deadOpacity.join(' | '));
+
+console.log('\nStatus colour has exactly one home');
+/*
+  ProductOS rule 5: every component that renders a status imports its colours from
+  one module, so a tone cannot mean two things in two panels.
+
+  It had already drifted twice here. EnrichPanel painted "good" on the -100/-800
+  ramp while Badge used -50/-700, and inside components/ui itself Badge and
+  StatusDot carried raw palette while ProgressBar and Toast — same file — expressed
+  the same four tones as --success/--warning/--danger. Nothing was broken; the app
+  simply had two vocabularies for one idea, and no way to notice.
+
+  So the status ramp is banned everywhere except lib/status-colors.ts. Chart hues
+  and one-off illustration colours are not status and are not covered by this.
+*/
+const STATUS_RAMP = /\b(?:bg|text|border)-(?:emerald|amber|rose|sky|green|red|yellow|orange)-\d{2,3}\b/;
+const CANON = 'status-colors.ts';
+const strays = files
+  .filter((f) => !f.endsWith(CANON))
+  .filter((f) => STATUS_RAMP.test(readFileSync(f, 'utf8')));
+/*
+  A ratchet, not a clean pass. Twenty-one files still name a status hue directly,
+  and converting them is a judgement per call site — which shade pair, whether the
+  colour is text or a surface, whether the thing being coloured is even a status.
+  Doing that blind is how you ship a contrast regression.
+
+  So the rule binds NEW code: nothing outside this list may name a status hue, and
+  the list may only shrink. Deleting a name from it is the definition of done for
+  that file. The count is asserted too, so converting a file without crossing it
+  off fails just as loudly as adding one — the list cannot rot into a permanent
+  exemption nobody reads.
+*/
+const STATUS_HUE_DEBT = [
+  'src/app/accounts/[key]/page.tsx',
+  'src/app/accounts/page.tsx',
+  'src/app/admin/settings/page.tsx',
+  'src/app/control/enrichment/page.tsx',
+  'src/app/control/logs/page.tsx',
+  'src/app/control/routing/page.tsx',
+  'src/app/page.tsx',
+  'src/components/ApplyRoutingButton.tsx',
+  'src/components/EnrichPanel.tsx',
+  'src/components/EnrichmentRunner.tsx',
+  'src/components/GemLocalPanel.tsx',
+  'src/components/GemUploadPanel.tsx',
+  'src/components/KeyAccountImportPanel.tsx',
+  'src/components/MigrationRequired.tsx',
+  'src/components/PipelineRollup.tsx',
+  'src/components/SourceSearch.tsx',
+  'src/components/gem/GemResult.tsx',
+  'src/components/settings/CredentialForm.tsx',
+  'src/components/settings/PolicyEditor.tsx',
+  'src/components/settings/TestConnectionButton.tsx',
+  'src/components/shell/Sidebar.tsx',
+];
+const norm = (f) => f.split(sep).join('/');
+const unlisted = strays.map(norm).filter((f) => !STATUS_HUE_DEBT.includes(f));
+const cleaned = STATUS_HUE_DEBT.filter((f) => !strays.map(norm).includes(f));
+check('no NEW component hardcodes a status hue', unlisted.length === 0, unlisted.join(', '));
+check(
+  'the debt list has no stale entries',
+  cleaned.length === 0,
+  `${cleaned.join(', ')} no longer needs an exemption — delete it from STATUS_HUE_DEBT`
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

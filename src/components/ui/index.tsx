@@ -12,6 +12,14 @@
 
 import type { ReactNode, HTMLAttributes, ButtonHTMLAttributes } from 'react';
 import { cn } from '@/lib/cn';
+import {
+  badgeTone,
+  statusDot,
+  progressTone,
+  type BadgeTone,
+  type StatusDotTone,
+  type ProgressTone,
+} from '@/lib/status-colors';
 
 /* -------------------------------------------------------------------------- */
 /* Card                                                                        */
@@ -118,20 +126,10 @@ export function Badge({
   title,
 }: {
   children: ReactNode;
-  tone?: 'neutral' | 'success' | 'warning' | 'danger' | 'info' | 'brand';
+  tone?: BadgeTone;
   className?: string;
   title?: string;
 }) {
-  const tones: Record<string, string> = {
-    neutral: 'bg-surface-raised text-body border-border-base',
-    success:
-      'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-900',
-    warning:
-      'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-900',
-    danger: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:border-rose-900',
-    info: 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:border-sky-900',
-    brand: 'bg-brand/10 text-brand border-brand/30',
-  };
   return (
     <span
       title={title}
@@ -154,7 +152,7 @@ export function Badge({
           chrome-token commit applied everywhere else in this file; this line was
           the one it missed.
         */
-        tones[tone],
+        badgeTone[tone],
         className
       )}
     >
@@ -201,14 +199,8 @@ export function Chip({
 }
 
 /** Live/idle indicator. Deliberately tiny — it reads as state, not decoration. */
-export function StatusDot({ tone = 'idle' }: { tone?: 'ok' | 'warn' | 'bad' | 'idle' }) {
-  const tones = {
-    ok: 'bg-emerald-400',
-    warn: 'bg-amber-400',
-    bad: 'bg-rose-400',
-    idle: 'bg-border-strong',
-  };
-  return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', tones[tone])} />;
+export function StatusDot({ tone = 'idle' }: { tone?: StatusDotTone }) {
+  return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', statusDot[tone])} />;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -330,17 +322,10 @@ export function ProgressBar({
 }: {
   value: number;
   max?: number;
-  tone?: 'brand' | 'success' | 'warning' | 'danger' | 'neutral';
+  tone?: ProgressTone;
   className?: string;
 }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
-  const tones: Record<string, string> = {
-    brand: 'bg-brand',
-    success: 'bg-success',
-    warning: 'bg-warning',
-    danger: 'bg-danger',
-    neutral: 'bg-border-strong',
-  };
   return (
     <div
       className={cn('bg-surface-raised border-border-base h-1.5 overflow-hidden rounded-full border', className)}
@@ -350,7 +335,7 @@ export function ProgressBar({
       aria-valuemax={100}
     >
       <div
-        className={cn('h-full rounded-full transition-[width] duration-300', tones[tone])}
+        className={cn('h-full rounded-full transition-[width] duration-300', progressTone[tone])}
         style={{ width: `${pct}%` }}
       />
     </div>

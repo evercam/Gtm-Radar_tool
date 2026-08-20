@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { provenanceChip } from '@/lib/status-colors';
 
 interface EnrichRecord {
   id?: string | null; // when set + Supabase configured, enrichment persists to this row
@@ -93,12 +95,12 @@ const TIMING_TONE: Record<string, 'success' | 'info' | 'neutral' | 'danger'> = {
   too_late: 'danger',
 };
 
-const ORIGIN_BADGE: Record<string, string> = {
-  source: 'bg-surface-raised text-muted',
-  claude: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  apollo: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  gleif: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-};
+/*
+  Origins are told apart by their name, not by a hue — see provenanceChip in
+  status-colors.ts for the reasoning. apollo was emerald, the same green that
+  means "success" on every badge in the app, so a column of applied fields read
+  as a column of good news when it was only a list of where values came from.
+*/
 
 const FIELD_LABEL: Record<string, string> = {
   company_name_raw: 'Company',
@@ -274,7 +276,7 @@ export default function EnrichPanel({ record }: { record: EnrichRecord }) {
           <ul className="mt-2 space-y-1.5">
             {applied.map((f) => (
               <li key={f.field} className="flex items-center gap-2 text-sm">
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${ORIGIN_BADGE[f.origin]}`}>
+                <span className={cn('rounded border px-1.5 py-0.5 text-[10px] font-medium', provenanceChip)}>
                   {f.origin}
                 </span>
                 <span className="text-muted">{FIELD_LABEL[f.field] ?? f.field}:</span>
