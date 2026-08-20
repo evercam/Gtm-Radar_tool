@@ -276,9 +276,17 @@ console.log('\nStatus colour has exactly one home');
 */
 const STATUS_RAMP = /\b(?:bg|text|border)-(?:emerald|amber|rose|sky|green|red|yellow|orange)-\d{2,3}\b/;
 const CANON = 'status-colors.ts';
-const strays = files
-  .filter((f) => !f.endsWith(CANON))
-  .filter((f) => STATUS_RAMP.test(readFileSync(f, 'utf8')));
+/*
+  Comments stripped, for the third time in this file and the same reason each
+  time: the comment that explains a banned pattern has to quote it. The Callout
+  docblock says the fifth copy "had drifted to dark:bg-amber-950/30", and that
+  sentence made components/ui report itself.
+*/
+const stripped = (f) =>
+  readFileSync(f, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+const strays = files.filter((f) => !f.endsWith(CANON)).filter((f) => STATUS_RAMP.test(stripped(f)));
 /*
   A ratchet, not a clean pass. Twenty-one files still name a status hue directly,
   and converting them is a judgement per call site — which shade pair, whether the
@@ -302,10 +310,6 @@ const STATUS_HUE_DEBT = [
   'src/components/ApplyRoutingButton.tsx',
   'src/components/EnrichPanel.tsx',
   'src/components/EnrichmentRunner.tsx',
-  'src/components/GemLocalPanel.tsx',
-  'src/components/GemUploadPanel.tsx',
-  'src/components/KeyAccountImportPanel.tsx',
-  'src/components/MigrationRequired.tsx',
   'src/components/PipelineRollup.tsx',
   'src/components/SourceSearch.tsx',
   'src/components/gem/GemResult.tsx',

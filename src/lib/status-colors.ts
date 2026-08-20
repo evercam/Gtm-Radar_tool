@@ -112,8 +112,37 @@ export type StatusTextTone = keyof typeof statusText;
  */
 export const calloutTone = {
   warning:
-    'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200',
-  danger: 'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200',
+    'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300',
+  danger: 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300',
+} as const;
+
+/**
+ * The heading inside a callout, one shade stronger than its body.
+ *
+ * Kept as its own entry rather than a `font-semibold` on the body colour: at
+ * these tints, weight alone does not separate a title from the paragraph under
+ * it, and MigrationRequired had already reached for -900/-200 by hand to get
+ * there. Now it is the same reach everywhere.
+ */
+export const calloutTitleTone = {
+  warning: 'text-amber-900 dark:text-amber-200',
+  danger: 'text-rose-900 dark:text-rose-200',
+} as const;
+
+/** Inline code inside a callout — a tint of its own surface, not a grey. */
+export const calloutCodeTone = {
+  warning: 'bg-amber-100 dark:bg-amber-900/50',
+  danger: 'bg-rose-100 dark:bg-rose-900/50',
 } as const;
 
 export type CalloutTone = keyof typeof calloutTone;
+
+/**
+ * A destructive affordance that only colours on hover.
+ *
+ * "remove" links sit at rest in muted grey and turn red under the cursor, so the
+ * colour is an answer to "what will this do", not a permanent alarm in a list of
+ * files. Its own entry because statusText carries no hover: prefix, and writing
+ * one at the call site is how the red/rose split happened in the first place.
+ */
+export const dangerHoverText = 'hover:text-rose-600 dark:hover:text-rose-400';

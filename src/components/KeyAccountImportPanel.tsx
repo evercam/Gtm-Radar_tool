@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { Callout } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { statusText } from '@/lib/status-colors';
 
 interface FileResult {
   file: string;
@@ -60,10 +63,10 @@ export default function KeyAccountImportPanel({ dbReady }: { dbReady: boolean })
   return (
     <div className="rounded-lg border border-border-base bg-surface p-5">
       {!dbReady ? (
-        <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300">
+        <Callout className="mb-4">
           Supabase not configured — imports are parsed and previewed but not saved. Once the DB is up, the same import
           persists to <code>canonical_projects</code> as <code>account</code> records.
-        </div>
+        </Callout>
       ) : null}
 
       <div
@@ -103,7 +106,7 @@ export default function KeyAccountImportPanel({ dbReady }: { dbReady: boolean })
         </p>
       </div>
 
-      {error ? <p className="mt-3 text-xs text-rose-600 dark:text-rose-400">{error}</p> : null}
+      {error ? <p className={cn('mt-3 text-xs', statusText.danger)}>{error}</p> : null}
 
       {files.length > 0 ? (
         <div className="mt-4">
@@ -147,7 +150,7 @@ export default function KeyAccountImportPanel({ dbReady }: { dbReady: boolean })
                   <span className="font-medium text-foreground">{f.file}</span>: parsed {f.parsed}, imported{' '}
                   {f.normalized}
                   {f.failed ? `, skipped ${f.failed}` : ''}
-                  {f.error ? <span className="text-rose-600 dark:text-rose-400"> — {f.error}</span> : null}
+                  {f.error ? <span className={statusText.danger}> — {f.error}</span> : null}
                 </li>
               ))}
             </ul>

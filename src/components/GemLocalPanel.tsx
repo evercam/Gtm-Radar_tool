@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Callout } from '@/components/ui';
 import GemResult, { type GemUploadResponse } from '@/components/gem/GemResult';
 
 interface LocalFile {
@@ -104,9 +105,9 @@ export default function GemLocalPanel({ initialDir, initialFiles, initialMessage
       </div>
 
       {listMsg ? (
-        <p className="mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300">
+        <Callout className="mt-3">
           {listMsg} Set <code>GEM_DATA_DIR</code> in <code>.env.local</code> to point at your GEM export folder.
-        </p>
+        </Callout>
       ) : null}
 
       {files.length > 0 ? (

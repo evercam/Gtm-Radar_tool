@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import {
   Badge,
   Button,
+  Callout,
+  CalloutCode,
   Card,
   CardBody,
   CardHeader,
@@ -280,6 +282,25 @@ export default function DesignGuidePage() {
               </TBody>
             </Table>
           </TableShell>
+        </div>
+      </Section>
+
+      <Section
+        title="Callout"
+        note="The not-set-up / degraded banner. Five components wrote this by hand; one had already drifted."
+      >
+        <div className="space-y-3">
+          <Callout>
+            An inline strip, <CalloutCode>size=&quot;sm&quot;</CalloutCode> — what a panel puts above its own controls.
+          </Callout>
+          <Callout tone="danger">The same strip in danger, for a state that has already failed.</Callout>
+          <Callout size="md" title="A titled block">
+            <p>
+              <CalloutCode>size=&quot;md&quot;</CalloutCode> replaces a whole page&apos;s content when the page cannot
+              work at all. The title slot is one shade stronger than the body — at these tints, weight alone does not
+              separate them.
+            </p>
+          </Callout>
         </div>
       </Section>
 

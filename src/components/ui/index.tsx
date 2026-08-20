@@ -14,6 +14,10 @@ import type { ReactNode, HTMLAttributes, ButtonHTMLAttributes } from 'react';
 import { cn } from '@/lib/cn';
 import {
   badgeTone,
+  calloutTone,
+  calloutTitleTone,
+  calloutCodeTone,
+  type CalloutTone as CalloutToneName,
   statusDot,
   progressTone,
   type BadgeTone,
@@ -449,4 +453,67 @@ export function THead({ children }: { children: ReactNode }) {
 
 export function TBody({ children }: { children: ReactNode }) {
   return <tbody className="divide-border-base divide-y">{children}</tbody>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Callout                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The "this is not set up / this is degraded" banner.
+ *
+ * Five components had written this box by hand. Four shared one class string
+ * exactly; the fifth had drifted to dark:bg-amber-950/30 against the others' /40,
+ * which is invisible in review and permanent once shipped. That is the whole case
+ * for a component: not that the box is hard to write, but that writing it five
+ * times guarantees five slightly different boxes.
+ *
+ * `size` is real density, not decoration. `sm` is the inline strip a panel puts
+ * above its own controls; `md` is the block that replaces a whole page's content
+ * when the page cannot work at all.
+ */
+export function Callout({
+  tone = 'warning',
+  size = 'sm',
+  title,
+  children,
+  className,
+}: {
+  tone?: CalloutToneName;
+  size?: 'sm' | 'md';
+  title?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'border',
+        size === 'sm' ? 'rounded px-3 py-2 text-xs' : 'rounded-lg p-5 text-sm',
+        calloutTone[tone],
+        className
+      )}
+    >
+      {title ? (
+        <p className={cn('font-semibold', size === 'sm' ? 'text-xs' : 'text-sm', calloutTitleTone[tone])}>{title}</p>
+      ) : null}
+      <div className={title ? 'mt-1' : undefined}>{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Inline code inside a Callout.
+ *
+ * A plain <code> inherits the page's grey chip, which on an amber field reads as
+ * a hole punched in the banner. This tints it from the banner's own ramp.
+ */
+export function CalloutCode({
+  tone = 'warning',
+  children,
+}: {
+  tone?: CalloutToneName;
+  children: ReactNode;
+}) {
+  return <code className={cn('rounded px-1.5 py-0.5 font-mono', calloutCodeTone[tone])}>{children}</code>;
 }
