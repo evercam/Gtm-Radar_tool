@@ -18,7 +18,6 @@ import PipelineRollup from '@/components/PipelineRollup';
 import BuStats from '@/components/BuStats';
 import CoverageAlert from '@/components/CoverageAlert';
 import TeamCoverage from '@/components/TeamCoverage';
-import RecordLink from '@/components/RecordLink';
 import { BAND_COLORS, BAND_LABELS, TIER_COLORS, TIER_LABELS } from '@/lib/semantics';
 import {
   Badge,
@@ -239,6 +238,37 @@ export default async function DashboardPage({
   const unrouted = totalRecords - routed;
 
   /*
+    Is the top of the queue actually ranked, or just tied?
+
+    The eight rows this replaced were identical in band, score, source and BU. That
+    is not a rendering accident — it means the score saturates: once a lead is
+    pre-construction, in a core vertical, with a contact on file, it lands on the
+    same number as every other lead that clears those same gates. Ordering within
+    the tie is whatever the database returned.
+
+    Worth saying because nothing else on the page can: the band cards show 2,189
+    P1s and the tile links to them, but neither reveals that the first eight are
+    indistinguishable to the ranker.
+
+    Silent when the queue is genuinely ranked — a note that always appears is a
+    note nobody reads.
+  */
+  const queueNote = (() => {
+    if (topLeads.length < 3) return null;
+    const scores = new Set(topLeads.map((l) => l.priority_score));
+    const sources = new Set(topLeads.map((l) => l.source_key));
+    if (scores.size > 1 && sources.size > 1) return null;
+    const parts: string[] = [];
+    if (scores.size === 1) {
+      parts.push(`the top ${topLeads.length} are all tied at ${topLeads[0].priority_score}`);
+    }
+    if (sources.size === 1) {
+      parts.push(`${scores.size === 1 ? 'and all from' : `the top ${topLeads.length} all come from`} ${[...sources][0]}`);
+    }
+    return `${parts.join(' ')} — the ranking is not separating them, so the order within is arbitrary.`;
+  })();
+
+  /*
     THE GRID BUDGET — 12 columns, and tile size IS the hierarchy.
 
       row 1   four operational tiles                    3 + 3 + 3 + 3
@@ -443,26 +473,30 @@ export default async function DashboardPage({
                 ))}
               </div>
 
-              {topLeads.length > 0 ? (
-                <Card className="overflow-hidden">
-                  <ul className="divide-border-base divide-y">
-                    {topLeads.map((lead) => (
-                      <li key={lead.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                        <Badge className={BAND_COLORS[lead.priority_band ?? 'P4']}>
-                          {lead.priority_band} · {lead.priority_score}
-                        </Badge>
-                        <span className="text-foreground min-w-0 flex-1 truncate font-medium">
-                          <RecordLink id={lead.id}>{lead.canonical_name}</RecordLink>
-                        </span>
-                        <span className="text-muted hidden shrink-0 text-xs sm:block">
-                          {lead.priority_reasons?.slice(0, 2).join(' · ')}
-                        </span>
-                        <span className="text-subtle shrink-0 text-xs">{lead.source_key}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-              ) : null}
+              {/*
+                The list of leads that used to be here is gone, and what it
+                accidentally revealed is here instead.
+
+                It rendered eight rows of band, score, the first two priority
+                reasons, and source. Measured against live data, every one of those
+                four fields held ONE distinct value across all eight rows: P1, 91,
+                "pre-construction — prime window · N MW", gem_energy_tracker. The
+                only field that varied was vertical, which it did not show. And
+                slice(0, 2) took the two least discriminating fragments of the
+                reason string, discarding "strategic ICP", "direct contact on file"
+                and "fresh (last 30 days)" — the parts that distinguish a lead.
+
+                A list exists to help someone choose. That one offered no basis for
+                choosing, and choosing is /records' job now that it has a column
+                picker and thirteen filters — the P1 tile above links straight
+                there.
+
+                What is worth saying is the degeneracy itself: if the top of the
+                queue is an N-way tie from a single source, "top priority" is
+                arbitrary among them and that is a scoring problem, not a display
+                one. Said only when it is true.
+              */}
+              {queueNote ? <p className="text-subtle mt-3 text-[11px]">{queueNote}</p> : null}
             </>
           )}
         </div>
