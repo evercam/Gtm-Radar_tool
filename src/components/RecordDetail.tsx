@@ -244,6 +244,47 @@ export default function RecordDetail({ r }: { r: CanonicalProjectRow }) {
             ) : null}
           </div>
         ) : null}
+
+        {/*
+          Why this person, not just who.
+
+          A name and a title say nothing about whether they still work there or
+          whether they are three states away, and both were being decided in
+          memory and thrown away. The specific failure that motivated the matcher —
+          a Project Director who left in March outranking a current site manager in
+          the right state — was invisible on the record.
+
+          The reasons sit in the title attribute rather than on the page: the
+          verdict is a check on a judgement, wanted when someone doubts the
+          contact, and not worth six lines of prose on a record they are about to
+          call. `unknown` renders as neutral, never as a warning — it means the
+          reveal carried no location, which is not the contact's fault.
+        */}
+        {r.contact_match_confidence ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2" title={(r.contact_match_reasons ?? []).join(' · ')}>
+            {r.contact_employment_status === 'current' ? (
+              <Badge tone="success">still there</Badge>
+            ) : r.contact_employment_status === 'unknown' ? (
+              <Badge>employment unconfirmed</Badge>
+            ) : null}
+            {r.contact_geo_match === 'same_state' ? (
+              <Badge tone="success">same state{r.contact_state ? ` · ${r.contact_state}` : ''}</Badge>
+            ) : r.contact_geo_match === 'nearby' ? (
+              <Badge tone="info">nearby{r.contact_state ? ` · ${r.contact_state}` : ''}</Badge>
+            ) : r.contact_geo_match === 'distant' ? (
+              <Badge tone="warning">{r.contact_state ? `${r.contact_state} — far from site` : 'far from site'}</Badge>
+            ) : (
+              <Badge>location unknown</Badge>
+            )}
+            {r.contact_job_change_signal ? <Badge tone="warning">{r.contact_job_change_signal}</Badge> : null}
+            {/*
+              The switchboard case, said plainly. This is a main line, nobody has
+              picked up a name for it, and a seller who dials it expecting a direct
+              line will waste the call being transferred.
+            */}
+            {r.contact_match_confidence === 'low' ? <Badge tone="warning">weak match — verify before calling</Badge> : null}
+          </div>
+        ) : null}
       </Section>
 
       <Section title="Sales intelligence">

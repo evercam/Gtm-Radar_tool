@@ -1,5 +1,6 @@
 import 'server-only';
 import type { EnrichedContact } from './types';
+import type { ContactFacts } from './contactMatch';
 import { readSecret } from '@/lib/crypto/store';
 import { suggestCompanyAliases } from './companyAliases';
 import { readRevealCache, writeRevealCache } from './revealCache';
@@ -49,7 +50,94 @@ interface ApolloPerson {
   email_status?: string | null;
   linkedin_url?: string | null;
   phone_numbers?: Array<{ sanitized_number?: string | null; raw_number?: string | null }>;
-  organization?: { phone?: string | null } | null;
+  organization?: { id?: string | null; name?: string | null; phone?: string | null } | null;
+  organization_id?: string | null;
+
+  /*
+    Everything below arrives on the `people/match` response and used to be thrown
+    away. It is not a second call and not a second credit — it is the same body,
+    parsed further. Where the contact lives and whether they still work there were
+    already being bought; only the parse was missing.
+
+    Marked optional throughout because `api_search` returns none of it: that
+    endpoint reports `has_state: true` and no state. A contact that has not been
+    revealed therefore has no facts to judge, which is the reason the ranking
+    reveals first and scores second.
+  */
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  /** Apollo's note of when it last touched the record. Stale data ages out of trust. */
+  last_refreshed_at?: string | null;
+  departments?: string[] | null;
+  subdepartments?: string[] | null;
+  seniority?: string | null;
+  functions?: string[] | null;
+  employment_history?: Array<{
+    organization_id?: string | null;
+    organization_name?: string | null;
+    title?: string | null;
+    current?: boolean | null;
+    start_date?: string | null;
+    end_date?: string | null;
+  }> | null;
+}
+
+/**
+ * The revealed person, in the shape the matcher reads.
+ *
+ * A translation layer rather than a passthrough, because contactMatch.ts is pure
+ * and must not learn Apollo's field names — and because those names are the part
+ * of this least confirmed by evidence. The reveal cache stores four columns, so
+ * there is no stored sample of a `people/match` body to read, and confirming the
+ * shape costs a credit. Hence `logPersonKeys` below: the first reveal of a run
+ * prints what actually arrived, so the mapping is checked against reality rather
+ * than against documentation.
+ *
+ * Coordinates are read if present and expected to be absent. Apollo locates a
+ * person by city and state, not by point, so distance refines a ranking it cannot
+ * drive — geoMatch already degrades to `unknown` rather than to `distant`.
+ */
+export function personFacts(p: ApolloPerson): ContactFacts {
+  const coord = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const rec = p as unknown as Record<string, unknown>;
+  return {
+    title: p.title ?? null,
+    state: p.state ?? null,
+    city: p.city ?? null,
+    country: p.country ?? null,
+    latitude: coord(rec.latitude),
+    longitude: coord(rec.longitude),
+    lastRefreshedAt: p.last_refreshed_at ?? null,
+    employment: (p.employment_history ?? []).map((e) => ({
+      organizationId: e.organization_id ?? null,
+      organizationName: e.organization_name ?? null,
+      title: e.title ?? null,
+      current: e.current ?? null,
+      startDate: e.start_date ?? null,
+      endDate: e.end_date ?? null,
+    })),
+  };
+}
+
+/*
+  Once per process, not once per reveal.
+
+  A run reveals up to a few dozen people and the point is to see the field list,
+  not to see it forty times — a log that repeats is a log nobody reads. Reset only
+  by a new lambda, which is exactly the cadence wanted: the first reveal after a
+  deploy reports, the rest stay quiet.
+*/
+let loggedPersonKeys = false;
+function logPersonKeys(person: ApolloPerson): void {
+  if (loggedPersonKeys) return;
+  loggedPersonKeys = true;
+  const keys = Object.keys(person as unknown as Record<string, unknown>).sort();
+  const history = person.employment_history?.[0];
+  console.info(
+    `Apollo people/match keys: ${keys.join(', ')}` +
+      (history ? ` | employment_history[0]: ${Object.keys(history).sort().join(', ')}` : ' | employment_history: absent')
+  );
 }
 
 export async function isApolloConfigured(): Promise<boolean> {
@@ -268,6 +356,13 @@ export async function apolloRevealContacts(
         phone: hit.phone ?? c.phone,
         linkedin_url: hit.linkedinUrl ?? c.linkedin_url,
         hasEmail: Boolean(hit.email) || c.hasEmail,
+        /*
+          The cache holds four columns and none of them is location or employment,
+          so a cached contact reaches the matcher with no facts and scores as
+          `unknown` — not as clean. That is the honest reading of what we stored,
+          and it degrades a ranking rather than corrupting it. Widening the cache
+          to carry the rest is the fix; until then this is deliberately unset.
+        */
       };
       if (hit.email) revealed += 1;
       continue;
@@ -303,6 +398,7 @@ export async function apolloRevealContacts(
       }
 
       const { person } = (await res.json()) as { person?: ApolloPerson | null };
+      if (person) logPersonKeys(person);
       if (!person) {
         // A 200 with nothing in it. Apollo accepted the call and had no record
         // to return — which is a different problem from a rejected call, and
@@ -330,6 +426,7 @@ export async function apolloRevealContacts(
         linkedin_url: person.linkedin_url ?? c.linkedin_url,
         hasEmail: Boolean(email) || c.hasEmail,
         emailStatus: person.email_status ?? c.emailStatus ?? null,
+        facts: personFacts(person),
       };
       if (email) revealed += 1;
       await writeRevealCache(

@@ -245,6 +245,21 @@ export interface CanonicalProjectRow {
   email_verified: boolean;
   email_confidence: number | null;
   email_validation_source: string | null;
+  /*
+    Why the contact on this row is the one to call. Written by the enrichment
+    ranking; see lib/enrich/contactMatch.ts. All nullable, because every record
+    enriched before the matcher existed has no verdict — and "never judged" must
+    stay distinguishable from "judged and found unknown".
+  */
+  contact_state: string | null;
+  /** same_state | nearby | distant | unknown — `unknown` is not a synonym for distant. */
+  contact_geo_match: string | null;
+  /** current | left | unknown. `left` never survives to become the primary. */
+  contact_employment_status: string | null;
+  contact_job_change_signal: string | null;
+  contact_match_score: number | null;
+  contact_match_reasons: string[] | null;
+  contact_match_confidence: string | null;
   phone_verified: boolean;
   phone_confidence: number | null;
   phone_type: string | null;

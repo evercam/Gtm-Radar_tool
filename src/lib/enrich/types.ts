@@ -6,6 +6,8 @@
  * returned inline, not persisted (Supabase accounts/contacts tables come later).
  */
 
+import type { ContactFacts } from './contactMatch';
+
 /** The minimal record shape the enrichment endpoint accepts (a normalized search result). */
 export interface EnrichInput {
   /** canonical_projects.id — when present (and Supabase is configured) the
@@ -130,6 +132,14 @@ export interface EnrichedContact {
    */
   apolloPersonId?: string | null;
   hasEmail?: boolean;
+  /**
+   * Where this person is and whether they still work there.
+   *
+   * Present only after a reveal — `api_search` returns `has_state: true` without
+   * the state — so an absent `facts` means unjudged, never judged-and-clean. Every
+   * consumer must treat it as `unknown` rather than as a pass.
+   */
+  facts?: ContactFacts | null;
 }
 
 export interface EnrichedNews {

@@ -1,6 +1,22 @@
 # Migrations — what to run, and what has already been run
 
-## Nothing is outstanding as of 2026-08-18
+## PENDING — `20260821090000_contact_match_signals.sql`
+
+**Run this BEFORE deploying the contact-matching change.** The enrichment write is
+a single `update()` carrying every field at once, so if `contact_match_score` and
+its siblings do not exist yet, PostgREST rejects the whole statement and the record
+loses its contact, its provenance and its lifecycle move — not just the verdict.
+The order is migration first, deploy second, and there is no safe reverse.
+
+It is additive and idempotent: seven nullable columns on `canonical_projects` plus
+one partial index on `contact_match_confidence = 'low'`. Nothing reads them as
+required, so the ~30k records enriched before it stay valid with a null verdict,
+which is the truth about them.
+
+Not yet run through `scripts/test-migrations.sh` — Docker was not running on the
+machine that wrote it. Worth ten seconds before pasting it into production.
+
+## Nothing else is outstanding as of 2026-08-18
 
 Every migration in `supabase/migrations/` is applied to production. Verified
 against the live database rather than from these notes:
