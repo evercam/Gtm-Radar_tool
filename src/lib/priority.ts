@@ -216,7 +216,7 @@ export const DEFAULT_PRIORITY_CONFIG: PriorityConfig = {
    * `steel`, so his scope never saw them and none of the three earned the
    * core-vertical top-up either.
    *
-   * Deliberately NOT added: `procurement`, `capital_markets`, `market_intel` and
+   * Deliberately NOT added: `procurement`, `capital_projects`, `market_intel` and
    * `other`. Those are record-type artefacts rather than construction sectors,
    * and a bonus every vertical receives discriminates nothing.
    *

@@ -1,5 +1,31 @@
 # Migrations — what to run, and what has already been run
 
+## PENDING — `20260821140000_vertical_capital_projects.sql`
+
+Renames the `capital_markets` vertical to `capital_projects`, code CAPM → CAPX.
+
+**Not a data update, because it cannot be one.** `vertical` is a STORED generated
+column, and so are `ref_code` (which embeds the vertical code) and `org_path`
+(which embeds the vertical name). Replacing the classifier function changes what
+NEW rows compute and leaves existing rows holding the old value, so the migration
+ends with a batched pass that touches each affected row and lets Postgres
+recompute all three columns.
+
+Proven with data rather than only for syntax: a filing row was inserted into a
+throwaway Postgres under the old classifier, the migration applied, and all three
+columns confirmed to flip (`EXP-CAPM-US-314E070C` → `EXP-CAPX-US-314E070C`, hash
+unchanged). A new row classified the new way, an unrelated vertical was untouched,
+and a second run reported `0 rows recomputed`.
+
+**This rewrites 4,269 ref_codes, and that is only safe now.** Checked first: none
+of these records are assigned, enriched, or exported, so no ref_code in this
+vertical has ever left the system. The window closes the first time one ships to
+Apollo.
+
+Runs in batches of 500 with its own commits. The table has produced statement
+timeouts under concurrent ingest before, and an interrupted run leaves a partly
+renamed table that a re-run finishes.
+
 ## APPLIED — `20260821090000_contact_match_signals.sql` (2026-08-21)
 
 Seven nullable columns on `canonical_projects` carrying the contact-match verdict,

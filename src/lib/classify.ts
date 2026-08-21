@@ -57,7 +57,7 @@ const VERTICAL_CODE: Record<string, string> = {
   procurement: 'PROC',
   construction: 'CNST',
   market_intel: 'MINT',
-  capital_markets: 'CAPM',
+  capital_projects: 'CAPX',
 };
 
 const BU_CODE: Record<string, string> = { usa: 'USA', uk: 'UK', ireland: 'IE', apac: 'APAC', export: 'EXP' };
@@ -93,7 +93,7 @@ export function leadVertical(
   if (recordType === 'tender') return 'procurement';
   if (recordType === 'permit') return 'construction';
   if (recordType === 'news') return 'market_intel';
-  if (recordType === 'filing') return 'capital_markets';
+  if (recordType === 'filing') return 'capital_projects';
   return 'other';
 }
 

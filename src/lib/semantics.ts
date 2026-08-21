@@ -228,7 +228,7 @@ export const VERTICALS = [
   'procurement',
   'construction',
   'market_intel',
-  'capital_markets',
+  'capital_projects',
 ] as const;
 
 export const PRIORITY_BANDS = ['P1', 'P2', 'P3', 'P4'] as const;
