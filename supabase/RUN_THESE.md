@@ -1,6 +1,29 @@
 # Migrations — what to run, and what has already been run
 
-## Nothing is outstanding as of 2026-08-18
+## APPLIED — `20260821090000_contact_match_signals.sql` (2026-08-21)
+
+Seven nullable columns on `canonical_projects` carrying the contact-match verdict,
+plus a partial index on `contact_match_confidence = 'low'` for finding the leads
+whose contact is a switchboard rather than a person.
+
+Verified against the live database rather than from the psql output: all seven
+appear in `information_schema.columns` as nullable with the expected types, and
+`canonical_projects_low_match_idx` appears in `pg_indexes`. It also passed
+`scripts/test-migrations.sh`, including the idempotency re-apply.
+
+**Order mattered here and the reason is worth keeping.** The enrichment write is a
+single `update()` carrying every field at once, so deploying the matching code
+against a database without these columns would have had PostgREST reject the whole
+statement — the record losing its contact, its provenance and its lifecycle move,
+not just its verdict. Migration first, deploy second, and no safe reverse.
+
+One step is not part of the SQL: PostgREST caches the schema, so a column the
+database has and the API has not seen still fails the write. `notify pgrst, 'reload
+schema';` forces it. Supabase normally fires this automatically on DDL — the check
+is that `select contact_match_score from canonical_projects limit 1` through the
+REST API returns a row rather than "column does not exist".
+
+## Nothing else is outstanding as of 2026-08-18
 
 Every migration in `supabase/migrations/` is applied to production. Verified
 against the live database rather than from these notes:

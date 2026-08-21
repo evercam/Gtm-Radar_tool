@@ -19,6 +19,7 @@ import type { SourceBudget } from '@/lib/enrich/sourceBudget';
 import { apolloRevealPhone } from '@/lib/enrich/apolloPhone';
 import { resolveApolloAccount } from '@/lib/enrich/apolloAccount';
 import { emailVerdict, normaliseApolloStatus } from '@/lib/enrich/emailVerdict';
+import { scoreMatch, compareVerdicts, meetsFloor, hqContact, hqVerdict, type MatchVerdict } from '@/lib/enrich/contactMatch';
 
 /**
  * The enrichment run itself, extracted from the /api/enrich route so the batch
@@ -332,18 +333,95 @@ export async function runEnrichment(
     // A Project Director who answers beats a VP who cannot be contacted. The
     // committee keeps everyone either way, so nothing is lost by leading with the
     // person a seller can actually open with.
-    const ranked = committee
-      .map((c) => ({ contact: c, role: classifyTitle(c.title, play) }))
+    //
+    // Then whether they still work there, and how close they are.
+    //
+    // Reachability and title were the whole ranking, so a Project Director who
+    // left in March outranked a current site manager in the right state — same
+    // seniority, and one of them answers the phone about this project. The
+    // verdict adds employment currency, job-change signals and geography, in that
+    // order; `unknown` on either sits above a confirmed bad answer, because 41% of
+    // reachable leads carry no state and demoting two fifths of the book for a
+    // publisher's missing field is not a matching improvement.
+    //
+    // The facts only exist after a reveal — api_search returns `has_state: true`
+    // and no state — so an unrevealed contact scores `unknown` throughout and
+    // keeps its old position relative to other unrevealed contacts.
+    const projectLocation = { stateProvince: input.state_province, country: input.country };
+    const targetOrg = { name: account?.name ?? input.company_name_raw ?? null };
+    const scored = committee.map((c) => ({
+      contact: c,
+      role: classifyTitle(c.title, play),
+      verdict: scoreMatch(c.facts ?? {}, projectLocation, targetOrg),
+    }));
+
+    // Someone who has moved on is not a weaker match, they are the wrong person,
+    // and no seniority fixes that. They are the only case dropped outright — a
+    // distant current employee still works there and is still worth a call.
+    const departed = scored.filter((x) => !meetsFloor(x.verdict));
+    let ranked = scored
+      .filter((x) => meetsFloor(x.verdict))
       .sort((a, b) => {
         const reachable = (x: typeof a) => (x.contact.email ? 2 : x.contact.phone ? 1 : 0);
         const byReach = reachable(b) - reachable(a);
         if (byReach !== 0) return byReach;
+        const byMatch = compareVerdicts(a.verdict, b.verdict);
+        if (byMatch !== 0) return byMatch;
         const priority = (x: typeof a) => (x.role ? ROLE_META[x.role].priority : 0);
         return priority(b) - priority(a);
       });
 
+    // Fewer people, never nobody.
+    //
+    // Dropping everyone who left would otherwise trade handover volume for match
+    // quality with nobody choosing it — the record loses its contact, export skips
+    // it for having no email and no phone, and the lead silently leaves the queue.
+    // The company's own switchboard keeps it callable. It is labelled as a main
+    // line, carries no invented address, and scores below any real person, so it
+    // only ever wins by being the last one standing.
+    let hqUsed = false;
+    if (ranked.length === 0) {
+      const hq = hqContact({
+        name: account?.name,
+        phone: switchboard ?? account?.phone ?? null,
+        location: account?.hq_location,
+        website: account?.website,
+      });
+      if (hq) {
+        hqUsed = true;
+        ranked = [
+          {
+            contact: {
+              name: hq.name,
+              title: hq.title,
+              email: null,
+              phone: hq.phone,
+              linkedin_url: null,
+              source: hq.source,
+            } satisfies EnrichedContact,
+            role: null,
+            verdict: hqVerdict(
+              departed.length > 0
+                ? `every contact found has left ${account?.name ?? 'the company'}`
+                : 'no contact found at this company'
+            ),
+          },
+        ];
+      }
+    }
+
+    if (departed.length > 0 || hqUsed) {
+      committeeNotes = [
+        ...committeeNotes,
+        `Match · ${departed.length} contact(s) dropped as no longer employed there` +
+          (hqUsed ? ', falling back to the company switchboard' : '') +
+          '.',
+      ];
+    }
+
     const topContact = ranked[0]?.contact ?? null;
     const topRole: BuyingRole | null = ranked[0]?.role ?? null;
+    const topVerdict: MatchVerdict | null = ranked[0]?.verdict ?? null;
     // Everyone else, kept rather than discarded — they were paid for, and the
     // standard needs eight of them per enterprise account.
     const extraContacts = ranked.slice(1).map(({ contact, role }) => ({
@@ -523,6 +601,22 @@ export async function runEnrichment(
                   }
                 : {}),
               contact_role: topRole,
+              /*
+                Why this person, stored beside them.
+
+                Written even when the verdict is `unknown` throughout — that is
+                the honest state of an unrevealed contact, and leaving the columns
+                null instead would make "we never checked" indistinguishable from
+                "we checked and found nothing", which is the exact ambiguity the
+                geo `unknown` case exists to avoid.
+              */
+              contact_state: topContact?.facts?.state ?? null,
+              contact_geo_match: topVerdict?.geo ?? null,
+              contact_employment_status: topVerdict?.employment ?? null,
+              contact_job_change_signal: topVerdict?.signals?.[0] ?? null,
+              contact_match_score: topVerdict?.score ?? null,
+              contact_match_reasons: topVerdict?.reasons ?? null,
+              contact_match_confidence: topVerdict?.confidence ?? null,
               committee_coverage: {
                 size: coverage.size,
                 found: coverage.found,
