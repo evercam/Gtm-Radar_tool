@@ -200,5 +200,95 @@ group('Better matching may return fewer people — never nobody');
   check('it scores below any real person', hv.score < v({ state: 'Maine', employment: [at('NRG Energy', true)] }).score);
 }
 
+group('What a live reveal actually returned');
+{
+  /*
+    These two cases are not hypotheses. Both come from one credited people/match
+    call, which returned city/state/country, a full employment_history with
+    organization_id, departments, subdepartments, seniority and functions — and no
+    last_refreshed_at, which api_search does return.
+  */
+
+  /*
+    THE CEO WITH TWO CURRENT JOBS.
+
+    Apollo lists concurrently-held roles as separate `current: true` entries, and a
+    parent company is the common case: the reveal showed a CEO current at both
+    "Hawaiian Electric" and "HEI". Before this, the parent role was read as a move
+    and stamped a job-change warning on the best contact on the record.
+  */
+  const HECO = { id: 'org_heco', name: 'Hawaiian Electric' };
+  const dualCurrent = {
+    employment: [
+      { organizationId: 'org_heco', organizationName: 'Hawaiian Electric', current: true, startDate: '2022-01-01' },
+      { organizationId: 'org_hei', organizationName: 'HEI', current: true },
+      { organizationId: 'org_heco', organizationName: 'Hawaiian Electric', current: false, endDate: '2022-01-01' },
+    ],
+  };
+  const dual = employmentAt(dualCurrent, HECO, Date.parse('2026-08-21T00:00:00Z'));
+  check('holding a parent-company role too is still current', dual.status === 'current');
+  check('and is not reported as having moved', !dual.signals.some((x) => x.startsWith('now at')), dual.signals.join(' | '));
+  check('the internal promotion is still surfaced', dual.signals.some((x) => x.includes('within')));
+
+  /*
+    THE SUBSIDIARY EMPLOYEE.
+
+    Apollo tracks subsidiaries as separate organisations with their own ids — the
+    same response listed "Maui Electric" as a suborganization of Hawaiian Electric.
+    So somebody current at the subsidiary has no history at the parent and reads as
+    departed. Renames and acquisitions produce the identical shape.
+
+    Reported as `left`, because that is what the record we hold says. Marked
+    unconfirmed, and kept, because dropping it loses a real contact to save us from
+    a guess.
+  */
+  const subsidiary = { employment: [{ organizationId: 'org_meco', organizationName: 'Maui Electric', current: true }] };
+  const sub = employmentAt(subsidiary, HECO);
+  check('a subsidiary employee reads as left', sub.status === 'left');
+  check('but that reading is marked unconfirmed', sub.confirmed === false);
+  check('and it says the record is silent rather than accusing them', sub.signals.some((x) => x.includes('no record')));
+
+  const project = { stateProvince: 'Hawaii' };
+  const v = (facts) => scoreMatch(facts, project, HECO, Date.parse('2026-08-21T00:00:00Z'));
+  check('an unconfirmed departure survives the floor', meetsFloor(v(subsidiary)));
+
+  /*
+    The rule this whole module exists for, unchanged by the exception above: an
+    entry AT the target with an end date is evidence, and it is still dropped.
+  */
+  const reallyLeft = {
+    employment: [
+      { organizationId: 'org_heco', organizationName: 'Hawaiian Electric', current: false, endDate: '2026-03-01' },
+      { organizationId: 'org_duke', organizationName: 'Duke Energy', current: true },
+    ],
+  };
+  check('a confirmed departure is still confirmed', employmentAt(reallyLeft, HECO).confirmed === true);
+  check('and is still dropped', !meetsFloor(v(reallyLeft)));
+  check('a confirmed departure outranks nothing', compareVerdicts(v(subsidiary), v(reallyLeft)) < 0);
+  /*
+    The comparator orders on the rank, so it would pass whatever the points said —
+    and the score is persisted as contact_match_score and shown to a seller, so it
+    has to be right on its own. Asserted directly rather than through the sort.
+  */
+  check(
+    'and the stored score says so too',
+    v(subsidiary).score > v(reallyLeft).score,
+    `${v(subsidiary).score} vs ${v(reallyLeft).score}`
+  );
+  /*
+    The tier is worth 15, and the score is asserted outright rather than compared.
+
+    Two softer forms of this were written first and both passed with the tier set
+    to 25 — worth the same as knowing nothing, which is the distinction being
+    claimed. Each time the `now at Maui Electric` and `no record of them` signals
+    deducted enough to make a relative comparison come out right for the wrong
+    reason. The arithmetic here is 15 for an unconfirmed departure, 10 for unknown
+    geography, less 5 per signal, and pinning it is the only form that fails when
+    the tier moves.
+  */
+  check('an unconfirmed departure is scored as its own tier', v(subsidiary).score === 15, String(v(subsidiary).score));
+  check('which is below knowing nothing at all', v(subsidiary).score < v({}).score);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

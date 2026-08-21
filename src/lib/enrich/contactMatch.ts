@@ -64,6 +64,15 @@ export interface MatchVerdict {
   /** Kilometres, only when BOTH sides carry coordinates. 16% of reachable leads do. */
   distanceKm: number | null;
   employment: EmploymentStatus;
+  /**
+   * Whether `employment` rests on a record or on an absence.
+   *
+   * `left` has two forms and only one is evidence — see employmentAt. False here
+   * means Apollo simply holds no history at this company, which a subsidiary,
+   * rename or acquisition produces just as readily as a departure. The floor drops
+   * only the confirmed case.
+   */
+  employmentConfirmed: boolean;
   /** Every job-change signal found, as reasons rather than one boolean. */
   signals: string[];
   /** 0–100. Ordering key, not a probability — see the comment on scoreMatch. */
@@ -230,9 +239,9 @@ export function employmentAt(
   target: { id?: string | null; name?: string | null },
   now: number = Date.now(),
   recentMonths = 6
-): { status: EmploymentStatus; signals: string[] } {
+): { status: EmploymentStatus; signals: string[]; confirmed: boolean } {
   const history = contact.employment ?? [];
-  if (history.length === 0) return { status: 'unknown', signals: [] };
+  if (history.length === 0) return { status: 'unknown', signals: [], confirmed: false };
 
   const signals: string[] = [];
   const atTarget = history.filter((e) => sameCompany({ id: e.organizationId, name: e.organizationName }, target));
@@ -241,7 +250,15 @@ export function employmentAt(
     (e) => e.current === true && !sameCompany({ id: e.organizationId, name: e.organizationName }, target)
   );
 
-  if (currentElsewhere) {
+  /*
+    A second current role is only news if the first one is not this company.
+
+    Apollo lists concurrently-held roles as separate `current: true` entries, and
+    a parent company is the common case — a live reveal returned a CEO current at
+    both "Hawaiian Electric" and "HEI". Reporting "now at HEI" for somebody who
+    never left would put a job-change warning on the best contact on the record.
+  */
+  if (currentElsewhere && !currentAtTarget) {
     signals.push(`now at ${currentElsewhere.organizationName ?? 'another company'}`);
     const started = currentElsewhere.startDate ? Date.parse(currentElsewhere.startDate) : NaN;
     if (Number.isFinite(started) && now - started < recentMonths * MONTH_MS) {
@@ -259,9 +276,33 @@ export function employmentAt(
   */
   if (atTarget.length > 1) signals.push('changed role within the company');
 
-  if (currentAtTarget) return { status: 'current', signals };
-  if (currentElsewhere || atTarget.length > 0) return { status: 'left', signals };
-  return { status: 'unknown', signals };
+  if (currentAtTarget) return { status: 'current', signals, confirmed: true };
+
+  /*
+    Two ways of having left, and only one of them is evidence.
+
+    CONFIRMED — the target company appears in their history and they are not
+    current in it. Apollo holds a record of the role ending. This is the case the
+    whole module exists for: a Project Director who left in March.
+
+    INFERRED — the target company appears nowhere in their history and they are
+    current somewhere else. That reads as "left", and often is, but the same live
+    reveal that prompted this showed why it cannot be trusted alone: Apollo tracks
+    subsidiaries as separate organisations with their own ids, so somebody current
+    at Maui Electric has no history at Hawaiian Electric and would look departed.
+    Renames and acquisitions produce the identical shape.
+
+    So it is reported as `left` — that is the honest reading of the record we
+    hold — but marked unconfirmed, and the floor only drops the confirmed case.
+    Dropping the other would lose a real contact at a subsidiary to save us from a
+    guess, which is the wrong trade in a pipeline whose problem is supply.
+  */
+  if (atTarget.length > 0) return { status: 'left', signals, confirmed: true };
+  if (currentElsewhere) {
+    signals.push('no record of them at this company');
+    return { status: 'left', signals, confirmed: false };
+  }
+  return { status: 'unknown', signals, confirmed: false };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -280,6 +321,16 @@ const GEO_POINTS: Record<GeoMatch, number> = {
 
 const EMPLOYMENT_POINTS: Record<EmploymentStatus, number> = { current: 50, unknown: 25, left: 0 };
 
+/*
+  An inferred departure sits between knowing nothing and knowing they left.
+
+  Below `unknown`, because a person current at some other company is weaker than a
+  person with no history at all. Above `left`, because the record is silent rather
+  than damning — Apollo files subsidiaries as separate organisations, so this is
+  the shape a Maui Electric employee takes when the target is Hawaiian Electric.
+*/
+const UNCONFIRMED_LEFT_POINTS = 15;
+
 /**
  * One number for ordering, and the sentences that produced it.
  *
@@ -295,16 +346,20 @@ export function scoreMatch(
   now: number = Date.now()
 ): MatchVerdict {
   const { geo, distanceKm: km } = geoMatch(contact, project);
-  const { status, signals } = employmentAt(contact, target, now);
+  const { status, signals, confirmed } = employmentAt(contact, target, now);
 
   const reasons: string[] = [];
-  let score = EMPLOYMENT_POINTS[status] + GEO_POINTS[geo];
+  const employmentPoints =
+    status === 'left' && !confirmed ? UNCONFIRMED_LEFT_POINTS : EMPLOYMENT_POINTS[status];
+  let score = employmentPoints + GEO_POINTS[geo];
 
   reasons.push(
     status === 'current'
       ? 'currently employed there'
       : status === 'left'
-        ? 'no longer appears to work there'
+        ? confirmed
+          ? 'no longer works there'
+          : 'no record of them at this company'
         : 'employment not confirmed'
   );
   reasons.push(
@@ -332,7 +387,7 @@ export function scoreMatch(
   const confidence: MatchVerdict['confidence'] =
     status === 'left' || known === 0 ? 'low' : known === 2 && signals.length === 0 ? 'high' : 'medium';
 
-  return { geo, distanceKm: km, employment: status, signals, score, confidence, reasons };
+  return { geo, distanceKm: km, employment: status, employmentConfirmed: confirmed, signals, score, confidence, reasons };
 }
 
 /**
@@ -345,10 +400,15 @@ export function scoreMatch(
  * covers only the part it owns and is applied after reachability.
  */
 export function compareVerdicts(a: MatchVerdict, b: MatchVerdict): number {
-  if (a.employment !== b.employment) {
-    const rank = { current: 2, unknown: 1, left: 0 };
-    return rank[b.employment] - rank[a.employment];
-  }
+  /*
+    Four steps, not three: `left` splits on whether the departure is on the record
+    or merely inferred from its silence. Without the split a subsidiary employee
+    and a confirmed leaver order arbitrarily, which is how the wrong one of the two
+    reaches a seller.
+  */
+  const rank = (v: MatchVerdict) =>
+    v.employment === 'current' ? 3 : v.employment === 'unknown' ? 2 : v.employmentConfirmed ? 0 : 1;
+  if (rank(a) !== rank(b)) return rank(b) - rank(a);
   if (a.geo !== b.geo) {
     const rank = { same_state: 3, nearby: 2, unknown: 1, distant: 0 };
     return rank[b.geo] - rank[a.geo];
@@ -369,7 +429,13 @@ export function compareVerdicts(a: MatchVerdict, b: MatchVerdict): number {
  * company, so it stays.
  */
 export function meetsFloor(v: MatchVerdict): boolean {
-  return v.employment !== 'left';
+  /*
+    Only a confirmed departure. An inferred one — Apollo holding no history at
+    this company while the person is current somewhere else — is produced just as
+    readily by a subsidiary or a rename, and dropping it would lose a real contact
+    to save us from a guess.
+  */
+  return !(v.employment === 'left' && v.employmentConfirmed);
 }
 
 /**
@@ -431,6 +497,7 @@ export function hqVerdict(reason: string): MatchVerdict {
     geo: 'unknown',
     distanceKm: null,
     employment: 'unknown',
+    employmentConfirmed: false,
     signals: [],
     score: 5,
     confidence: 'low',

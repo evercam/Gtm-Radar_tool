@@ -67,7 +67,14 @@ interface ApolloPerson {
   city?: string | null;
   state?: string | null;
   country?: string | null;
-  /** Apollo's note of when it last touched the record. Stale data ages out of trust. */
+  /**
+   * Apollo's note of when it last touched the record.
+   *
+   * Returned by api_search and NOT by people/match — confirmed against a live
+   * reveal, whose body carried city, state, country, employment_history,
+   * departments, subdepartments, seniority and functions but no refresh stamp.
+   * Kept optional and read where it appears rather than assumed.
+   */
   last_refreshed_at?: string | null;
   departments?: string[] | null;
   subdepartments?: string[] | null;
