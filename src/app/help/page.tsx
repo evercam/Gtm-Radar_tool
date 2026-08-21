@@ -110,9 +110,23 @@ export default async function HelpPage() {
   ].sort((a, b) => b.weight - a.weight);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    /*
+      Full width, not a reading column.
+
+      This page was a 768px column centred in a 1536px shell, so two thirds of the
+      screen was margin — and the content is not an article. It is cards, tables and
+      rule lists, all of which were being squeezed into a third of the space
+      available while the tables inside them wrapped.
+
+      The shell's own container still applies (max-w-screen-2xl with its padding),
+      so this is not edge-to-edge; it is as wide as every other page. Running prose
+      keeps its own limit where it appears, because a 180-character line is hard to
+      read no matter how much room there is — the constraint belongs on the
+      paragraph, not the page.
+    */
+    <div>
       <h1 className="text-foreground text-2xl font-bold">How leads are chosen and shared out</h1>
-      <p className="text-muted mt-2 text-sm">
+      <p className="text-muted mt-2 max-w-3xl text-sm">
         Four things happen to every record, in order. Each one uses what the step before it decided, which is why a
         problem early on shows up as an empty result much later.
       </p>
