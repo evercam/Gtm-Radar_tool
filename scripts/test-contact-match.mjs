@@ -21,6 +21,9 @@
  */
 
 import {
+  meetsFloor,
+  hqContact,
+  hqVerdict,
   companyKey,
   sameCompany,
   stateCode,
@@ -159,6 +162,42 @@ group('The verdict orders candidates the way the spec asks');
   check('knowing nothing is low confidence', unknownBoth.confidence === 'low');
   check('every verdict explains itself', currentSameState.reasons.length >= 2 && formerSameState.reasons.length >= 2);
   check('the reason names the problem', formerSameState.reasons.some((x) => x.includes('no longer')));
+}
+
+group('Better matching may return fewer people — never nobody');
+{
+  const project = { stateProvince: 'Texas' };
+  const v = (facts) => scoreMatch(facts, project, NRG, Date.parse('2026-08-21T00:00:00Z'));
+
+  /*
+    The floor rejects one thing and one thing only. A distant current employee is a
+    worse match and still a real person at the right company; withholding them
+    would cost a handover to gain nothing.
+  */
+  check('a departed contact fails the floor', !meetsFloor(v({ state: 'TX', employment: [at('NRG Energy', false, { endDate: '2026-01-01' }), at('Duke Energy', true)] })));
+  check('a distant current employee passes', meetsFloor(v({ state: 'Maine', employment: [at('NRG Energy', true)] })));
+  check('an unknown-employment contact passes', meetsFloor(v({ state: 'TX' })));
+
+  const org = { name: 'NRG Energy, Inc.', phone: '+1-713-537-3000', location: 'Houston, Texas' };
+  const hq = hqContact(org);
+  check('the switchboard becomes a usable contact', hq !== null && hq.phone === org.phone);
+  check('it carries a phone so the record stays exportable', Boolean(hq?.phone));
+  check('and no email, because inventing one would be a lie', hq?.email === null);
+  check('its title warns that it is not a person', /main line/i.test(hq?.title ?? ''), hq?.title);
+  check('it is labelled as its own source', hq?.source === 'apollo-hq');
+
+  /*
+    No phone means there is genuinely nothing to offer. Saying so beats fabricating
+    a contact — the point of never-null is to keep the lead callable, and a record
+    with no number is not callable however it is dressed up.
+  */
+  check('no company phone yields null rather than a fake contact', hqContact({ name: 'X', phone: null }) === null);
+
+  const hv = hqVerdict('no current contact found at this company');
+  check('an HQ fallback is always low confidence', hv.confidence === 'low');
+  check('its geography is unknown, not the head office state', hv.geo === 'unknown');
+  check('it says what it is', hv.reasons.some((r) => r.includes('switchboard')));
+  check('it scores below any real person', hv.score < v({ state: 'Maine', employment: [at('NRG Energy', true)] }).score);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

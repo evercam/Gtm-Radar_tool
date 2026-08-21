@@ -355,3 +355,85 @@ export function compareVerdicts(a: MatchVerdict, b: MatchVerdict): number {
   }
   return b.score - a.score;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Selection: better matching may return fewer people, never nobody            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Is this contact good enough to put in front of a seller as the primary?
+ *
+ * Deliberately a low bar. It rejects the one case that is actively misleading —
+ * a person who no longer works there — and nothing else. A distant current
+ * employee is a worse match than a local one and still a real person at the right
+ * company, so it stays.
+ */
+export function meetsFloor(v: MatchVerdict): boolean {
+  return v.employment !== 'left';
+}
+
+/**
+ * The company itself, when no person survives the floor.
+ *
+ * THE RULE IS NEVER NULL.
+ *
+ * Rejecting a departed contact is right, but if rejection could empty the field
+ * the feature would trade handover volume for match quality without anyone
+ * choosing that. `run.ts` already records what an unreachable primary costs: a
+ * Project Director with no address became `contact_name` while three contactable
+ * people sat unused, and export skipped the record entirely.
+ *
+ * So the fallback is the switchboard, not nothing. Export accepts a record with
+ * `contact_phone` and no email — see the `.or(...)` in the export route — so an HQ
+ * contact keeps the lead callable and exportable rather than dropping it.
+ *
+ * This is not a new idea in this codebase. `personPhone()` already falls back to
+ * `organization.phone`, and `apolloFindContacts` already takes a `fallbackPhone`
+ * for people who carry no number. This makes the same fallback explicit and
+ * labelled instead of implicit.
+ *
+ * Returns null only when the organisation has no phone either — at which point
+ * there is genuinely nothing to offer, and saying so beats inventing a contact.
+ */
+export function hqContact(org: {
+  name?: string | null;
+  phone?: string | null;
+  location?: string | null;
+  website?: string | null;
+}): { name: string; title: string; phone: string; email: null; source: string; isHq: true } | null {
+  if (!org.phone) return null;
+  return {
+    name: org.name?.trim() || 'Company main line',
+    /*
+      Titled so nobody mistakes it for a person. A seller who dials this needs to
+      know they are calling a switchboard and will have to ask for somebody —
+      that is a different call from a direct dial, and the label is the only
+      warning they get.
+    */
+    title: org.location ? `Main line — ${org.location}` : 'Main line',
+    phone: org.phone,
+    email: null,
+    source: 'apollo-hq',
+    isHq: true,
+  };
+}
+
+/**
+ * The verdict for an HQ fallback.
+ *
+ * Always low confidence and explicitly not a person. Its geography is the
+ * company's registered location, which is where the head office is rather than
+ * where the project is — a Houston switchboard for a Nevada solar farm is normal
+ * and should not read as a same-state match.
+ */
+export function hqVerdict(reason: string): MatchVerdict {
+  return {
+    geo: 'unknown',
+    distanceKm: null,
+    employment: 'unknown',
+    signals: [],
+    score: 5,
+    confidence: 'low',
+    reasons: ['company switchboard, not a named contact', reason],
+  };
+}
