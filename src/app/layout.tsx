@@ -20,7 +20,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Evercam GTM Radar',
+  title: 'Evercam Radar',
   description: 'Sales intelligence and lead enrichment across construction, procurement, permits and energy sources.',
 };
 

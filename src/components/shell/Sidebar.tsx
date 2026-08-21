@@ -142,7 +142,7 @@ export default function Sidebar({
 
         <div className="flex items-center gap-2 border-t border-sidebar-border px-4 py-3">
           <Logo variant="mark" width={16} className="shrink-0 opacity-60" />
-          <p className="text-[10px] text-sidebar-subtle">GTM Radar</p>
+          <p className="text-[10px] text-sidebar-subtle">Radar</p>
         </div>
       </aside>
     </>

@@ -102,7 +102,7 @@ export default async function AuthorizePage({ searchParams }: Props) {
     <div className="mx-auto flex min-h-[70vh] max-w-md flex-col justify-center px-6 py-16">
       <Logo width={148} priority />
       <h1 className="text-foreground mt-6 text-2xl font-bold">Connect an assistant</h1>
-      <p className="text-muted mt-1 text-sm">GTM Radar</p>
+      <p className="text-muted mt-1 text-sm">Evercam Radar</p>
 
       <Card className="mt-6">
         <CardBody>

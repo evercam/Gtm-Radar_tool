@@ -41,13 +41,13 @@ export default function Topbar({
             </button>
           ) : null}
 
-          <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Evercam GTM Radar — home">
+          <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Evercam Radar — home">
             {/* The chrome is dark in both themes, so the variant is stated
                 rather than derived. */}
             <Logo on="dark" width={104} priority />
             <span className="hidden h-4 w-px shrink-0 bg-white/15 sm:block" />
             <span className="hidden truncate text-[12px] font-medium tracking-tight text-sidebar-foreground sm:block">
-              GTM Radar
+              Radar
             </span>
           </Link>
         </div>
