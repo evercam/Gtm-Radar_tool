@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { NAV_SECTIONS, NAV_FOOTER } from '@/lib/nav';
 import Logo from './Logo';
@@ -29,6 +31,28 @@ export default function Sidebar({
   allowed: Permission[];
 }) {
   const pathname = usePathname();
+
+  /*
+    A group's pages are hidden until asked for.
+
+    They used to appear whenever the section was active, which meant anyone working
+    inside Operations carried six extra links they had not asked to see. Now the
+    group is a disclosure: hovering opens it, and the chevron toggles it open for
+    people who are not hovering anything.
+
+    TWO PIECES OF STATE, NOT ONE.
+
+    `hovered` is transient and `pinned` survives the pointer leaving. One boolean
+    cannot do both: with only hover the list vanishes the moment you move toward
+    something else in the rail, and with only click it ignores what was asked for.
+    Open is either.
+
+    Hover is deliberately NOT the only way in. A pointer is not available to
+    keyboard or touch users, so the chevron is a real button with aria-expanded —
+    the affordance that makes this navigable without a mouse.
+  */
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<Record<string, boolean>>({});
   const granted = new Set(allowed);
 
   // `/` would otherwise match every route, so the root is exact; everything else
@@ -95,7 +119,10 @@ export default function Sidebar({
                       href={item.href}
                       onClick={onClose}
                       aria-current={active ? 'page' : undefined}
-                      className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors duration-150 ${
+                      className={`group relative flex items-center gap-3 rounded-xl py-2.5 pl-3 transition-colors duration-150 ${
+                        // Room for the chevron, and only on rows that have one.
+                        item.children?.length ? 'pr-8' : 'pr-3'
+                      } ${
                         active ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground hover:bg-sidebar-accent-hover hover:text-sidebar-accent-foreground'
                       }`}
                     >
@@ -121,10 +148,59 @@ export default function Sidebar({
                     you are in Operations, nine while you are, and never a list of
                     every page in the app.
                   */
-                  if (!active || !item.children?.length) return link;
+                  if (!item.children?.length) return link;
+
+                  const open = hovered === item.href || pinned[item.href] === true;
                   return (
-                    <div key={item.href}>
-                      {link}
+                    <div
+                      key={item.href}
+                      /*
+                        The wrapper owns the hover, not the link row. The children
+                        render inside it, so moving the pointer down onto them never
+                        crosses a gap — a flyout anchored to the row alone closes
+                        under the cursor on the way to its own contents.
+                      */
+                      onMouseEnter={() => setHovered(item.href)}
+                      onMouseLeave={() => setHovered((h) => (h === item.href ? null : h))}
+                    >
+                      <div className="relative">
+                        {link}
+                        {/*
+                          The keyboard and touch route in. Sits over the row's right
+                          edge rather than inside the Link, because a button nested
+                          in an anchor is invalid and swallows the navigation.
+                        */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            /*
+                              Closing has to beat the hover that is still happening.
+
+                              `open` is hovered OR pinned, so setting pinned=false
+                              while the pointer sits on the row leaves it open and
+                              the click looks broken. Clearing hover as well makes
+                              the click authoritative; moving the pointer out and
+                              back re-opens it, which is what hover is for.
+                            */
+                            if (open) {
+                              setPinned((p) => ({ ...p, [item.href]: false }));
+                              setHovered((h) => (h === item.href ? null : h));
+                            } else {
+                              setPinned((p) => ({ ...p, [item.href]: true }));
+                            }
+                          }}
+                          aria-expanded={open}
+                          aria-label={`${open ? 'Hide' : 'Show'} ${item.label} pages`}
+                          className="text-sidebar-foreground hover:text-sidebar-accent-foreground focus-visible:outline-brand absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 focus-visible:outline-2"
+                        >
+                          <ChevronRight
+                            size={13}
+                            strokeWidth={2.5}
+                            className={`transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+                          />
+                        </button>
+                      </div>
+                      {!open ? null : (
                       <div className="mt-0.5 space-y-0.5 border-l border-sidebar-border pb-1 pl-3 ml-4">
                         {item.children.map((child) => {
                           const childActive = isActive(child.href);
@@ -148,6 +224,7 @@ export default function Sidebar({
                           );
                         })}
                       </div>
+                      )}
                     </div>
                   );
                 })}
