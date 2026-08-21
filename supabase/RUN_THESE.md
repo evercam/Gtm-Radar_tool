@@ -1,5 +1,21 @@
 # Migrations — what to run, and what has already been run
 
+## APPLIED — `20260821180000_crm_account_flag.sql` (2026-08-21)
+
+Seven nullable columns carrying what the CRM already says about the company on a
+lead, plus a partial index on `crm_signal`. Applied manually; re-running it is a
+no-op (`add column if not exists` throughout, and the index reported
+`already exists, skipping`).
+
+Flag only — nothing here feeds scoring, routing or assignment, and that is a
+measured decision rather than caution. Of the fifty most common companies in the
+workable book, nine matched a CRM account cleanly and four matched something wrong
+or unresolvable. A one-in-three error rate is fine for a badge a human reads and
+nowhere near good enough to move a lead out of somebody's queue.
+
+Populated by `scripts/crm-import.mjs` from a Zoho Accounts export — no OAuth, no
+cron. Re-run it whenever the CRM moves on.
+
 ## APPLIED — `20260821140000_vertical_capital_projects.sql` (2026-08-21)
 
 Renames the `capital_markets` vertical to `capital_projects`, code CAPM → CAPX.

@@ -260,6 +260,22 @@ export interface CanonicalProjectRow {
   contact_match_score: number | null;
   contact_match_reasons: string[] | null;
   contact_match_confidence: string | null;
+  /*
+    What the CRM already says about this company. Written by scripts/crm-import.mjs
+    from a Zoho Accounts export; see lib/crm/accountMatch.ts. Null means simply not
+    matched — the importer has not run over this row, or nothing matched, and those
+    two are deliberately indistinguishable here because neither is a verdict.
+  */
+  crm_account_id: string | null;
+  crm_account_name: string | null;
+  /** Zoho's Account_Type verbatim — the CRM owns this vocabulary. */
+  crm_account_type: string | null;
+  /** avoid | customer | lapsed | partner | known. */
+  crm_signal: string | null;
+  /** domain | exact_name. A name match is weaker and must stay tellable apart. */
+  crm_match_basis: string | null;
+  crm_match_confidence: string | null;
+  crm_matched_at: string | null;
   phone_verified: boolean;
   phone_confidence: number | null;
   phone_type: string | null;

@@ -1012,6 +1012,15 @@ export interface RecordsQuery {
   band?: string;
   /** Completeness tier A–E as delivered by the source. */
   completenessTier?: string;
+  /**
+   * What the CRM already says about this company — avoid | customer | lapsed |
+   * partner | known — or 'any' for every lead the CRM recognises at all.
+   *
+   * `avoid` is the one that earns its place: somebody maintained a do-not-call
+   * list in Zoho and nothing in this pipeline could see it, so a rep could spend a
+   * slot on a company the business had already given up on.
+   */
+  crmSignal?: string;
   status?: string;
   /** Restrict to one owner. 'me' is resolved by the caller to a user id. */
   ownerId?: string;
@@ -1134,6 +1143,9 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     if (q.recordType) query = query.eq('record_type', q.recordType);
     if (q.contactStatus) query = query.eq('contact_status', q.contactStatus);
     if (q.completenessTier) query = query.eq('source_completeness_tier', q.completenessTier);
+    if (q.crmSignal) {
+      query = q.crmSignal === 'any' ? query.not('crm_signal', 'is', null) : query.eq('crm_signal', q.crmSignal);
+    }
     if (hasRouting && q.route) query = query.eq('route', q.route);
     if (hasRouting && q.stage) query = query.eq('stage', q.stage);
     if (hasPriority && q.band) query = query.eq('priority_band', q.band);

@@ -93,6 +93,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     band = sp.band,
     status = sp.status,
     completenessTier = sp.tier,
+    crmSignal = sp.crm,
     ownerGroup = sp.owner_group;
   // Sellers see their own book by default; managers and admins see everything
   // and opt into a narrower view. `mine=0` lets a seller look at the wider
@@ -164,6 +165,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       band,
       status,
       completenessTier,
+      crmSignal,
       ownerId,
       unassigned,
       ownerGroup,
@@ -211,6 +213,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
         band,
         status,
         tier: completenessTier,
+        crm: crmSignal,
         owner_group: ownerGroup,
         unassigned: unassigned || undefined,
         archived: includeExported || undefined,
@@ -259,6 +262,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     band,
     status,
     tier: completenessTier,
+    crm: crmSignal,
     mine,
     owner: sp.owner,
     owner_group: ownerGroup,
@@ -310,6 +314,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       { key: 'band', label: 'band', value: band },
       { key: 'status', label: 'status', value: status },
       { key: 'tier', label: 'tier', value: completenessTier },
+      { key: 'crm', label: 'CRM', value: crmSignal },
       { key: 'owner_group', label: 'owner', value: ownerGroup },
       { key: 'q', label: 'search', value: search },
     ] as const
@@ -421,6 +426,25 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
             current={band}
             options={PRIORITY_BANDS.map((b) => ({ value: b, label: b, hint: BAND_LABELS[b] }))}
             hrefFor={(v) => qs(base, { band: v, page: undefined })}
+          />
+          {/*
+            What the CRM already knows. `avoid` first because it is the only value
+            here that should stop somebody working a lead — it is a do-not-call
+            list a human maintained in Zoho, which nothing in this tool could see
+            until now.
+          */}
+          <FilterDropdown
+            label="CRM"
+            current={crmSignal}
+            options={[
+              { value: 'avoid', label: 'avoid', hint: 'marked do-not-call in the CRM' },
+              { value: 'customer', label: 'customer', hint: 'active Evercam customer' },
+              { value: 'lapsed', label: 'lapsed', hint: 'former customer — warm re-entry' },
+              { value: 'partner', label: 'partner', hint: 'installer or investor, not a prospect' },
+              { value: 'known', label: 'known', hint: 'in the CRM, no strong verdict' },
+              { value: 'any', label: 'any match', hint: 'every lead the CRM recognises' },
+            ]}
+            hrefFor={(v) => qs(base, { crm: v, page: undefined })}
           />
           <FilterDropdown
             label="Status"

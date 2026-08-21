@@ -287,6 +287,51 @@ export default function RecordDetail({ r }: { r: CanonicalProjectRow }) {
         ) : null}
       </Section>
 
+      {/*
+        What the CRM already knows, above the sales pitch rather than below it.
+
+        `avoid` is the reason this section exists: somebody maintained a
+        do-not-call list in Zoho and nothing in this tool could see it, so a lead
+        could be worked that the business had already given up on. It is rendered
+        as a warning and says plainly that a human decided it, because the right
+        response is to check with that human rather than to obey a badge.
+
+        The basis is always shown. Only about a fifth of CRM accounts carry a
+        website, so most matches rest on a name — and the CRM holds six different
+        companies with "Turner" in the title. A reader deciding whether to trust
+        this needs to know which kind of evidence it was.
+      */}
+      {r.crm_signal ? (
+        <Section title="In the CRM">
+          <div className="flex flex-wrap items-center gap-2">
+            {r.crm_signal === 'avoid' ? (
+              <Badge tone="danger">marked do-not-call</Badge>
+            ) : r.crm_signal === 'customer' ? (
+              <Badge tone="success">active customer</Badge>
+            ) : r.crm_signal === 'lapsed' ? (
+              <Badge tone="info">lapsed customer</Badge>
+            ) : r.crm_signal === 'partner' ? (
+              <Badge tone="info">partner, not a prospect</Badge>
+            ) : (
+              <Badge>known to the CRM</Badge>
+            )}
+            {r.crm_account_type ? <Badge>{r.crm_account_type}</Badge> : null}
+            <Badge tone={r.crm_match_basis === 'domain' ? 'success' : 'warning'}>
+              {r.crm_match_basis === 'domain' ? 'matched on domain' : 'matched on name only'}
+            </Badge>
+          </div>
+          <p className="text-muted mt-2 text-[11px] leading-relaxed">
+            Matched to <span className="text-foreground font-medium">{r.crm_account_name}</span> in Zoho
+            {r.crm_match_confidence ? ` · ${r.crm_match_confidence} confidence` : ''}.
+            {r.crm_signal === 'avoid'
+              ? ' Somebody marked this company do-not-call in the CRM — worth asking them why before working it, not just skipping it.'
+              : r.crm_signal === 'lapsed'
+                ? ' A former customer, so there is history to open with rather than a cold introduction.'
+                : ''}
+          </p>
+        </Section>
+      ) : null}
+
       <Section title="Sales intelligence">
         <Facts
           rows={[
