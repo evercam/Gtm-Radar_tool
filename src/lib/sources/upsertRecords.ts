@@ -43,27 +43,127 @@ export interface UpsertOutcome {
   updated: number;
   /** Dropped because an earlier row in the same batch claimed the same id. */
   collapsed: number;
+  /**
+   * Already stored identically, so not written.
+   *
+   * Reported rather than hidden, and for a specific reason: if this number comes
+   * back near zero on a re-ingest, the comparison is not working and the whole
+   * optimisation is a no-op that looks like a fix. It is the measurement that
+   * proves the claim.
+   */
+  unchanged: number;
 }
 
 /**
- * Which of these ids this source already holds.
+ * The rows this source already holds, keyed by source id.
  *
- * Throws rather than degrading to an empty set. A silent failure corrupts
- * nothing, it just reports a full re-ingest as thousands of new leads — and that
- * number is what somebody judges a run by.
+ * Selects the columns the incoming batch would write rather than just the id,
+ * because the id alone can only answer "insert or update" — it cannot answer "is
+ * this write worth doing", which is the question that matters. A read of a few
+ * hundred rows is far cheaper than several hundred updates, each of which writes a
+ * new tuple and touches all 21 indexes on the table.
+ *
+ * Throws rather than degrading to an empty map. A silent failure here would look
+ * like "nothing exists yet", which writes everything — slow, but correct. The
+ * dangerous direction is the other one, so the code that can only be wrong safely
+ * still refuses to guess.
  */
-async function findExisting(client: Client, sourceKey: string, ids: string[]): Promise<Set<string>> {
-  const found = new Set<string>();
+async function findExistingRows(
+  client: Client,
+  sourceKey: string,
+  ids: string[],
+  columns: string[]
+): Promise<Map<string, Record<string, unknown>>> {
+  const found = new Map<string, Record<string, unknown>>();
+  const select = ['source_unique_id', ...columns.filter((c) => c !== 'source_unique_id')].join(',');
   for (let i = 0; i < ids.length; i += PROBE_CHUNK) {
     const { data, error } = await client
       .from('canonical_projects')
-      .select('source_unique_id')
+      .select(select)
       .eq('source_key', sourceKey)
       .in('source_unique_id', ids.slice(i, i + PROBE_CHUNK));
     if (error) throw new Error(`Could not check existing records: ${error.message}`);
-    for (const r of (data ?? []) as { source_unique_id: string }[]) found.add(r.source_unique_id);
+    for (const r of (data ?? []) as unknown as Record<string, unknown>[]) {
+      found.set(String(r.source_unique_id), r);
+    }
   }
   return found;
+}
+
+/**
+ * Is the stored value the same as the one we are about to write?
+ *
+ * ERRS TOWARD "DIFFERENT", ALWAYS.
+ *
+ * A wrong "different" costs one unnecessary write. A wrong "same" silently stops
+ * persisting a real change, and the row goes stale with nothing in any log to say
+ * so. Those are not comparable failures, so anything this function is not sure
+ * about is reported as different.
+ *
+ * The normalisation exists because the two sides do not speak the same dialect:
+ * the incoming record is JavaScript, the stored row is whatever PostgREST decoded
+ * from Postgres. `null` and `undefined` mean the same absence here; a numeric
+ * string and a number are the same number; and a date written as '2026-08-01'
+ * comes back as '2026-08-01T00:00:00+00:00', which is the same instant and would
+ * otherwise mark every dated row changed on every run — turning this whole
+ * optimisation into an expensive no-op that looks like it works.
+ */
+export function sameStoredValue(incoming: unknown, stored: unknown): boolean {
+  if (incoming === undefined || incoming === null) return stored === undefined || stored === null;
+  if (stored === undefined || stored === null) return false;
+
+  if (typeof incoming === 'number' || typeof stored === 'number') {
+    const a = Number(incoming);
+    const b = Number(stored);
+    return Number.isFinite(a) && Number.isFinite(b) && a === b;
+  }
+
+  if (typeof incoming === 'boolean' || typeof stored === 'boolean') return Boolean(incoming) === Boolean(stored);
+
+  if (typeof incoming === 'string' && typeof stored === 'string') {
+    if (incoming === stored) return true;
+    // Only treat them as instants when BOTH parse and at least one carries the
+    // shape of a timestamp. "2000" is a year to a publisher and a valid Date to
+    // JavaScript, and calling those equal would be exactly the silent-staleness
+    // failure this function is built to avoid.
+    const looksTemporal = (v: string) => /\d{4}-\d{2}-\d{2}/.test(v);
+    if (looksTemporal(incoming) && looksTemporal(stored)) {
+      const a = Date.parse(incoming);
+      const b = Date.parse(stored);
+      if (Number.isFinite(a) && Number.isFinite(b)) return a === b;
+    }
+    return false;
+  }
+
+  // Arrays and json. Key order is not normalised: a reordered object is reported
+  // as changed, which is the safe direction and costs one write.
+  try {
+    return JSON.stringify(incoming) === JSON.stringify(stored);
+  } catch {
+    return false;
+  }
+}
+
+/** Every column this batch would write, so the probe fetches exactly those. */
+function payloadColumns(records: CanonicalProjectInsert[]): string[] {
+  const keys = new Set<string>();
+  for (const r of records) for (const k of Object.keys(r)) keys.add(k);
+  return [...keys];
+}
+
+/**
+ * Would writing this record change anything?
+ *
+ * Only the keys the batch actually carries are compared. Columns the adapter does
+ * not set — priority_score, assignee_id, apollo_exported_at and the rest of the
+ * pipeline's own state — are untouched by the upsert, so a difference there is not
+ * this write's business.
+ */
+function differsFromStored(incoming: CanonicalProjectInsert, stored: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(incoming)) {
+    if (!sameStoredValue(value, stored[key])) return true;
+  }
+  return false;
 }
 
 /**
@@ -125,17 +225,49 @@ export async function upsertSourceRecords(
   const { unique: records, collapsed } = dedupeBySourceUniqueId(input);
   let inserted = 0;
   let updated = 0;
+  let unchanged = 0;
+  const columns = payloadColumns(records);
 
   for (let i = 0; i < records.length; i += UPSERT_CHUNK) {
     const chunk = records.slice(i, i + UPSERT_CHUNK);
-    const existing = await findExisting(
+    const existing = await findExistingRows(
       client,
       sourceKey,
-      chunk.map((r) => r.source_unique_id)
+      chunk.map((r) => r.source_unique_id),
+      columns
     );
-    const newRows = chunk.filter((r) => !existing.has(r.source_unique_id)).length;
-    inserted += newRows;
-    updated += chunk.length - newRows;
+
+    /*
+      WRITE ONLY WHAT WOULD CHANGE.
+
+      Every source re-fetches its whole window on every run, so most of a batch is
+      identical to what is already stored. Upserting it anyway is not free: Postgres
+      writes a new tuple for each row, marks the old one dead, and updates all 21
+      indexes on the table. Fifteen sources doing that concurrently is what produced
+      "canceling statement due to statement timeout" across a whole run, twice now.
+
+      The read that makes this possible costs one round trip per hundred ids. The
+      writes it avoids cost far more, and reads on this table measure healthy —
+      193ms median — while concurrent writes are what falls over.
+
+      A record whose comparison is uncertain is written, not skipped. See
+      sameStoredValue: the failure that matters is silently keeping a stale row.
+    */
+    const toWrite: CanonicalProjectInsert[] = [];
+    for (const record of chunk) {
+      const stored = existing.get(record.source_unique_id);
+      if (!stored) {
+        inserted += 1;
+        toWrite.push(record);
+      } else if (differsFromStored(record, stored)) {
+        updated += 1;
+        toWrite.push(record);
+      } else {
+        unchanged += 1;
+      }
+    }
+
+    if (toWrite.length === 0) continue;
 
     /*
       Written adaptively, because 500 is the right chunk for most publishers and
@@ -151,8 +283,8 @@ export async function upsertSourceRecords(
       timeout splits THAT chunk and retries, so the cost is paid only where it is
       needed and a new wide-rowed publisher fixes itself rather than failing.
     */
-    await writeChunk(client, chunk, i, records.length);
+    await writeChunk(client, toWrite, i, records.length);
   }
 
-  return { inserted, updated, collapsed };
+  return { inserted, updated, collapsed, unchanged };
 }

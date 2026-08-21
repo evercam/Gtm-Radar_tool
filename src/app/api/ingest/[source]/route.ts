@@ -227,6 +227,22 @@ export async function POST(request: NextRequest, context: { params: Promise<{ so
       if (outcome.collapsed > 0) failed += outcome.collapsed;
       inserted = outcome.inserted;
       updated = outcome.updated;
+      /*
+        The skip rate, in the run log.
+
+        upsertSourceRecords now writes only rows whose content actually changed,
+        and this is the number that says whether that is working. Near zero on a
+        re-ingest means the comparison is failing and the whole thing is an
+        expensive no-op — so it is measured rather than assumed.
+
+        Logged rather than stored because ingestion_runs has no column for it and
+        an incident is the wrong moment for a migration. Promoting it later is one
+        additive column.
+      */
+      console.log(
+        `[ingest:${sourceKey}] wrote ${outcome.inserted + outcome.updated} of ${normalized.length} ` +
+          `(${outcome.inserted} new, ${outcome.updated} changed, ${outcome.unchanged} already current)`
+      );
     }
 
     // Health used to be written to `source_registry`, which was retired with

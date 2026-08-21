@@ -101,7 +101,8 @@ export async function processGemFiles(files: GemFileInput[]): Promise<GemIngestR
       if (sample.length < 5) sample.push(...records.slice(0, 5 - sample.length));
 
       if (supabase && records.length > 0) {
-        const { inserted, updated, collapsed } = await upsertSourceRecords(supabase, GEM_SOURCE_KEY, records);
+        const { inserted, updated, collapsed, unchanged } = await upsertSourceRecords(supabase, GEM_SOURCE_KEY, records);
+        if (unchanged > 0) console.log(`[gem] ${unchanged} record(s) already current, not rewritten`);
         result.inserted = inserted;
         result.updated = updated;
         result.collapsed = collapsed;
