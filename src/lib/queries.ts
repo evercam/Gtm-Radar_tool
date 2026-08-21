@@ -1020,6 +1020,25 @@ export interface RecordsQuery {
   /** Every lead owned by one company — an `owner_group_key` value. */
   ownerGroup?: string;
   /**
+   * Only leads that arrived within this many days.
+   *
+   * Windows by ARRIVAL — created_at — not by any date the source claims about the
+   * project. Several of those are null, and a control that silently drops every
+   * undated record lies about the size of the book.
+   *
+   * A day count rather than an instant so the clock is read here, where a clock
+   * read is expected; resolving it in a component body is impure and the lint rule
+   * is right to reject it.
+   *
+   * SETTING THIS GIVES UP THE EXACT COUNT, ON PURPOSE. Measured against 111k rows:
+   * `is(apollo_exported_at,null)` + `gte(created_at,…)` + `count:'exact'` exceeds
+   * the statement timeout at over eight seconds, while the same query without the
+   * count returns rows in 754ms. The count is the unaffordable half, so a windowed
+   * query returns `total: null` and the page says "count unavailable" rather than
+   * failing, or worse, reporting zero.
+   */
+  sinceDays?: number;
+  /**
    * Include leads already sent to Apollo.
    *
    * Off by default: once a lead has been handed over it is archived, and leaving
@@ -1033,7 +1052,27 @@ export interface RecordsQuery {
 }
 export interface RecordsResult {
   rows: RecordRow[];
-  total: number;
+  /**
+   * null when the count could not be taken.
+   *
+   * Not zero. An exact count over a filtered 111k-row table can exceed the
+   * statement timeout while the rows themselves come back in under a second, and
+   * "0 records" is the one answer that must never be produced by a query that
+   * failed. Same rule and same shape as EnrichQueueResult.total.
+   */
+  total: number | null;
+  /**
+   * The read itself failed — the rows are not a result, they are an absence.
+   *
+   * This existed as `{ rows: [], total: 0 }` and the page rendered "No records
+   * match these filters", so a statement timeout reached the reader as a
+   * confident empty list. A caller cannot distinguish those two states without
+   * being told, and it is the difference between "widen your filters" and "try
+   * again".
+   */
+  failed: boolean;
+  /** Why, when it failed. Shown to the reader — they are the one who can retry. */
+  error: string | null;
 }
 
 const RECORD_COLUMNS_CORE =
@@ -1082,7 +1121,11 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     const hasPriority = tier === 'full';
     const hasRouting = tier === 'full' || tier === 'routing';
 
-    let query = supabase.from('canonical_projects').select(TIER_COLUMNS[tier], { count: 'exact' });
+    // No exact count when a window is applied — see RecordsQuery.sinceDays.
+    const windowed = Boolean(q.sinceDays && q.sinceDays > 0);
+    let query = windowed
+      ? supabase.from('canonical_projects').select(TIER_COLUMNS[tier])
+      : supabase.from('canonical_projects').select(TIER_COLUMNS[tier], { count: 'exact' });
     // Archived unless asked for. See `includeExported`.
     if (!q.includeExported) query = query.is('apollo_exported_at', null);
     if (q.source) query = query.eq('source_key', q.source);
@@ -1101,6 +1144,9 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     // the owner_group_key migration ignores the filter rather than erroring on
     // an unknown column — a stale bookmarked URL must not break the list.
     if (hasPriority && q.ownerGroup) query = query.eq('owner_group_key', q.ownerGroup);
+    if (windowed) {
+      query = query.gte('created_at', new Date(Date.now() - q.sinceDays! * 86_400_000).toISOString());
+    }
     if (q.search?.trim()) query = query.ilike('canonical_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
 
     // Priority-first by default — the whole point of scoring is that the top of
@@ -1132,18 +1178,30 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
   };
 
   const tiers: ColumnTier[] = ['full', 'routing', 'core'];
-  const attempt = async (sortMode: RecordSort) => {
+  /*
+    Returns the rows, or the reason there are none. Never null-for-both.
+
+    The loop is unchanged — walk down the column tiers while the failure is a
+    missing column, stop on anything else — but "anything else" now travels back
+    as an error rather than as an empty list. That collapse was the bug: a
+    statement timeout and a genuinely empty filter produced identical values.
+  */
+  const attempt = async (sortMode: RecordSort): Promise<RecordsResult | null> => {
+    let lastError: string | null = null;
     for (const tier of tiers) {
       const { data, error, count } = await run(tier, sortMode);
-      if (!error) return { rows: (data ?? []) as unknown as RecordRow[], total: count ?? 0 };
+      if (!error) {
+        return { rows: (data ?? []) as unknown as RecordRow[], total: count ?? null, failed: false, error: null };
+      }
+      lastError = error.message;
       if (!isMissingColumn(error)) break;
     }
-    return null;
+    return lastError ? { rows: [], total: null, failed: true, error: lastError } : null;
   };
 
   const requested: RecordSort = q.sort ?? 'priority';
   const first = await attempt(requested);
-  if (first) return first;
+  if (first && !first.failed) return first;
 
   /*
     `intent_rank` is a generated column added by 20260812120000. Ordering on it
@@ -1156,9 +1214,14 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
   */
   if (requested === 'intent') {
     const fallback = await attempt('priority');
-    if (fallback) return fallback;
+    if (fallback && !fallback.failed) return fallback;
   }
-  return { rows: [], total: 0 };
+  /*
+    Out of options. Report the failure rather than an empty page — if `first`
+    carried an error it is the honest one to show, because it came from the query
+    the caller actually asked for.
+  */
+  return first ?? { rows: [], total: null, failed: true, error: 'The record list could not be read.' };
 }
 
 /** Live per-source ingest stats from canonical_projects (records + avg completeness). */

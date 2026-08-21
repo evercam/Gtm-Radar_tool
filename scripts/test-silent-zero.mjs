@@ -71,6 +71,7 @@ const control = readFileSync('src/app/control/page.tsx', 'utf8');
 const routing = readFileSync('src/app/api/routing/apply/route.ts', 'utf8');
 const demand = readFileSync('src/lib/enrich/demand.ts', 'utf8');
 const apolloExport = readFileSync('src/app/api/export/apollo/route.ts', 'utf8');
+const records = readFileSync('src/app/records/page.tsx', 'utf8');
 
 group('The enrichment queue can say "I failed" instead of "there is nothing"');
 {
@@ -159,6 +160,52 @@ group('The scoring pass cannot abandon its tail and call itself complete');
   check(
     'a zero-scored run no longer always reads as "everything already scored"',
     /res\.total === 0 && res\.truncated/.test(routing)
+  );
+}
+
+group('The record list can say "I failed" instead of "nothing matched"');
+{
+  /*
+    The same bug class, on the surface a seller actually looks at.
+
+    getRecords walked the column tiers on a missing-column error and broke on
+    anything else, returning `{ rows: [], total: 0 }`. /records rendered that as
+    "No records match these filters" — so a statement timeout arrived as a
+    confident empty list telling the reader to WIDEN their filters, when the honest
+    instruction was to try again.
+
+    Reproducible before the fix: an exact count over a date-windowed 111k-row table
+    takes over eight seconds and Postgres cancels it, three times out of three.
+  */
+  const iface = queries.match(/export interface RecordsResult \{[\s\S]*?\n\}/)?.[0] ?? '';
+  check('RecordsResult exists', iface.length > 0);
+  check('total is nullable, so an untaken count is not zero', /total: number \| null/.test(iface), iface.slice(0, 120));
+  check('failed distinguishes a dead read from an empty one', /failed: boolean/.test(iface));
+  check('and it carries the reason', /error: string \| null/.test(iface));
+
+  const fn = queries.match(/export async function getRecords[\s\S]*?\n\}/)?.[0] ?? '';
+  check('getRecords was found', fn.length > 0);
+  check('no return path fabricates total: 0', !/total: 0/.test(code(fn)), code(fn).match(/.{0,40}total: 0.{0,40}/)?.[0]);
+  check(
+    'a failed attempt is not treated as a result',
+    /!first\.failed/.test(code(fn)),
+    'returning a failed attempt as success is the original bug'
+  );
+  check('the last resort reports failure rather than emptiness', /failed: true/.test(code(fn)));
+
+  check(
+    'the records page renders the failure separately from the empty state',
+    /readFailed \?/.test(records),
+    'one branch for both is how a timeout reads as "no records match"'
+  );
+  check(
+    'and still has a genuine empty state for a genuinely empty filter',
+    /No records match these filters/.test(records)
+  );
+  check(
+    'it never prints an unknown count as a number',
+    /countable === null/.test(records),
+    'a null total rendered via toLocaleString would read as a measured figure'
   );
 }
 

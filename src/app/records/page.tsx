@@ -7,11 +7,11 @@ import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import { BAND_LABELS, BU_SHORT, BUSINESS_UNITS, RECORD_TYPES, ROUTES, STAGES } from '@/lib/semantics';
 import { PRIORITY_BANDS } from '@/lib/priority';
 import { LEAD_STATUSES, STATUS_LABELS } from '@/lib/lifecycle';
-import { Badge, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
+import { Badge, Callout, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import RecordDrawer from '@/components/RecordDrawer';
 import { resolveColumns, type RecordCellContext } from '@/components/records/columns';
-import { ColumnPicker, ActiveFilters } from '@/components/records/TableControls';
+import { ActiveFilters, ColumnPicker, DATE_WINDOWS, DateWindowPicker } from '@/components/records/TableControls';
 import RecordDetail from '@/components/RecordDetail';
 import { logEventAsync } from '@/lib/observability/events';
 
@@ -76,9 +76,25 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   // return the working list in an order nobody asked for.
   const includeExported = sp.archived === '1' || sort === 'exported';
 
+  /*
+    The arrival window. Only the day count is resolved here — getRecords turns it
+    into an instant, because reading a clock during render is impure.
+
+    An unknown value is dropped rather than rejected: a stale bookmark showing the
+    whole book is a small surprise, an error page is not.
+  */
+  const sinceDays = DATE_WINDOWS.find((w) => w.key === sp.since)?.days;
+
 
   let rows: RecordRow[] = [];
-  let total = 0;
+  /*
+    null means the count could not be taken — see RecordsResult.total. It is not
+    zero, and every place that prints it has to say so rather than render a
+    reassuring number nobody measured.
+  */
+  let total: number | null = 0;
+  let readFailed = false;
+  let readError: string | null = null;
   /*
     Wall-clock timing for the telemetry below, and the three purity suppressions
     it needs.
@@ -118,9 +134,12 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       includeExported,
       sort,
       search,
+      sinceDays,
     });
     rows = res.rows;
     total = res.total;
+    readFailed = res.failed;
+    readError = res.error;
     /*
       Which filters people actually use, and what they got back.
 
@@ -181,9 +200,18 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     );
   }
 
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const first = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const last = Math.min(page * PAGE_SIZE, total);
+  /*
+    Paging off an unknown total.
+
+    With no count there is no last page, so the pager cannot claim one. It falls
+    back to "there is a next page if this one came back full", which is what a
+    keyset pager would have said anyway, and the header stops printing a total it
+    does not have.
+  */
+  const countable = total ?? null;
+  const pages = countable === null ? page + (rows.length === PAGE_SIZE ? 1 : 0) : Math.max(1, Math.ceil(countable / PAGE_SIZE));
+  const first = rows.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const last = countable === null ? (page - 1) * PAGE_SIZE + rows.length : Math.min(page * PAGE_SIZE, countable);
   const base: SP = {
     source,
     bu,
@@ -206,6 +234,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     // The column choice travels with every other filter, so a link built
     // anywhere on this page keeps the table the reader configured.
     cols: sp.cols,
+    since: sp.since,
   };
 
   /*
@@ -219,6 +248,13 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
   const columns = resolveColumns(sp.cols);
   const cellContext: RecordCellContext = { hrefFor: (id) => qs(base, { record: id }) };
   const hrefForCols = (keys: string[]) => qs(base, { cols: keys.length ? keys.join(',') : undefined, page: undefined });
+  /*
+    A window may carry a sort with it — see DateWindowPicker. Passed through the URL
+    so the sort chips above the table visibly change rather than the order shifting
+    under the reader.
+  */
+  const hrefForWindow = (key: string | undefined, forceSort?: string) =>
+    qs(base, { since: key, page: undefined, ...(forceSort ? { sort: forceSort } : {}) });
   const hrefWithout = (key: string) => qs(base, { [key]: undefined, page: undefined });
 
   /*
@@ -253,8 +289,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
         <div>
           <h1 className="text-foreground text-xl font-bold">My Leads</h1>
           <p className="text-muted mt-1 text-sm">
-            {total.toLocaleString()} records{source ? ` from ${source}` : ''}
-            {total > 0 ? ` · showing ${first.toLocaleString()}–${last.toLocaleString()}` : ''}
+            {countable === null ? 'count unavailable' : `${countable.toLocaleString()} records`}
+            {source ? ` from ${source}` : ''}
+            {rows.length > 0 ? ` · showing ${first.toLocaleString()}–${last.toLocaleString()}` : ''}
           </p>
           {/*
             An owner filter arrives by link from a record drawer, so without this
@@ -295,6 +332,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       <div className="border-border-base mb-3 flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <ActiveFilters filters={activeFilters} hrefWithout={hrefWithout} />
         <div className="ml-auto flex items-center gap-2">
+          <DateWindowPicker current={sp.since} hrefForWindow={hrefForWindow} />
           <ColumnPicker chosen={columns} hrefForCols={hrefForCols} />
         </div>
       </div>
@@ -432,7 +470,31 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {/*
+        A failed read is not an empty result, and this is where the difference
+        finally shows.
+
+        getRecords used to collapse any non-missing-column failure into
+        `{ rows: [], total: 0 }`, and this branch rendered "No records match these
+        filters" over it. A statement timeout — reproducible today by asking for an
+        exact count over a date-windowed 111k-row table — reached the reader as a
+        confident empty list telling them to WIDEN their filters, when the honest
+        instruction was to try again.
+
+        The two states now render differently, and the failed one names the
+        database's own message: the person looking at it is the one who can decide
+        whether to retry or narrow the query.
+      */}
+      {readFailed ? (
+        <Callout tone="danger" size="md">
+          <p className="text-sm font-semibold">The record list could not be read</p>
+          <p className="mt-1 text-xs">
+            This is a failed query, not an empty result — the filters may be fine. Reload to retry, or narrow the
+            filters if it keeps timing out.
+          </p>
+          {readError ? <p className="mt-2 font-mono text-[10px] opacity-80">{readError}</p> : null}
+        </Callout>
+      ) : rows.length === 0 ? (
         <EmptyState
           title="No records match these filters"
           description="Widen the filters, or ingest from a source to populate the table."

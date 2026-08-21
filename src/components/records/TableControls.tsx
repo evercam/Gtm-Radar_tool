@@ -161,6 +161,69 @@ export function ColumnPicker({
 }
 
 /**
+ * The arrival window.
+ *
+ * Windows by `created_at` — when the lead reached this table — not by any date the
+ * source claims about the project. Several of those are null, and a control that
+ * silently drops every undated record lies about the size of the book.
+ *
+ * WHY THE NARROW WINDOW ALSO SETS THE SORT
+ *
+ * Measured against 111k rows, three times each:
+ *
+ *   7 days,  sort=priority    8.7s / 8.9s / 8.9s   timeout, every time
+ *   7 days,  sort=newest      954ms                fine
+ *   30 days, sort=priority    300ms                fine
+ *   90 days, sort=priority    214ms                fine
+ *
+ * A narrow window with an unrelated sort order forces Postgres to find every
+ * matching row and then sort it; aligning the sort with the filter walks one
+ * access path. So the narrow window carries `sort=newest` in its own link and the
+ * item says so — the sort chips above the table will visibly change, which is the
+ * difference between a documented pairing and a silent override.
+ *
+ * A reader who then picks a different sort on a 7-day window gets a real timeout,
+ * and since getRecords now reports failure instead of an empty list, the page says
+ * so and tells them to narrow it. That is an acceptable dead end; a filter that
+ * quietly claims the book is empty was not.
+ */
+export const DATE_WINDOWS = [
+  { key: '7', label: 'Last 7 days', days: 7, forceSort: 'newest' as const },
+  { key: '30', label: 'Last 30 days', days: 30, forceSort: undefined },
+  { key: '90', label: 'Last 90 days', days: 90, forceSort: undefined },
+] as const;
+
+export function DateWindowPicker({
+  current,
+  hrefForWindow,
+}: {
+  current: string | undefined;
+  hrefForWindow: (key: string | undefined, forceSort?: string) => string;
+}) {
+  const active = DATE_WINDOWS.find((w) => w.key === current);
+  return (
+    <Dropdown label="Arrived" summary={active ? active.label : 'All time'} align="right">
+      <Item href={hrefForWindow(undefined)} active={!active}>
+        All time
+      </Item>
+      {DATE_WINDOWS.map((w) => (
+        <Item
+          key={w.key}
+          href={hrefForWindow(w.key, w.forceSort)}
+          active={active?.key === w.key}
+          hint={w.forceSort ? `by ${w.forceSort}` : undefined}
+        >
+          {w.label}
+        </Item>
+      ))}
+      <p className="text-subtle border-border-base mt-1.5 border-t px-2 pt-1.5 text-[10px]">
+        A window trades the exact count for speed — the header shows the page range instead.
+      </p>
+    </Dropdown>
+  );
+}
+
+/**
  * What is currently narrowing the list, as removable chips.
  *
  * Ads Manager's filter row does this and it is the part worth copying most: with
