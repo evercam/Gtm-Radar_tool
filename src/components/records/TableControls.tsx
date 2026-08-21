@@ -71,17 +71,22 @@ function Item({
   active,
   children,
   hint,
+  title,
 }: {
   href: string;
   active?: boolean;
   children: React.ReactNode;
+  /** Short, shown on the right — a count or a qualifier. */
   hint?: string;
+  /** Long, on hover. The sort options need a sentence, not a word. */
+  title?: string;
 }) {
   return (
     <Link
       href={href}
       prefetch={false}
       scroll={false}
+      title={title}
       className={cn(
         'flex items-center justify-between gap-3 rounded px-2 py-1.5 text-[11px]',
         active ? 'bg-brand/10 text-brand font-semibold' : 'text-body hover:bg-surface-raised hover:text-foreground'
@@ -257,5 +262,125 @@ export function ActiveFilters({
         </Link>
       ))}
     </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* FilterDropdown                                                             */
+/* -------------------------------------------------------------------------- */
+
+export interface FilterOption {
+  value: string;
+  label: string;
+  /** Short qualifier shown on the right of the row. */
+  hint?: string;
+  /** Sentence-length explanation, on hover. */
+  title?: string;
+}
+
+/**
+ * One filter, as a dropdown that says what it is currently set to.
+ *
+ * WHAT THIS REPLACES
+ *
+ * Every filter was a row of chips, all of them visible at once: 34 sources plus
+ * BU, type, route, stage, priority, owner, status and sort came to roughly seventy
+ * chips across five wrapped rows, and the source row alone took four of them. The
+ * table started below the fold on a laptop, and finding "is anything filtering
+ * this list" meant reading seventy pills for the one with a tinted background.
+ *
+ * A closed dropdown is one control that states its own value, so eight of them fit
+ * on one line and the ninth thing on that line is the table. What is actually ON
+ * is answered by ActiveFilters below, not by scanning.
+ *
+ * Still links, still no JavaScript — same reasoning as the column picker. `single`
+ * is the whole model here: every one of these filters is a single value in the URL,
+ * so choosing an option replaces rather than accumulates, and choosing the active
+ * one again clears it.
+ */
+export function FilterDropdown({
+  label,
+  current,
+  options,
+  hrefFor,
+  allLabel = 'All',
+  align = 'left',
+}: {
+  label: string;
+  current: string | undefined;
+  options: FilterOption[];
+  /** undefined clears the filter. */
+  hrefFor: (value: string | undefined) => string;
+  allLabel?: string;
+  align?: 'left' | 'right';
+}) {
+  const active = options.find((o) => o.value === current);
+  return (
+    <Dropdown label={label} summary={active ? active.label : allLabel} align={align}>
+      {/*
+        Scrolls because of `source`, which has 34 options. Capping the panel rather
+        than the list keeps every source reachable — a "top 10 and a search box"
+        would hide exactly the long-tail source somebody is hunting for.
+      */}
+      <div className="max-h-72 overflow-y-auto">
+        <Item href={hrefFor(undefined)} active={!active}>
+          {allLabel}
+        </Item>
+        {options.map((o) => (
+          <Item
+            key={o.value}
+            /* Clicking the active option clears it — the chips below can also do
+               this, but the control that set a filter should be able to unset it. */
+            href={hrefFor(o.value === current ? undefined : o.value)}
+            active={o.value === current}
+            hint={o.hint}
+            title={o.title}
+          >
+            {o.label}
+          </Item>
+        ))}
+      </div>
+    </Dropdown>
+  );
+}
+
+/**
+ * Owner, which is three states across two parameters.
+ *
+ * "Mine" is mine=1. "Everyone" is mine=0. "Unassigned" is mine=0 AND owner=none.
+ * Every other filter on this page is one value in one key, so this cannot be a
+ * FilterDropdown without teaching that control about pairs for the sake of one
+ * caller.
+ *
+ * "Everyone" is hidden from someone who cannot see everyone. Offering it and then
+ * refusing is worse than not offering it — the same reason the column picker shows
+ * locked columns as text rather than as dead links.
+ */
+export function OwnerFilter({
+  mine,
+  unassigned,
+  canSeeAll,
+  hrefFor,
+}: {
+  mine: string;
+  unassigned: boolean;
+  canSeeAll: boolean;
+  hrefFor: (patch: Record<string, string | undefined>) => string;
+}) {
+  const summary = unassigned ? 'Unassigned' : mine === '1' ? 'Mine' : 'Everyone';
+  return (
+    <Dropdown label="Owner" summary={summary}>
+      <Item href={hrefFor({ mine: '1', owner: undefined })} active={mine === '1' && !unassigned}>
+        Mine
+      </Item>
+      {canSeeAll ? (
+        <Item href={hrefFor({ mine: '0', owner: undefined })} active={mine === '0' && !unassigned}>
+          Everyone
+        </Item>
+      ) : null}
+      <Item href={hrefFor({ mine: '0', owner: 'none' })} active={unassigned} hint="nobody assigned">
+        Unassigned
+      </Item>
+    </Dropdown>
   );
 }

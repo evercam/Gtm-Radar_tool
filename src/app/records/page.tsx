@@ -7,17 +7,53 @@ import { SOURCE_CATALOG } from '@/lib/sourceCatalog';
 import { BAND_LABELS, BU_SHORT, BUSINESS_UNITS, RECORD_TYPES, ROUTES, STAGES } from '@/lib/semantics';
 import { PRIORITY_BANDS } from '@/lib/priority';
 import { LEAD_STATUSES, STATUS_LABELS } from '@/lib/lifecycle';
-import { Badge, Callout, Chip, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
+import { Badge, Callout, EmptyState, Table, TableShell, TBody, THead, Th, Td } from '@/components/ui';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import RecordDrawer from '@/components/RecordDrawer';
 import { resolveColumns, type RecordCellContext } from '@/components/records/columns';
-import { ActiveFilters, ColumnPicker, DATE_WINDOWS, DateWindowPicker } from '@/components/records/TableControls';
+import {
+  ActiveFilters,
+  ColumnPicker,
+  DATE_WINDOWS,
+  DateWindowPicker,
+  FilterDropdown,
+  OwnerFilter,
+  type FilterOption,
+} from '@/components/records/TableControls';
 import RecordDetail from '@/components/RecordDetail';
 import { logEventAsync } from '@/lib/observability/events';
 
 export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 100;
+
+/*
+  The sort options, and the sentences the chips used to carry as tooltips.
+
+  Kept verbatim: priority and intent are easy to confuse and the difference decides
+  how a rep spends the morning, which is exactly the kind of explanation that gets
+  dropped in a refactor and never noticed missing.
+*/
+const SORT_OPTIONS: FilterOption[] = [
+  {
+    value: 'priority',
+    label: 'priority',
+    title: 'Biggest first — value, capacity, ICP fit and key-account weighting',
+  },
+  {
+    value: 'intent',
+    label: 'intent',
+    title:
+      'Readiest first — timing verdict, then urgent stage, then a named trigger. Ties broken by priority.',
+  },
+  { value: 'newest', label: 'newest' },
+  { value: 'value', label: 'value' },
+  {
+    value: 'exported',
+    label: 'exported',
+    title: 'Most recently handed over to Apollo — includes archived leads',
+  },
+];
 
 
 
@@ -337,121 +373,83 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
         </div>
       </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-subtle text-xs font-medium">Source</span>
-          <Chip href={qs(base, { source: undefined, page: undefined })} active={!source}>
-            All
-          </Chip>
-          {SOURCE_CATALOG.map((s) => (
-            <Chip
-              key={s.sourceKey}
-              href={qs(base, { source: source === s.sourceKey ? undefined : s.sourceKey, page: undefined })}
-              active={source === s.sourceKey}
-            >
-              {s.sourceKey}
-            </Chip>
-          ))}
-        </div>
+        {/*
+          Eight dropdowns and a search box, on one line.
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-subtle text-xs font-medium">BU</span>
-          <Chip href={qs(base, { bu: undefined, page: undefined })} active={!bu}>
-            All
-          </Chip>
-          {BUSINESS_UNITS.map((b) => (
-            <Chip key={b} href={qs(base, { bu: bu === b ? undefined : b, page: undefined })} active={bu === b}>
-              {BU_SHORT[b]}
-            </Chip>
-          ))}
-          <span className="text-subtle ml-3 text-xs font-medium">Type</span>
-          {RECORD_TYPES.map((t) => (
-            <Chip
-              key={t}
-              href={qs(base, { type: recordType === t ? undefined : t, page: undefined })}
-              active={recordType === t}
-            >
-              {t}
-            </Chip>
-          ))}
-        </div>
+          This was five wrapped rows of chips — roughly seventy of them, with the
+          34 sources taking four rows on their own. Every option was visible at
+          once, which sounds like an advantage and is not: the table began below
+          the fold on a laptop, and "is anything filtering this list" meant
+          scanning seventy pills for a tinted background.
 
+          A closed dropdown states its own value, so the set of filters is one line
+          and what is ON is answered by the chips above rather than by scanning.
+        */}
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-subtle text-xs font-medium">Route</span>
-          {ROUTES.map((r) => (
-            <Chip key={r} href={qs(base, { route: route === r ? undefined : r, page: undefined })} active={route === r}>
-              {r}
-            </Chip>
-          ))}
-          <span className="text-subtle ml-3 text-xs font-medium">Stage</span>
-          {STAGES.map((s) => (
-            <Chip key={s} href={qs(base, { stage: stage === s ? undefined : s, page: undefined })} active={stage === s}>
-              {s}
-            </Chip>
-          ))}
-        </div>
+          <FilterDropdown
+            label="Source"
+            current={source}
+            options={SOURCE_CATALOG.map((s) => ({ value: s.sourceKey, label: s.sourceKey }))}
+            hrefFor={(v) => qs(base, { source: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="BU"
+            current={bu}
+            options={BUSINESS_UNITS.map((b) => ({ value: b, label: BU_SHORT[b] ?? b }))}
+            hrefFor={(v) => qs(base, { bu: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Type"
+            current={recordType}
+            options={RECORD_TYPES.map((t) => ({ value: t, label: t }))}
+            hrefFor={(v) => qs(base, { type: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Route"
+            current={route}
+            options={ROUTES.map((r) => ({ value: r, label: r }))}
+            hrefFor={(v) => qs(base, { route: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Stage"
+            current={stage}
+            options={STAGES.map((st) => ({ value: st, label: st }))}
+            hrefFor={(v) => qs(base, { stage: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Priority"
+            current={band}
+            options={PRIORITY_BANDS.map((b) => ({ value: b, label: b, hint: BAND_LABELS[b] }))}
+            hrefFor={(v) => qs(base, { band: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Status"
+            current={status}
+            options={LEAD_STATUSES.map((st) => ({ value: st, label: STATUS_LABELS[st] }))}
+            hrefFor={(v) => qs(base, { status: v, page: undefined })}
+          />
+          {/*
+            Owner is not one parameter, so it is not a FilterDropdown.
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-subtle text-xs font-medium">Priority</span>
-          {PRIORITY_BANDS.map((b) => (
-            <Chip
-              key={b}
-              href={qs(base, { band: band === b ? undefined : b, page: undefined })}
-              active={band === b}
-              title={BAND_LABELS[b]}
-            >
-              {b}
-            </Chip>
-          ))}
-          <span className="text-subtle text-xs font-medium">Owner</span>
-          <Chip href={qs(base, { mine: '1', owner: undefined, page: undefined })} active={mine === '1'}>
-            Mine
-          </Chip>
-          {canSeeAll ? (
-            <Chip
-              href={qs(base, { mine: '0', owner: undefined, page: undefined })}
-              active={mine === '0' && !unassigned}
-            >
-              Everyone
-            </Chip>
-          ) : null}
-          <Chip href={qs(base, { mine: '0', owner: 'none', page: undefined })} active={unassigned}>
-            Unassigned
-          </Chip>
-
-          <span className="text-subtle ml-3 text-xs font-medium">Status</span>
-          {LEAD_STATUSES.map((st) => (
-            <Chip
-              key={st}
-              href={qs(base, { status: status === st ? undefined : st, page: undefined })}
-              active={status === st}
-              title={STATUS_LABELS[st]}
-            >
-              {STATUS_LABELS[st]}
-            </Chip>
-          ))}
-          <span className="text-subtle ml-3 text-xs font-medium">Sort</span>
-          {(['priority', 'intent', 'newest', 'value', 'exported'] as const).map((s) => (
-            <Chip
-              key={s}
-              href={qs(base, { sort: s, page: undefined })}
-              active={sort === s}
-              title={
-                s === 'exported'
-                  ? 'Most recently handed over to Apollo — includes archived leads'
-                  : /*
-                      Spelled out because the two are easy to confuse and the
-                      difference decides how a rep spends the morning.
-                    */
-                    s === 'intent'
-                    ? 'Readiest first — timing verdict, then urgent stage, then a named trigger. Ties broken by priority.'
-                    : s === 'priority'
-                      ? 'Biggest first — value, capacity, ICP fit and key-account weighting'
-                      : undefined
-              }
-            >
-              {s}
-            </Chip>
-          ))}
+            "Mine" sets mine=1, "Everyone" sets mine=0, and "Unassigned" sets
+            mine=0 plus owner=none — three states across two parameters, where
+            every other filter here is one value in one key. Squeezing it into the
+            generic control would mean teaching that control about pairs to serve
+            a single caller.
+          */}
+          <OwnerFilter
+            mine={mine}
+            unassigned={unassigned}
+            canSeeAll={canSeeAll}
+            hrefFor={(patch) => qs(base, { ...patch, page: undefined })}
+          />
+          <FilterDropdown
+            label="Sort"
+            current={sort}
+            allLabel="Priority"
+            options={SORT_OPTIONS}
+            hrefFor={(v) => qs(base, { sort: v ?? 'priority', page: undefined })}
+          />
 
           <form action="/records" className="ml-auto flex gap-1">
             {Object.entries(base).map(([k, v]) =>
@@ -461,9 +459,9 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
               name="q"
               defaultValue={search ?? ''}
               placeholder="Search name…"
-              className="border-border-strong bg-surface text-foreground rounded-lg border px-3 py-1.5 text-sm"
+              className="border-border-strong bg-surface text-foreground rounded-lg border px-2.5 py-1.5 text-[11px]"
             />
-            <button className="bg-brand text-brand-contrast hover:bg-brand-hover rounded-lg px-3 py-1.5 text-sm font-medium transition-colors">
+            <button className="bg-brand text-brand-contrast hover:bg-brand-hover rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors">
               Go
             </button>
           </form>
