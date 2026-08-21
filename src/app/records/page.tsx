@@ -19,7 +19,7 @@ import {
   FilterDropdown,
   OwnerFilter,
   type FilterOption,
-} from '@/components/records/TableControls';
+} from '@/components/table/TableControls';
 import RecordDetail from '@/components/RecordDetail';
 import { logEventAsync } from '@/lib/observability/events';
 

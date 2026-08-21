@@ -1,9 +1,10 @@
 import Link from 'next/link';
+import { ActiveFilters, FilterDropdown } from '@/components/table/TableControls';
 import { Badge } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { statusText } from '@/lib/status-colors';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
-import { getAccounts, type AccountViewRow } from '@/lib/queries';
+import { getAccounts, type AccountViewRow, type AccountsSort } from '@/lib/queries';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import { BU_SHORT as BU_LABELS } from '@/lib/semantics';
 
@@ -44,11 +45,27 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   const bu = sp.bu;
   const vertical = sp.vertical;
   const search = sp.q;
+  /*
+    Three filters this page did not have, chosen by looking at the data rather than
+    by listing the columns.
+
+    `contact` is the one that matters: sampled across 1,000 of 6,629 accounts, only
+    77 have a single contact between them. Without it the table is 92% companies
+    nobody can ring.
+
+    A Role filter was considered and dropped — account_role holds `owner` (819 of
+    that sample) or nothing, so the control would have had one option.
+  */
+  const contact = sp.contact === 'yes' || sp.contact === 'no' ? sp.contact : undefined;
+  const expansion = sp.expansion === 'yes' || sp.expansion === 'no' ? sp.expansion : undefined;
+  const sort = (['score', 'value', 'projects', 'name'] as const).includes(sp.sort as AccountsSort)
+    ? (sp.sort as AccountsSort)
+    : 'score';
 
   let rows: AccountViewRow[] = [];
   let total = 0;
   try {
-    const res = await getAccounts({ page, pageSize: PAGE_SIZE, keyOnly, bu, vertical, search });
+    const res = await getAccounts({ page, pageSize: PAGE_SIZE, keyOnly, bu, vertical, search, contact, expansion, sort });
     rows = res.rows;
     total = res.total;
   } catch (err) {
@@ -62,9 +79,33 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const first = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const last = Math.min(page * PAGE_SIZE, total);
-  const base: SP = { key: keyOnly ? '1' : undefined, bu, vertical, q: search };
-  const chip = (active: boolean) =>
-    `rounded-full px-3 py-1 text-xs font-medium ${active ? 'bg-brand text-white' : 'bg-surface-raised text-muted hover:bg-surface-raised'}`;
+  const base: SP = {
+    key: keyOnly ? '1' : undefined,
+    bu,
+    vertical,
+    q: search,
+    contact,
+    expansion,
+    sort: sort === 'score' ? undefined : sort,
+  };
+
+  /*
+    What is narrowing the list, as removable chips — the same control /records uses.
+
+    This page had its own `chip()` helper producing className strings, which was a
+    third hand-rolled copy of a pattern the Chip primitive and the records page
+    already had. Sharing the dropdowns removes the copy rather than adding a fourth.
+  */
+  const activeFilters = (
+    [
+      { key: 'key', label: 'key accounts', value: keyOnly ? 'only' : undefined },
+      { key: 'bu', label: 'BU', value: bu ? (BU_LABELS[bu] ?? bu) : undefined },
+      { key: 'vertical', label: 'vertical', value: vertical ? titleize(vertical) : undefined },
+      { key: 'contact', label: 'contact', value: contact === 'yes' ? 'has one' : contact === 'no' ? 'none' : undefined },
+      { key: 'expansion', label: 'expansion', value: expansion === 'yes' ? 'signalled' : expansion === 'no' ? 'none' : undefined },
+      { key: 'q', label: 'search', value: search },
+    ] as const
+  ).flatMap((f) => (f.value ? [{ key: f.key, label: f.label, value: f.value }] : []));
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
@@ -85,46 +126,88 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
         </div>
       </div>
 
-      {/* filters */}
-      <div className="mb-5 space-y-2">
+      {/*
+        One row of dropdowns, plus the chips saying what is on.
+
+        This was two rows of hand-rolled chip links — every BU and every vertical
+        rendered at once, with a local `chip()` helper that was a third copy of a
+        pattern the design system already had. The controls are the shared ones
+        /records uses, so the two tables now behave the same way and there is one
+        set of behaviours to keep in step.
+      */}
+      <div className="border-border-base mb-4 space-y-2 border-b pb-3">
+        <ActiveFilters filters={activeFilters} hrefWithout={(k) => qs(base, { [k]: undefined, page: undefined })} />
+
         <div className="flex flex-wrap items-center gap-2">
-          <Link href={qs(base, { key: keyOnly ? undefined : '1', page: undefined })} className={chip(keyOnly)}>
-            ★ Key only
-          </Link>
-          <span className="mx-1 text-muted">|</span>
-          <Link href={qs(base, { bu: undefined, page: undefined })} className={chip(!bu)}>
-            All BUs
-          </Link>
-          {BUS.map((b) => (
-            <Link key={b} href={qs(base, { bu: bu === b ? undefined : b, page: undefined })} className={chip(bu === b)}>
-              {BU_LABELS[b]}
-            </Link>
-          ))}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Link href={qs(base, { vertical: undefined, page: undefined })} className={chip(!vertical)}>
-            All verticals
-          </Link>
-          {VERTICALS.map((v) => (
-            <Link
-              key={v}
-              href={qs(base, { vertical: vertical === v ? undefined : v, page: undefined })}
-              className={chip(vertical === v)}
-            >
-              {titleize(v)}
-            </Link>
-          ))}
+          <FilterDropdown
+            label="Key"
+            current={keyOnly ? '1' : undefined}
+            allLabel="All accounts"
+            options={[{ value: '1', label: '★ Key accounts only' }]}
+            hrefFor={(v) => qs(base, { key: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="BU"
+            current={bu}
+            options={BUS.map((b) => ({ value: b, label: BU_LABELS[b] ?? b }))}
+            hrefFor={(v) => qs(base, { bu: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Vertical"
+            current={vertical}
+            options={VERTICALS.map((v) => ({ value: v, label: titleize(v) }))}
+            hrefFor={(v) => qs(base, { vertical: v, page: undefined })}
+          />
+          {/*
+            The filter that changes how this page reads. 92% of accounts have
+            nobody to call, so "has a contact" is the difference between a
+            prospecting list and a directory.
+          */}
+          <FilterDropdown
+            label="Contact"
+            current={contact}
+            allLabel="Any"
+            options={[
+              { value: 'yes', label: 'Has a contact', hint: 'reachable' },
+              { value: 'no', label: 'No contact', hint: 'needs enrichment' },
+            ]}
+            hrefFor={(v) => qs(base, { contact: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Expansion"
+            current={expansion}
+            allLabel="Any"
+            options={[
+              { value: 'yes', label: 'Signalled' },
+              { value: 'no', label: 'No signal' },
+            ]}
+            hrefFor={(v) => qs(base, { expansion: v, page: undefined })}
+          />
+          <FilterDropdown
+            label="Sort"
+            current={sort === 'score' ? undefined : sort}
+            allLabel="Key score"
+            options={[
+              { value: 'value', label: 'Total value', title: 'Null on 92% of accounts — this narrows as much as it sorts' },
+              { value: 'projects', label: 'Project count' },
+              { value: 'name', label: 'Name' },
+            ]}
+            hrefFor={(v) => qs(base, { sort: v, page: undefined })}
+          />
+
           <form action="/accounts" className="ml-auto flex gap-1">
-            {keyOnly ? <input type="hidden" name="key" value="1" /> : null}
-            {bu ? <input type="hidden" name="bu" value={bu} /> : null}
-            {vertical ? <input type="hidden" name="vertical" value={vertical} /> : null}
+            {Object.entries(base).map(([k, v]) =>
+              v && k !== 'q' ? <input key={k} type="hidden" name={k} value={v} /> : null
+            )}
             <input
               name="q"
               defaultValue={search ?? ''}
               placeholder="Search account…"
-              className="rounded border border-border-strong bg-surface px-2 py-1 text-sm"
+              className="border-border-strong bg-surface text-foreground rounded-lg border px-2.5 py-1.5 text-[11px]"
             />
-            <button className="rounded bg-brand px-3 py-1 text-sm font-medium text-white">Go</button>
+            <button className="bg-brand text-brand-contrast hover:bg-brand-hover rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors">
+              Go
+            </button>
           </form>
         </div>
       </div>

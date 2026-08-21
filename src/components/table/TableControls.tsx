@@ -1,9 +1,17 @@
 import Link from 'next/link';
 import { Badge } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { RECORD_COLUMNS, type RecordColumn } from './columns';
+import { RECORD_COLUMNS, type RecordColumn } from '@/components/records/columns';
 
 /**
+ * Shared table controls — used by /records and /accounts.
+ *
+ * Moved out of components/records once the accounts table wanted the same
+ * dropdowns and the same removable chips. ColumnPicker is still record-specific
+ * (it reads RECORD_COLUMNS); FilterDropdown, OwnerFilter, DateWindowPicker and
+ * ActiveFilters are not, and a second copy of them would be a second set of
+ * behaviours to keep in step.
+ *
  * The column chooser, and the chips showing what is narrowing the list.
  *
  * A date window belongs here too and is deliberately absent. It was built, and it

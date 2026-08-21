@@ -1409,6 +1409,8 @@ export interface AccountViewRow {
   expansion_signal: string | null;
 }
 
+export type AccountsSort = 'score' | 'value' | 'projects' | 'name';
+
 export interface AccountsQuery {
   page?: number;
   pageSize?: number;
@@ -1416,6 +1418,25 @@ export interface AccountsQuery {
   bu?: string;
   vertical?: string;
   search?: string;
+  /**
+   * Whether the account has anybody to call.
+   *
+   * The most useful filter on this table, because of how the data actually looks:
+   * sampled across 1,000 of 6,629 accounts, only 77 have a single contact. Without
+   * this the page is 92% companies nobody can ring, and finding the 8% means
+   * paging.
+   */
+  contact?: 'yes' | 'no';
+  /** Accounts carrying an expansion signal — 196 of that same 1,000 sample. */
+  expansion?: 'yes' | 'no';
+  /**
+   * Ordering. Key accounts stay first under every option.
+   *
+   * Not a free choice: `value` sorts on total_value, which is null on 92% of
+   * accounts, so it is offered with nullsFirst false and is honestly a filter as
+   * much as a sort. `score` is the default and the previous fixed behaviour.
+   */
+  sort?: AccountsSort;
 }
 export interface AccountsResult {
   rows: AccountViewRow[];
@@ -1435,10 +1456,26 @@ export async function getAccounts(q: AccountsQuery = {}): Promise<AccountsResult
   if (q.bu) query = query.contains('bus', [q.bu]);
   if (q.vertical) query = query.contains('verticals', [q.vertical]);
   if (q.search?.trim()) query = query.ilike('account_name', `%${q.search.trim().replace(/[%_]/g, '')}%`);
+  // `with_contact` is a count, so "has a contact" is > 0 rather than not-null.
+  if (q.contact === 'yes') query = query.gt('with_contact', 0);
+  if (q.contact === 'no') query = query.eq('with_contact', 0);
+  if (q.expansion === 'yes') query = query.not('expansion_signal', 'is', null);
+  if (q.expansion === 'no') query = query.is('expansion_signal', null);
+
+  /*
+    Key accounts first under every sort.
+
+    The secondary key is what the caller chose. Putting the chosen sort first
+    instead would let a high-value non-key account outrank a key one, and the
+    whole point of the flag is that it outranks.
+  */
+  query = query.order('key_account', { ascending: false });
+  if (q.sort === 'value') query = query.order('total_value', { ascending: false, nullsFirst: false });
+  else if (q.sort === 'projects') query = query.order('portfolio_project_count', { ascending: false, nullsFirst: false });
+  else if (q.sort === 'name') query = query.order('account_name', { ascending: true, nullsFirst: false });
+  else query = query.order('key_account_score', { ascending: false, nullsFirst: false });
 
   query = query
-    .order('key_account', { ascending: false })
-    .order('key_account_score', { ascending: false, nullsFirst: false })
     .order('project_count', { ascending: false })
     .range(from, to);
 
