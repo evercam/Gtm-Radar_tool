@@ -94,6 +94,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     status = sp.status,
     completenessTier = sp.tier,
     crmSignal = sp.crm,
+    crmReview = sp.crm_evidence,
     ownerGroup = sp.owner_group;
   // Sellers see their own book by default; managers and admins see everything
   // and opt into a narrower view. `mine=0` lets a seller look at the wider
@@ -166,6 +167,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       status,
       completenessTier,
       crmSignal,
+      crmReview: crmReview as 'name_only' | 'weak' | 'domain' | undefined,
       ownerId,
       unassigned,
       ownerGroup,
@@ -214,6 +216,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
         status,
         tier: completenessTier,
         crm: crmSignal,
+        crm_evidence: crmReview,
         owner_group: ownerGroup,
         unassigned: unassigned || undefined,
         archived: includeExported || undefined,
@@ -263,6 +266,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
     status,
     tier: completenessTier,
     crm: crmSignal,
+    crm_evidence: crmReview,
     mine,
     owner: sp.owner,
     owner_group: ownerGroup,
@@ -315,6 +319,7 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
       { key: 'status', label: 'status', value: status },
       { key: 'tier', label: 'tier', value: completenessTier },
       { key: 'crm', label: 'CRM', value: crmSignal },
+      { key: 'crm_evidence', label: 'CRM evidence', value: crmReview },
       { key: 'owner_group', label: 'owner', value: ownerGroup },
       { key: 'q', label: 'search', value: search },
     ] as const
@@ -445,6 +450,29 @@ export default async function RecordsPage({ searchParams }: { searchParams: Prom
               { value: 'any', label: 'any match', hint: 'every lead the CRM recognises' },
             ]}
             hrefFor={(v) => qs(base, { crm: v, page: undefined })}
+          />
+          {/*
+            How much to trust the match, separate from what it says.
+
+            Only about a fifth of CRM accounts carry a website, so most matches
+            rest on a name — and the CRM holds six companies with "Turner" in the
+            title. "LP HINES → Hines" is almost certainly right and is exactly the
+            shape that needs a human glance, and before this the only way to find
+            those was to open records one at a time.
+
+            Separate from the CRM filter rather than folded into it, so "lapsed
+            customers matched on name alone" is one view instead of two lists to
+            intersect by hand.
+          */}
+          <FilterDropdown
+            label="CRM evidence"
+            current={crmReview}
+            options={[
+              { value: 'name_only', label: 'name only', hint: 'no domain to corroborate it — review these' },
+              { value: 'weak', label: 'low confidence', hint: 'several accounts shared the name' },
+              { value: 'domain', label: 'domain match', hint: 'corroborated by a shared website' },
+            ]}
+            hrefFor={(v) => qs(base, { crm_evidence: v, page: undefined })}
           />
           <FilterDropdown
             label="Status"

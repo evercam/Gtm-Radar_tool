@@ -1021,6 +1021,16 @@ export interface RecordsQuery {
    * slot on a company the business had already given up on.
    */
   crmSignal?: string;
+  /**
+   * Which CRM matches to show, by how much they should be trusted.
+   *
+   * `name_only` and `weak` exist because the evidence behind a match varies a
+   * lot and the weak half needs reviewing rather than believing. Only about a
+   * fifth of CRM accounts carry a website, so most matches rest on a name — and
+   * the CRM holds six different companies with "Turner" in the title. Without a
+   * way to list those, checking them means opening records one at a time.
+   */
+  crmReview?: 'name_only' | 'weak' | 'domain';
   status?: string;
   /** Restrict to one owner. 'me' is resolved by the caller to a user id. */
   ownerId?: string;
@@ -1146,6 +1156,14 @@ export async function getRecords(q: RecordsQuery = {}): Promise<RecordsResult> {
     if (q.crmSignal) {
       query = q.crmSignal === 'any' ? query.not('crm_signal', 'is', null) : query.eq('crm_signal', q.crmSignal);
     }
+    /*
+      Composable with the signal filter rather than replacing it, so "lapsed
+      customers matched on name alone" — the set most worth an eye — is one view
+      rather than two lists to intersect by hand.
+    */
+    if (q.crmReview === 'name_only') query = query.eq('crm_match_basis', 'exact_name');
+    else if (q.crmReview === 'domain') query = query.eq('crm_match_basis', 'domain');
+    else if (q.crmReview === 'weak') query = query.eq('crm_match_confidence', 'low');
     if (hasRouting && q.route) query = query.eq('route', q.route);
     if (hasRouting && q.stage) query = query.eq('stage', q.stage);
     if (hasPriority && q.band) query = query.eq('priority_band', q.band);
