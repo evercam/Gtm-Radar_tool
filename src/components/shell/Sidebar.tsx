@@ -43,9 +43,16 @@ export default function Sidebar({
     return pathname === href || pathname.startsWith(`${href}/`);
   };
 
+  const visible = (item: { permission?: Permission }) => !item.permission || granted.has(item.permission);
   const sections = NAV_SECTIONS.map((section) => ({
     ...section,
-    items: section.items.filter((item) => !item.permission || granted.has(item.permission)),
+    items: section.items.filter(visible).map((item) => ({
+      ...item,
+      // Children are gated individually. Someone with control.access but not
+      // logs.view reaches Operations and does not see Activity Log — the same rule
+      // the tab strip applied, moved with the links.
+      children: item.children?.filter(visible),
+    })),
   })).filter((section) => section.items.length > 0);
 
   return (
@@ -82,7 +89,7 @@ export default function Sidebar({
               <div className="space-y-0.5">
                 {section.items.map((item) => {
                   const active = isActive(item.href);
-                  return (
+                  const link = (
                     <Link
                       key={item.href}
                       href={item.href}
@@ -100,6 +107,48 @@ export default function Sidebar({
                       </span>
                       <span className="text-[12px] font-medium leading-none">{item.label}</span>
                     </Link>
+                  );
+                  /*
+                    Children only while the section is open, which is what makes
+                    putting them here defensible at all.
+
+                    The tab strip that used to carry them is gone, so these links
+                    live in one place now rather than two — that was the original
+                    objection. The other half of it was length: "a rail that
+                    enumerates every page stops being navigation and becomes a table
+                    of contents you scroll past." Showing them only inside the
+                    active section answers that directly — three entries deep until
+                    you are in Operations, nine while you are, and never a list of
+                    every page in the app.
+                  */
+                  if (!active || !item.children?.length) return link;
+                  return (
+                    <div key={item.href}>
+                      {link}
+                      <div className="mt-0.5 space-y-0.5 border-l border-sidebar-border pb-1 pl-3 ml-4">
+                        {item.children.map((child) => {
+                          const childActive = isActive(child.href);
+                          return (
+                            <Link
+                              key={child.href}
+                              href={child.href}
+                              onClick={onClose}
+                              aria-current={childActive ? 'page' : undefined}
+                              className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 transition-colors duration-150 ${
+                                childActive
+                                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                                  : 'text-sidebar-foreground hover:bg-sidebar-accent-hover hover:text-sidebar-accent-foreground'
+                              }`}
+                            >
+                              <span className="flex w-4 shrink-0 items-center justify-center">
+                                <child.icon size={13} strokeWidth={2} />
+                              </span>
+                              <span className="text-[11px] font-medium leading-none">{child.label}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    </div>
                   );
                 })}
               </div>

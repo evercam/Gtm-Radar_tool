@@ -10,7 +10,7 @@
  *   node --experimental-transform-types scripts/test-nav.mjs
  */
 
-import { NAV_SECTIONS, CONTROL_TABS, ADMIN_TABS } from '../src/lib/nav.ts';
+import { NAV_SECTIONS, CONTROL_PAGES, ADMIN_PAGES } from '../src/lib/nav.ts';
 import { permissionForPath, ROUTE_PERMISSIONS, ROLE_PERMISSIONS, can } from '../src/lib/auth/roles.ts';
 import { KNOWN_PERMISSIONS } from '@/lib/auth/roles';
 
@@ -25,14 +25,14 @@ group('Every href is unique — the sidebar keys on it');
 {
   const d = dupes(allItems.map((i) => i.href));
   check('no duplicate href across the sidebar', d.length === 0, d.join(', '));
-  const dt = dupes(CONTROL_TABS.map((i) => i.href));
+  const dt = dupes(CONTROL_PAGES.map((i) => i.href));
   check('no duplicate href in the Operations tabs', dt.length === 0, dt.join(', '));
-  const da = dupes(ADMIN_TABS.map((i) => i.href));
+  const da = dupes(ADMIN_PAGES.map((i) => i.href));
   check('no duplicate href in the Administration tabs', da.length === 0, da.join(', '));
 }
 
 group('Every entry is complete');
-for (const [name, list] of [['sidebar', allItems], ['control tabs', CONTROL_TABS], ['admin tabs', ADMIN_TABS]]) {
+for (const [name, list] of [['sidebar', allItems], ['control pages', CONTROL_PAGES], ['admin pages', ADMIN_PAGES]]) {
   check(`${name}: every item has a label`, list.every((i) => typeof i.label === 'string' && i.label.trim().length > 0));
   // Lucide icons are forwardRef objects, not plain functions.
   check(`${name}: every item has a renderable icon`, list.every((i) => {
@@ -58,23 +58,47 @@ group('The rail lands on a page that carries its section tabs');
 // page in that section's strip. If it is not, the strip never renders there and
 // every other page in the section is orphaned — nothing errors, the links simply
 // cease to exist for anyone who did not bookmark them.
-for (const [section, tabs] of [
-  ['Operations', CONTROL_TABS],
-  ['Administration', ADMIN_TABS],
-]) {
-  const sidebarHrefs = [...new Set((NAV_SECTIONS.find((s) => s.title === section)?.items ?? []).map((i) => i.href))];
-  const tabHrefs = new Set(tabs.map((i) => i.href));
-  const missingFromTabs = sidebarHrefs.filter((h) => !tabHrefs.has(h));
+/*
+  THESE ASSERTIONS CHANGED WITH THE DESIGN, ON PURPOSE.
 
-  check(`${section}: the rail entry is one of the tabs`, missingFromTabs.length === 0, missingFromTabs.join(', '));
-  check(`${section}: the rail names the section once`, sidebarHrefs.length === 1, `${sidebarHrefs.length} entries`);
-  // Every page in the section must be a tab, or it is reachable from nowhere.
-  check(`${section}: the strip covers more than the landing page`, tabHrefs.size > 1, `${tabHrefs.size} tab(s)`);
+  They used to require the rail to name each section exactly once and the tab strip
+  to carry the pages. The strip is gone: the pages are children of the rail entry,
+  shown while that section is active. So "the rail names the section once" is now
+  about the TOP level, and the reachability question moves to the children.
+
+  What has not changed is why any of it is checked. A page listed nowhere is
+  reachable only by bookmark, and nothing errors when that happens — the links
+  simply cease to exist for anyone who did not already have them.
+*/
+for (const [section, pages] of [
+  ['Operations', CONTROL_PAGES],
+  ['Administration', ADMIN_PAGES],
+]) {
+  const items = NAV_SECTIONS.find((s) => s.title === section)?.items ?? [];
+  const topHrefs = [...new Set(items.map((i) => i.href))];
+  const childHrefs = items.flatMap((i) => (i.children ?? []).map((c) => c.href));
+
+  check(`${section}: one top-level rail entry`, topHrefs.length === 1, `${topHrefs.length} entries`);
+  check(`${section}: its pages hang off it as children`, childHrefs.length === pages.length,
+    `${childHrefs.length} children vs ${pages.length} pages`);
+  /*
+    A child repeating its parent's href would render the same destination twice in
+    one group — which is why Overview is not in CONTROL_PAGES: it IS /control, the
+    parent. Worth asserting because the duplicate looks harmless and reads as a bug.
+  */
+  const echoesParent = childHrefs.filter((h) => topHrefs.includes(h));
+  check(`${section}: no child repeats the parent's href`, echoesParent.length === 0, echoesParent.join(', '));
+  check(`${section}: the section has pages beyond its landing page`, childHrefs.length > 0, `${childHrefs.length}`);
 }
 
 group('A page is not offered from two different areas');
 {
-  const bySection = NAV_SECTIONS.map((s) => [s.title, s.items.map((i) => i.href)]);
+  const bySection = NAV_SECTIONS.map((s) => [
+    s.title,
+    // Children included: a page nested under the wrong section is the same bug as
+    // a top-level one, and harder to spot.
+    s.items.flatMap((i) => [i.href, ...(i.children ?? []).map((c) => c.href)]),
+  ]);
   const seen = new Map();
   const straddling = [];
   for (const [title, hrefs] of bySection) {
@@ -103,7 +127,7 @@ group('Permissions are named, not invented');
     passes until somebody inserts something.
   */
   const KNOWN = new Set(KNOWN_PERMISSIONS);
-  const used = [...allItems, ...CONTROL_TABS, ...ADMIN_TABS].map((i) => i.permission).filter(Boolean);
+  const used = [...allItems, ...CONTROL_PAGES, ...ADMIN_PAGES].map((i) => i.permission).filter(Boolean);
   const unknown = used.filter((p) => !KNOWN.has(p));
   check('every permission referenced exists', unknown.length === 0, unknown.join(', '));
 }
@@ -143,7 +167,7 @@ group('Route guards resolve to the most specific prefix');
     can() was made to fail closed, and threw after.
   */
   const holders = Object.values(ROLE_PERMISSIONS).map((permissions) => ({ permissions }));
-  for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
+  for (const item of [...CONTROL_PAGES, ...ADMIN_PAGES]) {
     const need = permissionForPath(item.href);
     if (!need) continue;
     check(`${item.href} is reachable by some role`, holders.some((h) => can(h, need)), `needs ${need}`);
@@ -151,7 +175,7 @@ group('Route guards resolve to the most specific prefix');
 
   // Every tab's own declared permission must be at least as strong as the route
   // guard, or the sidebar offers a link the page then refuses.
-  for (const item of [...CONTROL_TABS, ...ADMIN_TABS]) {
+  for (const item of [...CONTROL_PAGES, ...ADMIN_PAGES]) {
     const need = permissionForPath(item.href);
     if (!need || !item.permission) continue;
     const shown = holders.filter((h) => can(h, item.permission));

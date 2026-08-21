@@ -35,6 +35,19 @@ export interface NavItem {
   icon: LucideIcon;
   /** Omitted means every signed-in user sees it. */
   permission?: Permission;
+  /**
+   * Pages within this one, shown in the rail only while it is the active section.
+   *
+   * The tab strip that used to carry these is gone. The original objection to
+   * listing them here still stands — "a rail that enumerates every page stops
+   * being navigation and becomes a table of contents you scroll past" — and it is
+   * answered by the "only while active" part rather than ignored: the rail is
+   * three entries deep until you are inside Operations, and eight while you are.
+   *
+   * What has changed since that note is that the links are in ONE place now, not
+   * two. The duplication it was written about is what made enumerating them bad.
+   */
+  children?: NavItem[];
 }
 
 export interface NavSection {
@@ -67,6 +80,34 @@ export interface NavSection {
  * ADMIN_TABS below carry the pages within it. Nothing became unreachable: the
  * rail lands you on the section's first tab, and the strip is there.
  */
+/**
+ * The pages inside Operations.
+ *
+ * Declared before NAV_SECTIONS because the section nests them. Read by the rail
+ * and by nothing else — the tab strip that also read this list was removed when
+ * the rail took the job, which is exactly why enumerating pages in the rail is
+ * acceptable again. The original objection was that the same seven links lived in
+ * two places; now there is one.
+ *
+ * Overview is deliberately absent: it is `/control` itself, which the parent entry
+ * already links to, and listing it would put the same href twice in one group.
+ */
+export const CONTROL_PAGES: NavItem[] = [
+  { label: 'Source Hub', href: '/control/sources', icon: Satellite, permission: 'sources.run' },
+  { label: 'Enrichment', href: '/control/enrichment', icon: Sparkles, permission: 'enrichment.run' },
+  { label: 'Routing', href: '/control/routing', icon: Route, permission: 'routing.edit' },
+  { label: 'Team & Users', href: '/control/team', icon: Users, permission: 'leads.reassign' },
+  // Last, because it is the only one you read rather than operate — and the one
+  // you open after a send, not before.
+  { label: 'Export History', href: '/control/exports', icon: History, permission: 'leads.export' },
+  { label: 'Activity Log', href: '/control/logs', icon: ScrollText, permission: 'logs.view' },
+];
+
+/** The pages inside Administration. Settings itself is the parent entry. */
+export const ADMIN_PAGES: NavItem[] = [
+  { label: 'Cost', href: '/admin/costs', icon: Wallet, permission: 'enrichment.run' },
+];
+
 export const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Work',
@@ -78,14 +119,29 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     title: 'Operations',
-    items: [{ label: 'Operations', href: '/control', icon: LayoutGrid, permission: 'control.access' }],
+    items: [
+      {
+        label: 'Operations',
+        href: '/control',
+        icon: LayoutGrid,
+        permission: 'control.access',
+        children: CONTROL_PAGES,
+      },
+    ],
   },
   {
     title: 'Administration',
-    // Cost lives under Settings now — it is the second Administration tab, so it
-    // is one click from here rather than a rail entry of its own. Spend is
-    // something you go and look at, not somewhere you navigate to daily.
-    items: [{ label: 'Settings', href: '/admin/settings', icon: Settings2, permission: 'settings.manage' }],
+    // Cost is a child rather than a rail entry of its own. Spend is something you
+    // go and look at, not somewhere you navigate to daily.
+    items: [
+      {
+        label: 'Settings',
+        href: '/admin/settings',
+        icon: Settings2,
+        permission: 'settings.manage',
+        children: ADMIN_PAGES,
+      },
+    ],
   },
 ];
 
@@ -103,23 +159,4 @@ export const NAV_FOOTER: NavItem[] = [
     permission — it renders no data, so there is nothing to gate.
   */
   { label: 'Design guide', href: '/design-guide', icon: Palette },
-];
-
-/** Tabs across the top of every Operations page. */
-export const CONTROL_TABS: NavItem[] = [
-  { label: 'Overview', href: '/control', icon: LayoutGrid, permission: 'control.access' },
-  { label: 'Source Hub', href: '/control/sources', icon: Satellite, permission: 'sources.run' },
-  { label: 'Enrichment', href: '/control/enrichment', icon: Sparkles, permission: 'enrichment.run' },
-  { label: 'Routing', href: '/control/routing', icon: Route, permission: 'routing.edit' },
-  { label: 'Team & Users', href: '/control/team', icon: Users, permission: 'leads.reassign' },
-  // Last, because it is the only tab you read rather than operate — and the one
-  // you open after a send, not before.
-  { label: 'Export History', href: '/control/exports', icon: History, permission: 'leads.export' },
-  { label: 'Activity Log', href: '/control/logs', icon: ScrollText, permission: 'logs.view' },
-];
-
-/** Tabs across the top of every Administration page. */
-export const ADMIN_TABS: NavItem[] = [
-  { label: 'API Keys & Policies', href: '/admin/settings', icon: Settings2, permission: 'settings.manage' },
-  { label: 'Cost', href: '/admin/costs', icon: Wallet, permission: 'enrichment.run' },
 ];
