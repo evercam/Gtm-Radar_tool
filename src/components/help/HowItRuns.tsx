@@ -116,26 +116,40 @@ export default function HowItRuns() {
         </Card>
 
         <Card className="mt-3">
-          <CardHeader title="Once a day, early" subtitle="The parts that only need doing once" />
+          <CardHeader
+            title="Twice a day, and only one of them fetches"
+            subtitle="Two scheduled runs — the morning one brings new records in, the afternoon one moves what is already here"
+          />
           <CardBody>
             <Row
               when="06:00"
-              what="Pull from every source, score everything new, put it in a lane"
-              why="Sources publish overnight at best. Checking hourly would find nothing new and cost a request each time."
+              what="Pull from every due source, then run the whole chain: score, prioritise, enrich, brief, assign, export"
+              why="Sources publish overnight at best. Checking hourly would find nothing new and cost a request each time — and a seller wants a list when they sit down, not a trickle through the afternoon."
             />
             <Row
-              when="06:00"
-              what="Hand out owners, then send the day's leads"
-              why="A seller wants a list when they sit down, not a trickle through the afternoon. Everything the night produced arrives at once."
+              when="14:20"
+              what="The same chain again, WITHOUT fetching: score, prioritise, enrich, brief, assign, export"
+              why="Fetching is the expensive, rate-limited part, so it happens once. Everything after it is cheap and bounded by the spend rails, so a second pass catches what the morning could not finish — a lead enriched at 06:05 gets assigned and sent the same day instead of waiting until tomorrow."
             />
           </CardBody>
         </Card>
 
         <div className="border-border-base bg-surface-raised mt-4 rounded-lg border px-4 py-3">
           <p className="text-body text-xs leading-relaxed">
-            <Term>A missed hour costs nothing.</Term> The target is a monthly total, not an hourly quota, so a run that
-            does not fire is made up by the next one. Runs never overlap either — two at once would find the same
-            records and pay for them twice.
+            <Term>A missed run costs nothing.</Term> The target is a monthly total, not an hourly quota, so a run that
+            does not fire is made up by the next one. A source the morning run could not reach before its time budget
+            stays due and is picked up first next time — the run says which ones by name rather than reporting success
+            over a partial list.
+          </p>
+        </div>
+
+        <div className="border-border-base bg-surface-raised mt-3 rounded-lg border px-4 py-3">
+          <p className="text-body text-xs leading-relaxed">
+            <Term>Sources are fetched a few at a time, not all at once.</Term> Writing several thousand records from
+            fifteen publishers simultaneously is enough to exhaust the database&rsquo;s statement timeout, and when that
+            happens a working source produces nothing. So the morning run keeps three in flight. Records that have not
+            changed since the last fetch are not rewritten either, which is what makes re-reading the same window every
+            day affordable.
           </p>
         </div>
       </section>

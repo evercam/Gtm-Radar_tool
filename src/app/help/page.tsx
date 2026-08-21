@@ -7,9 +7,11 @@ import type { RoutingRule } from '@/lib/routing';
 import { BU_LABELS } from '@/lib/semantics';
 import { Card, CardBody, CardHeader } from '@/components/ui';
 import HowItRuns from '@/components/help/HowItRuns';
+import WhereYouWork from '@/components/help/WhereYouWork';
 import SourceLimits from '@/components/help/SourceLimits';
 import HealthInfraFilter from '@/components/help/HealthInfraFilter';
 import McpAccess from '@/components/help/McpAccess';
+import { requestOrigin } from '@/lib/auth/oauth/origin';
 import SupabaseNotConfigured from '@/components/SupabaseNotConfigured';
 import { isSupabaseServerConfigured } from '@/lib/supabase/server';
 
@@ -422,11 +424,18 @@ export default async function HelpPage() {
 
       <HowItRuns />
 
+      {/*
+        Straight after the schedule, because the schedule is what prompts the
+        question. Someone reading "this runs at 06:00 without you" immediately
+        wants to know where they intervene, and the page used to never say.
+      */}
+      <WhereYouWork />
+
       <SourceLimits />
 
       <HealthInfraFilter />
 
-      <McpAccess />
+      <McpAccess origin={await requestOrigin()} />
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-12">

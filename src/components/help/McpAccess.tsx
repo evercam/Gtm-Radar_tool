@@ -47,7 +47,16 @@ const ASKS: [string, string][] = [
   ['gtm_summarise_pipeline', '“How much is in each phase, band or vertical?”'],
 ];
 
-export default function McpAccess() {
+/**
+ * `origin` rather than a placeholder.
+ *
+ * The endpoint used to read `https://<your-app>/api/mcp`, which is correct and
+ * useless: the one thing a reader needs is the URL to paste, and they were left to
+ * work it out from the address bar. Hardcoding the production domain would have
+ * been wrong on localhost and on every preview, so the caller passes the origin it
+ * is actually being served from.
+ */
+export default function McpAccess({ origin }: { origin: string }) {
   const byName = new Map(MCP_TOOLS.map((t) => [t.name, t]));
 
   return (
@@ -91,8 +100,7 @@ export default function McpAccess() {
               In Claude, open <em>Settings → Connectors → Add custom connector</em>.
             </li>
             <li>
-              Give it the endpoint URL — <code className="text-[11px]">https://&lt;your-app&gt;/api/mcp</code> — and
-              nothing else. Leave the OAuth client ID and secret fields empty: the connector registers itself.
+              Give it the endpoint URL — <code className="text-[11px]">{origin}/api/mcp</code> — and nothing else. Leave the OAuth client ID and secret fields empty: the connector registers itself.
             </li>
             <li>
               Claude opens a page here asking you to approve it. Sign in with Google if you are not already, check what
