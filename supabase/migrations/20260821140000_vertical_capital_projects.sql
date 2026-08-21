@@ -81,36 +81,29 @@ $$;
 -- column with its own value is enough. `record_type` is chosen because it is one
 -- of the three inputs to lead_vertical and is never null on these rows.
 --
--- Batched, and deliberately so. This table has produced statement timeouts under
--- concurrent ingest before, and one 4,269-row statement holding row locks while a
--- cron writes is how that happens again. Each batch commits on its own, so an
--- interrupted run leaves a partially-renamed table that a re-run completes rather
--- than a rolled-back hour.
+-- ONE STATEMENT, AND THE REASON IS A BUG THIS FILE ALREADY CAUSED
+--
+-- The first version of this batched the update in a DO loop with `commit` between
+-- chunks, to avoid holding locks while a cron writes. That works under psql, which
+-- runs in autocommit — and psql is exactly how scripts/test-migrations.sh runs it,
+-- so it passed. The Supabase SQL editor wraps a script in an explicit transaction,
+-- where COMMIT inside plpgsql raises `invalid transaction termination` and rolls
+-- back the whole file, the two functions included. Run against production it
+-- changed nothing and looked like it had.
+--
+-- So: no procedural code, no transaction control, nothing that behaves
+-- differently depending on how the file is fed to Postgres. 4,269 rows is a small
+-- update; the timeout it was guarding against is handled by raising the limit for
+-- this statement instead, which is honest about the cost rather than hiding it
+-- behind machinery that does not survive the editor.
 --
 -- Re-runnable: the WHERE clause matches only rows still holding the old value, so
 -- a second run finds nothing and does nothing.
 
-do $$
-declare
-  moved integer;
-  total integer := 0;
-begin
-  loop
-    with batch as (
-      select id from public.canonical_projects
-       where vertical = 'capital_markets'
-       limit 500
-    )
-    update public.canonical_projects p
-       set record_type = p.record_type
-      from batch
-     where p.id = batch.id;
+set statement_timeout = '600s';
 
-    get diagnostics moved = row_count;
-    exit when moved = 0;
-    total := total + moved;
-    commit;
-  end loop;
-  raise notice 'capital_markets → capital_projects: % rows recomputed', total;
-end
-$$;
+update public.canonical_projects p
+   set record_type = p.record_type
+ where p.vertical = 'capital_markets';
+
+reset statement_timeout;

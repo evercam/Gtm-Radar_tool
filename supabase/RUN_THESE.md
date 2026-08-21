@@ -1,30 +1,30 @@
 # Migrations — what to run, and what has already been run
 
-## PENDING — `20260821140000_vertical_capital_projects.sql`
+## APPLIED — `20260821140000_vertical_capital_projects.sql` (2026-08-21)
 
 Renames the `capital_markets` vertical to `capital_projects`, code CAPM → CAPX.
+Verified live: 4,269 rows on the new name, zero on the old, and `ref_code` and
+`org_path` both recomputed (`EXP-CAPX-US-...`, `export/capital_projects/...`).
 
-**Not a data update, because it cannot be one.** `vertical` is a STORED generated
-column, and so are `ref_code` (which embeds the vertical code) and `org_path`
-(which embeds the vertical name). Replacing the classifier function changes what
-NEW rows compute and leaves existing rows holding the old value, so the migration
-ends with a batched pass that touches each affected row and lets Postgres
-recompute all three columns.
+**It failed silently the first time, and the reason is worth keeping.** The
+original version batched the recompute in a DO loop with `commit` between chunks.
+psql runs in autocommit and accepted it, so `scripts/test-migrations.sh` was green.
+The Supabase SQL editor wraps a script in one transaction, where COMMIT inside
+plpgsql raises `invalid transaction termination` — which rolled back the entire
+file, both function replacements included. It reported nothing to the person
+running it and changed nothing at all.
 
-Proven with data rather than only for syntax: a filing row was inserted into a
-throwaway Postgres under the old classifier, the migration applied, and all three
-columns confirmed to flip (`EXP-CAPM-US-314E070C` → `EXP-CAPX-US-314E070C`, hash
-unchanged). A new row classified the new way, an unrelated vertical was untouched,
-and a second run reported `0 rows recomputed`.
+So the file now contains no procedural code and no transaction control: two
+CREATE OR REPLACE FUNCTIONs and one UPDATE, with `statement_timeout` raised for
+that statement rather than batching around it. **Prefer that shape for anything
+pasted into the editor.** A migration that needs real batching has to be run
+through psql and said so at the top.
 
-**This rewrites 4,269 ref_codes, and that is only safe now.** Checked first: none
-of these records are assigned, enriched, or exported, so no ref_code in this
-vertical has ever left the system. The window closes the first time one ships to
-Apollo.
-
-Runs in batches of 500 with its own commits. The table has produced statement
-timeouts under concurrent ingest before, and an interrupted run leaves a partly
-renamed table that a re-run finishes.
+`scripts/test-migrations.sh` now replays every migration a second time against a
+fresh database with each file wrapped in BEGIN/COMMIT, and seeds fixture rows as
+soon as `canonical_projects` exists so data paths actually execute. Either gap
+alone was enough to hide this: the commit was only reached when a row matched, and
+the error only raised inside a transaction.
 
 ## APPLIED — `20260821090000_contact_match_signals.sql` (2026-08-21)
 
