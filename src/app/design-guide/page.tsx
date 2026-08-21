@@ -38,6 +38,7 @@ import {
   statusText,
 } from '@/lib/status-colors';
 import { cn } from '@/lib/cn';
+import LoadingMark from '@/components/shell/LoadingMark';
 import LaneChart, { type LaneRow } from '@/components/LaneChart';
 import LaneCards from '@/components/LaneCards';
 import JourneyCards, { type JourneyStep } from '@/components/JourneyCards';
@@ -473,6 +474,20 @@ export default function DesignGuidePage() {
             </p>
           </Callout>
         </div>
+      </Section>
+
+      <Section
+        title="LoadingMark"
+        note="Route-level waiting. Silent for the first 1.5s, then says something true — and something different at 6s, 14s and 28s."
+      >
+        <div className="border-border-base overflow-hidden rounded-lg border">
+          <LoadingMark />
+        </div>
+        <p className="text-subtle text-[10px]">
+          Left alone, the copy here will escalate as the seconds pass — that is the component working, not a fault. Under
+          prefers-reduced-motion the mark holds still at full opacity and the sweep is hidden, because a frozen bar
+          claims a progress it does not know.
+        </p>
       </Section>
 
       <Section title="Absence" note="What a surface shows when it has nothing — never a blank area.">

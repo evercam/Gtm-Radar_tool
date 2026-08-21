@@ -239,6 +239,32 @@ body {
 .animate-rise-in { animation: rise-in 200ms ease-out both; }
 .animate-slide-in-right { animation: slide-in-right 240ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/*
+  The waiting mark.
+
+  Two animations, not one. `pulse-mark` breathes the logo so the page reads as
+  working rather than stuck; `sweep` runs a bar underneath it, because a pulse
+  alone gives no sense that anything is progressing — a heartbeat says alive, a
+  sweep says busy, and a slow page needs both.
+
+  Deliberately slow, at 1.8s and 1.6s. A fast spinner on a query that takes eight
+  seconds reads as frantic, and the honest impression is patience.
+
+  Both are killed by the reduced-motion block below, which leaves a static mark —
+  the wait is still communicated, by the words underneath it rather than by movement.
+*/
+@keyframes pulse-mark {
+  0%, 100% { opacity: 0.45; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@keyframes sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.animate-pulse-mark { animation: pulse-mark 1.8s ease-in-out infinite; }
+.animate-sweep { animation: sweep 1.6s ease-in-out infinite; }
+
 .skeleton {
   background: linear-gradient(
     90deg,
@@ -261,5 +287,22 @@ body {
   }
   .skeleton {
     background: var(--border);
+  }
+  /*
+    The blanket rule above cuts every animation to its END state, which for the
+    waiting mark is the 100% keyframe — opacity 0.45 and scaled down. A permanently
+    half-faded logo reads as disabled, not as loading, so the static state is
+    stated rather than inherited.
+  */
+  .animate-pulse-mark {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  /*
+    And the sweep is hidden outright. Frozen mid-track it is a progress bar stopped
+    at 30%, which claims something specific and false about how far along the wait is.
+  */
+  .animate-sweep {
+    display: none !important;
   }
 }
