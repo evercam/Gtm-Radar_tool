@@ -217,8 +217,36 @@ async function runIngest(request: NextRequest, at: Date, outOfTime: () => boolea
 
     Five, not back to unbounded: twenty-five simultaneous upserts is what caused the
     original pile-up, and nothing about dropping two indexes makes that wise.
+
+    BACK TO THREE, 2026-08-21. Five stopped holding.
+
+    Fifteen sources failed in one run on "canceling statement due to statement
+    timeout" during their upsert — nyc-permits, sec-edgar, usaspending, planning-ie,
+    chicago-permits, glenigan, neso-tec, neso-embedded, calgary-permits, ted,
+    austender, world-bank, news-search and more. The same signature as 13 August,
+    and the halving in writeChunk had already reduced some of them to 19 rows before
+    giving up, so this is contention rather than batch size.
+
+    It is not the database being broken. Measured the same day: a `limit 1` on
+    canonical_projects returns in a 193ms median over ten trials, with two spikes
+    past a second, and the table is 341MB heap over 154MB of indexes at ~3KB a row —
+    a wide table, not a bloated one. Reads are healthy; concurrent writes are not.
+
+    What changed since five was set is the table: 111,802 rows now, and the wide
+    publishers grew with it (chicago-permits 9,976 rows a run, planning-ie 9,899).
+    Five was calibrated on 18 August evidence and the ground moved.
+
+    Three rather than two because the downside of going lower is bounded in a way
+    the original note could not assume: a source that is never reached STAYS DUE and
+    is picked up first next run — see the skipped-source branch below. A source that
+    times out produces nothing and is reported as a failure. Deferring is strictly
+    better than failing, so erring low is safe.
+
+    This dial is the tourniquet. The cure is not rewriting rows that have not
+    changed — see upsertSourceRecords — after which the cap can be raised on
+    evidence again.
   */
-  const INGEST_CONCURRENCY = 5;
+  const INGEST_CONCURRENCY = 3;
 
   /*
     EARLIEST-SPEAKING SOURCES FIRST.
