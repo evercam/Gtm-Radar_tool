@@ -35,7 +35,7 @@ export default function BuStats({ rows, truncated }: { rows: BuRollupRow[]; trun
           <span className="text-foreground font-semibold">{n(strandedLeads)} reachable leads cannot be assigned.</span>{' '}
           No active assignee&rsquo;s scope covers {stranded.map((r) => BU_LABELS[r.bu] ?? r.bu).join(', ')}. Raising a
           quota will not move them — somebody has to cover the business unit, on{' '}
-          <a href="/control/team" className="underline underline-offset-2">
+          <a href="/admin/team" className="underline underline-offset-2">
             Team
           </a>
           .

@@ -96,7 +96,6 @@ export const CONTROL_PAGES: NavItem[] = [
   { label: 'Source Hub', href: '/control/sources', icon: Satellite, permission: 'sources.run' },
   { label: 'Enrichment', href: '/control/enrichment', icon: Sparkles, permission: 'enrichment.run' },
   { label: 'Routing', href: '/control/routing', icon: Route, permission: 'routing.edit' },
-  { label: 'Team & Users', href: '/control/team', icon: Users, permission: 'leads.reassign' },
   // Last, because it is the only one you read rather than operate — and the one
   // you open after a send, not before.
   { label: 'Export History', href: '/control/exports', icon: History, permission: 'leads.export' },
@@ -105,6 +104,15 @@ export const CONTROL_PAGES: NavItem[] = [
 
 /** The pages inside Administration. Settings itself is the parent entry. */
 export const ADMIN_PAGES: NavItem[] = [
+  /*
+    Team & Users lives here, not under Operations.
+
+    It sets quotas, scopes and roles — configuration that rarely changes and is
+    dangerous next to a button somebody presses daily, which is the line
+    Administration was drawn along in the first place. Operations is the daily
+    loop; this is the setup the loop runs on.
+  */
+  { label: 'Team & Users', href: '/admin/team', icon: Users, permission: 'leads.reassign' },
   { label: 'Cost', href: '/admin/costs', icon: Wallet, permission: 'enrichment.run' },
 ];
 

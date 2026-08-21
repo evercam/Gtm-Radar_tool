@@ -201,7 +201,7 @@ export const ROUTE_PERMISSIONS: { prefix: string; permission: Permission }[] = [
   { prefix: '/admin/costs', permission: 'enrichment.run' },
   { prefix: '/admin', permission: 'control.access' },
   { prefix: '/control/enrichment', permission: 'enrichment.run' },
-  { prefix: '/control/team', permission: 'leads.reassign' },
+  { prefix: '/admin/team', permission: 'leads.reassign' },
   { prefix: '/control/routing', permission: 'routing.edit' },
   { prefix: '/control/sources', permission: 'sources.run' },
   /*

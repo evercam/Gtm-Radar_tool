@@ -141,7 +141,7 @@ export default function KpiSummaryCards({
         {scope === 'team' && kpi.byOwner.length > 0 ? (
           <p className="text-subtle text-[10px]">
             Per-owner and per-source breakdowns are on{' '}
-            <Link href="/control/team" className="text-brand underline">
+            <Link href="/admin/team" className="text-brand underline">
               Team
             </Link>
             .

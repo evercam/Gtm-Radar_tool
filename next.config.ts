@@ -21,12 +21,21 @@ const CONTROL_REDIRECTS: { from: string; to: string }[] = [
   // Uploads are sources too — they live in the hub, not on their own page.
   { from: "/control/import", to: "/control/sources" },
   { from: "/control/costs", to: "/admin/costs" },
+  /*
+    Team & Users moved from Operations to Administration.
+
+    It sets quotas, scopes and roles — configuration, not the daily loop — and the
+    dashboard links straight at it from three places, so a dead /control/team would
+    be a broken link on the busiest page in the app rather than only a stale
+    bookmark.
+  */
+  { from: "/control/team", to: "/admin/team" },
   // The roster and its workload were two views of the same people.
-  { from: "/admin/users", to: "/control/team" },
+  { from: "/admin/users", to: "/admin/team" },
   { from: "/control/import/gem", to: "/control/sources" },
   // Administration split out of the Control Center — keep the old paths alive.
   { from: "/control/settings", to: "/admin/settings" },
-  { from: "/control/users", to: "/control/team" },
+  { from: "/control/users", to: "/admin/team" },
   // Search and the source catalog merged into one Source Hub.
   { from: "/control/search", to: "/control/sources" },
   { from: "/admin/sources", to: "/control/sources" },

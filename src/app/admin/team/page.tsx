@@ -286,7 +286,7 @@ async function getTeamLoad(): Promise<{
 }
 
 export default async function TeamPage() {
-  const me = await requirePermission('leads.reassign', '/control/team');
+  const me = await requirePermission('leads.reassign', '/admin/team');
 
   if (!isSupabaseServiceConfigured()) {
     return (

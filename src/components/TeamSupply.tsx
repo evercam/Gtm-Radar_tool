@@ -226,7 +226,7 @@ export default function TeamSupply({
       ) : null}
 
       <div className="border-border-base border-t px-5 py-3">
-        <Link href="/control/team" className="text-brand text-[11px] underline underline-offset-2">
+        <Link href="/admin/team" className="text-brand text-[11px] underline underline-offset-2">
           Quotas and scopes on Team &amp; Users →
         </Link>
       </div>

@@ -95,7 +95,7 @@ export default function CoverageAlert({ rows }: { rows: BuRollupRow[] }) {
             lie — there is nobody to assign them to, which is the whole finding.
           */}
           <p className="mt-3 text-xs">
-            <Link href="/control/team" className="font-semibold underline underline-offset-2">
+            <Link href="/admin/team" className="font-semibold underline underline-offset-2">
               Widen someone&rsquo;s scope on Team &amp; Users →
             </Link>
           </p>
